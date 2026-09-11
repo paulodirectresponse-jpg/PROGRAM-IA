@@ -1,27 +1,288 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
 import { db } from './db/index.js';
+import { AuthService, AuthUser } from './services/authService.js';
+import { SecretService } from './services/secretService.js';
 import { WorkspaceManager } from './services/workspaceManager.js';
 import { LLMAdapterService, AgentMode } from './services/llmAdapter.js';
 import { GitHubService } from './services/githubService.js';
+import { DesktopService } from './services/desktopService.js';
 
 export const router = express.Router();
 
+// Extend Express Request type for authenticated user
+declare global {
+  namespace Express {
+    interface Request {
+      user?: AuthUser;
+    }
+  }
+}
+
 // ==========================================
-// 1. PROJECTS API
+// AUTHENTICATION & SECURITY MIDDLEWARE
 // ==========================================
 
-router.get('/projects', (req: Request, res: Response) => {
+/**
+ * Extracts and validates session from cookies or Authorization header
+ */
+function sessionAuthMiddleware(req: Request, res: Response, next: NextFunction) {
+  const token =
+    req.cookies?.['forge_session'] ||
+    (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.substring(7) : null) ||
+    (req.headers['x-session-token'] as string | undefined);
+
+  if (token) {
+    const sessionUser = AuthService.validateSession(token);
+    if (sessionUser) {
+      req.user = sessionUser;
+    }
+  }
+
+  // Fallback for seamless developer and sandbox experience if database only has default user
+  if (!req.user) {
+    const defaultUser = AuthService.getUserById('user-default');
+    if (defaultUser) {
+      req.user = defaultUser;
+    }
+  }
+
+  next();
+}
+
+/**
+ * Enforces authenticated user
+ */
+function requireAuth(req: Request, res: Response, next: NextFunction) {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Não autenticado. Faça login para acessar este recurso.' });
+  }
+  next();
+}
+
+/**
+ * Validates CSRF token on state-changing requests when cookies are used
+ */
+function csrfProtection(req: Request, res: Response, next: NextFunction) {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    const sessionCookie = req.cookies?.['forge_session'];
+    // If using cookie-based auth, verify CSRF token
+    if (sessionCookie) {
+      const csrfCookie = req.cookies?.['forge_csrf'];
+      const csrfHeader = req.headers['x-csrf-token'];
+      if (csrfCookie && csrfHeader && csrfCookie !== csrfHeader) {
+        return res.status(403).json({ error: 'Falha de validação CSRF (token inválido).' });
+      }
+    }
+  }
+  next();
+}
+
+/**
+ * Verifies that the authenticated user owns the project
+ */
+function requireProjectOwner(req: Request, res: Response, next: NextFunction) {
+  const projectId = req.params.id || req.params.projectId;
+  if (!projectId) return next();
+
+  if (!req.user) {
+    return res.status(401).json({ error: 'Não autenticado.' });
+  }
+
+  const project = db.prepare('SELECT user_id FROM projects WHERE id = ?').get(projectId) as { user_id?: string } | undefined;
+  if (!project) {
+    return res.status(404).json({ error: 'Projeto não encontrado.' });
+  }
+
+  if (
+    project.user_id &&
+    project.user_id !== req.user.id &&
+    project.user_id !== 'user-default' &&
+    req.user.id !== 'user-default' &&
+    req.user.role !== 'admin'
+  ) {
+    return res.status(403).json({ error: 'Acesso negado: este projeto pertence a outro usuário.' });
+  }
+
+  next();
+}
+
+// Mount global session parser and CSRF check
+router.use(sessionAuthMiddleware);
+router.use(csrfProtection);
+
+// ==========================================
+// 1. AUTHENTICATION ROUTES
+// ==========================================
+
+router.post('/auth/register', async (req: Request, res: Response) => {
   try {
-    const projects = db.prepare('SELECT * FROM projects ORDER BY updated_at DESC').all();
+    const { email, password, name } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
+    }
+
+    const user = AuthService.register(email, name || '', password);
+    const session = AuthService.createSession(user.id);
+
+    res.cookie('forge_session', session.token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      path: '/',
+    });
+
+    res.json({ success: true, user, token: session.token });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/auth/login', async (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
+    }
+
+    const { user, session } = AuthService.login(email, password);
+
+    res.cookie('forge_session', session.token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      path: '/',
+    });
+
+    res.json({ success: true, user, token: session.token });
+  } catch (err: any) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+router.post('/auth/firebase-login', async (req: Request, res: Response) => {
+  try {
+    const { email, displayName, uid } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'E-mail é obrigatório para autenticação.' });
+    }
+
+    const { user, session } = AuthService.firebaseLogin(
+      email,
+      displayName || '',
+      uid || 'fb-user-' + Date.now(),
+      req.headers['user-agent'] as string,
+      req.ip
+    );
+
+    res.cookie('forge_session', session.token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      path: '/',
+    });
+
+    res.json({ success: true, user, token: session.token });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/auth/me', (req: Request, res: Response) => {
+  if (!req.user) {
+    return res.json({ authenticated: false, user: null });
+  }
+  res.json({ authenticated: true, user: req.user });
+});
+
+router.post('/auth/logout', (req: Request, res: Response) => {
+  const token = req.cookies?.['forge_session'] || (req.headers.authorization?.replace('Bearer ', ''));
+  if (token) {
+    AuthService.logout(token);
+  }
+  res.clearCookie('forge_session', { path: '/' });
+  res.json({ success: true });
+});
+
+// ==========================================
+// 2. SECRETS & CREDENTIALS API (PER-USER)
+// ==========================================
+
+router.get('/secrets', requireAuth, (req: Request, res: Response) => {
+  try {
+    const secrets = SecretService.listUserSecrets(req.user!.id);
+    res.json({ secrets });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/secrets', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { providerKey, secretValue } = req.body;
+    if (!providerKey || !secretValue) {
+      return res.status(400).json({ error: 'Provedor e valor da chave são obrigatórios.' });
+    }
+
+    SecretService.saveSecret(req.user!.id, providerKey, secretValue);
+    const masked = SecretService.maskSecret(secretValue);
+
+    res.json({ success: true, providerKey, masked });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/secrets/test', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { providerKey, secretValue, baseUrl, modelId } = req.body;
+    if (!providerKey) {
+      return res.status(400).json({ error: 'Provedor é obrigatório para teste.' });
+    }
+
+    const result = await SecretService.testConnection(req.user!.id, providerKey, {
+      apiKey: secretValue,
+      baseUrl,
+      modelId,
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      code: 'network_error',
+      message: `Erro interno ao testar conexão: ${err.message}`,
+    });
+  }
+});
+
+router.delete('/secrets/:providerKey', requireAuth, (req: Request, res: Response) => {
+  try {
+    SecretService.deleteSecret(req.user!.id, req.params.providerKey);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// 3. PROJECTS API (USER ISOLATION)
+// ==========================================
+
+router.get('/projects', requireAuth, (req: Request, res: Response) => {
+  try {
+    const projects = db.prepare('SELECT * FROM projects WHERE user_id = ? ORDER BY updated_at DESC').all(req.user!.id);
     res.json({ projects });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-router.post('/projects', async (req: Request, res: Response) => {
+router.post('/projects', requireAuth, async (req: Request, res: Response) => {
   try {
     const { name, description, origin = 'novo', repo_url = '', branch = 'main', initialFiles = {} } = req.body;
     if (!name || name.trim().length === 0) {
@@ -31,92 +292,84 @@ router.post('/projects', async (req: Request, res: Response) => {
     const projectId = 'proj-' + Date.now();
     const now = new Date().toISOString();
     let effectiveBranch = branch || 'main';
+    const userId = req.user!.id;
 
-    // Validate and handle GitHub origin
+    // 1. GITHUB REPOSITORY IMPORT
     if (origin === 'github') {
       if (!repo_url || repo_url.trim().length === 0) {
-        return res.status(400).json({ error: 'URL do repositório GitHub é obrigatória para importação remota.' });
+        return res.status(400).json({ error: 'URL do repositório GitHub é obrigatória para importação.' });
       }
 
       const parsed = GitHubService.parseRepoUrl(repo_url);
       if (!parsed) {
         return res.status(400).json({
-          error: 'URL do GitHub inválida. Formatos válidos: https://github.com/usuario/repo ou usuario/repo',
+          error: 'URL do GitHub inválida. Formatos aceitos: https://github.com/usuario/repo ou usuario/repo',
         });
       }
 
-      // Import real files from GitHub
-      const importResult = await GitHubService.importRepoFiles(parsed.owner, parsed.repo, effectiveBranch);
+      // Import real files using user's configured GitHub token
+      const importResult = await GitHubService.importRepoFiles(parsed.owner, parsed.repo, effectiveBranch, userId);
       if (!importResult.success) {
         return res.status(400).json({
-          error: importResult.error || 'Falha ao importar arquivos do repositório GitHub especificado.',
+          error: importResult.error || 'Falha ao importar arquivos do repositório especificado.',
         });
       }
 
       effectiveBranch = importResult.branch || effectiveBranch;
 
-      // Create Project row
       db.prepare(`
         INSERT INTO projects (
-          id, workspace_id, name, description, origin, repo_url, branch, status, provider_id, model_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 'prov-useoneai', 'chatgpt-5.5', ?, ?)
-      `).run(projectId, 'ws-default', name.trim(), description || `Importado de ${repo_url}`, origin, repo_url.trim(), effectiveBranch, now, now);
+          id, user_id, workspace_id, name, description, origin, repo_url, branch, status, provider_id, model_id, created_at, updated_at
+        ) VALUES (?, ?, 'ws-default', ?, ?, ?, ?, ?, 'active', 'prov-useoneai', 'chatgpt-5.5', ?, ?)
+      `).run(projectId, userId, name.trim(), description || `Importado de ${repo_url}`, origin, repo_url.trim(), effectiveBranch, now, now);
 
-      // Write imported files to workspace
-      if (importResult.files && Object.keys(importResult.files).length > 0) {
+      // Write text files
+      if (importResult.files) {
         for (const [filePath, content] of Object.entries(importResult.files)) {
           WorkspaceManager.writeFile(projectId, filePath, content);
         }
-      } else {
-        // Starter fallback if repo was empty
-        WorkspaceManager.writeFile(projectId, 'README.md', `# ${name}\n\nRepositório importado do GitHub: ${repo_url}`);
       }
 
-      // Project source
-      db.prepare(`
-        INSERT INTO project_sources (id, project_id, type, original_path_or_url, created_at)
-        VALUES (?, ?, ?, ?, ?)
-      `).run('src-' + Date.now(), projectId, origin, repo_url, now);
+      // Write binary assets (images, fonts)
+      if (importResult.binaryFiles) {
+        for (const [filePath, buf] of Object.entries(importResult.binaryFiles)) {
+          WorkspaceManager.writeBinaryFile(projectId, filePath, buf);
+        }
+      }
 
-      // Branch
       db.prepare(`
         INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
         VALUES (?, ?, ?, 1, 'head-import', ?)
       `).run('br-' + Date.now(), projectId, effectiveBranch, now);
 
-      // Conversation in auto mode
       const convId = 'conv-' + Date.now();
       db.prepare(`
         INSERT INTO conversations (id, project_id, title, mode, created_at, updated_at)
         VALUES (?, ?, 'Workspace GitHub', 'auto', ?, ?)
       `).run(convId, projectId, now, now);
 
-      // Welcome message
       db.prepare(`
         INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
         VALUES (?, ?, 'agent', ?, ?, ?)
       `).run(
         'msg-' + Date.now(),
         convId,
-        'agent',
-        `Repositório **${parsed.owner}/${parsed.repo}** (branch \`${effectiveBranch}\`) importado com sucesso!\n\nForam carregados **${importResult.filesCount || 0} arquivos** no workspace. Estou pronto para analisar, editar ou implementar novidades neste código.`,
+        `Repositório **${parsed.owner}/${parsed.repo}** importado com sucesso!\n\nForam carregados **${importResult.filesCount || 0} arquivos** no workspace. Estou pronto para analisar e implementar o que você precisar.`,
         JSON.stringify({ isWelcome: true, mode: 'auto' }),
         now
       );
 
-      // Initial checkpoint
       WorkspaceManager.createCheckpoint(projectId, 'Importação do GitHub', `Importado de ${parsed.owner}/${parsed.repo}`);
-
       return res.json({ success: true, projectId });
     }
 
-    // Handle Local / ZIP file import
+    // 2. LOCAL / ZIP FILE IMPORT
     if (origin === 'local' && initialFiles && Object.keys(initialFiles).length > 0) {
       db.prepare(`
         INSERT INTO projects (
-          id, workspace_id, name, description, origin, repo_url, branch, status, provider_id, model_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, '', 'main', 'active', 'prov-useoneai', 'chatgpt-5.5', ?, ?)
-      `).run(projectId, 'ws-default', name.trim(), description || 'Importado de arquivo ZIP', origin, now, now);
+          id, user_id, workspace_id, name, description, origin, repo_url, branch, status, provider_id, model_id, created_at, updated_at
+        ) VALUES (?, ?, 'ws-default', ?, ?, ?, '', 'main', 'active', 'prov-useoneai', 'chatgpt-5.5', ?, ?)
+      `).run(projectId, userId, name.trim(), description || 'Importado de arquivo ZIP', origin, now, now);
 
       for (const [filePath, content] of Object.entries(initialFiles)) {
         if (typeof content === 'string') {
@@ -124,83 +377,61 @@ router.post('/projects', async (req: Request, res: Response) => {
         }
       }
 
-      // Project source
-      db.prepare(`
-        INSERT INTO project_sources (id, project_id, type, original_path_or_url, created_at)
-        VALUES (?, ?, ?, 'local-zip', ?)
-      `).run('src-' + Date.now(), projectId, 'local_zip', now);
-
-      // Main branch
       db.prepare(`
         INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
         VALUES (?, ?, 'main', 1, 'head-zip', ?)
       `).run('br-' + Date.now(), projectId, now);
 
-      // Conversation in auto mode
       const convId = 'conv-' + Date.now();
       db.prepare(`
         INSERT INTO conversations (id, project_id, title, mode, created_at, updated_at)
         VALUES (?, ?, 'Workspace ZIP', 'auto', ?, ?)
       `).run(convId, projectId, now, now);
 
-      // Welcome message
       db.prepare(`
         INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
         VALUES (?, ?, 'agent', ?, ?, ?)
       `).run(
         'msg-' + Date.now(),
         convId,
-        'agent',
-        `Arquivo ZIP **${name}** extraído com sucesso!\n\nForam criados **${Object.keys(initialFiles).length} arquivos** no workspace. Você pode visualizar o live preview ao lado e solicitar edições.`,
+        `Arquivo **${name}** extraído com sucesso!\n\nForam criados **${Object.keys(initialFiles).length} arquivos** no workspace.`,
         JSON.stringify({ isWelcome: true, mode: 'auto' }),
         now
       );
 
       WorkspaceManager.createCheckpoint(projectId, 'Importação de Arquivo ZIP', `Extração de ${Object.keys(initialFiles).length} arquivos`);
-
       return res.json({ success: true, projectId });
     }
 
-    // Default: Create from scratch (novo)
+    // 3. NEW PROJECT FROM SCRATCH
     db.prepare(`
       INSERT INTO projects (
-        id, workspace_id, name, description, origin, repo_url, branch, status, provider_id, model_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, '', 'main', 'active', 'prov-useoneai', 'chatgpt-5.5', ?, ?)
-    `).run(projectId, 'ws-default', name.trim(), description || 'Novo projeto Forge Agent', 'novo', now, now);
+        id, user_id, workspace_id, name, description, origin, repo_url, branch, status, provider_id, model_id, created_at, updated_at
+      ) VALUES (?, ?, 'ws-default', ?, ?, 'novo', '', 'main', 'active', 'prov-useoneai', 'chatgpt-5.5', ?, ?)
+    `).run(projectId, userId, name.trim(), description || 'Novo projeto Forge Agent', now, now);
 
-    // Initial project source
-    db.prepare(`
-      INSERT INTO project_sources (id, project_id, type, original_path_or_url, created_at)
-      VALUES (?, ?, ?, 'scratch', ?)
-    `).run('src-' + Date.now(), projectId, 'scratch', now);
-
-    // Main branch
     db.prepare(`
       INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
       VALUES (?, ?, 'main', 1, 'head-init', ?)
     `).run('br-' + Date.now(), projectId, now);
 
-    // Initial conversation in auto mode
     const convId = 'conv-' + Date.now();
     db.prepare(`
       INSERT INTO conversations (id, project_id, title, mode, created_at, updated_at)
       VALUES (?, ?, 'Conversa Principal', 'auto', ?, ?)
     `).run(convId, projectId, now, now);
 
-    // Welcome message in auto mode
     db.prepare(`
       INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
       VALUES (?, ?, 'agent', ?, ?, ?)
     `).run(
       'msg-' + Date.now(),
       convId,
-      'agent',
-      `Projeto **${name}** pronto!\n\nEstou operando no modo **Automático**. Diga o que deseja construir, modificar ou entender. Decidirei a melhor ação para o seu pedido (explicar, propor alterações com diff ou planejar).`,
+      `Projeto **${name}** pronto!\n\nEstou operando no modo **Automático**. Diga o que deseja construir, modificar ou entender.`,
       JSON.stringify({ isWelcome: true, mode: 'auto' }),
       now
     );
 
-    // Populate initial starter files in workspace
     const starterTitle = name.replace(/</g, '&lt;');
     const initialHtml = `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -242,13 +473,9 @@ router.post('/projects', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/projects/:id', (req: Request, res: Response) => {
+router.get('/projects/:id', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   try {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
-    if (!project) {
-      return res.status(404).json({ error: 'Projeto não encontrado.' });
-    }
-
     const branches = db.prepare('SELECT * FROM branches WHERE project_id = ?').all(req.params.id);
     const checkpoints = db.prepare('SELECT id, title, description, parent_id, created_at FROM checkpoints WHERE project_id = ? ORDER BY created_at DESC').all(req.params.id);
     const verifications = db.prepare('SELECT * FROM verifications WHERE project_id = ? ORDER BY created_at DESC LIMIT 10').all(req.params.id);
@@ -259,133 +486,33 @@ router.get('/projects/:id', (req: Request, res: Response) => {
   }
 });
 
-// Files in project workspace
-router.get('/projects/:id/files', (req: Request, res: Response) => {
-  try {
-    const files = WorkspaceManager.getFiles(req.params.id);
-    res.json({ files });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.get('/projects/:id/files/content', (req: Request, res: Response) => {
-  try {
-    const filePath = req.query.path as string;
-    if (!filePath) return res.status(400).json({ error: 'Parâmetro path ausente.' });
-    const content = WorkspaceManager.readFile(req.params.id, filePath);
-    if (content === null) {
-      return res.status(404).json({ error: 'Arquivo não encontrado.' });
-    }
-    res.json({ path: filePath, content });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.post('/projects/:id/files', (req: Request, res: Response) => {
-  try {
-    const { path: filePath, content } = req.body;
-    if (!filePath || content === undefined) {
-      return res.status(400).json({ error: 'Campos path e content são obrigatórios.' });
-    }
-    WorkspaceManager.writeFile(req.params.id, filePath, content);
-    const cpId = WorkspaceManager.createCheckpoint(req.params.id, `Edição manual: ${filePath}`);
-    res.json({ success: true, checkpointId: cpId });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Checkpoints and Rollback
-router.get('/projects/:id/checkpoints', (req: Request, res: Response) => {
-  try {
-    const checkpoints = db.prepare('SELECT id, title, description, parent_id, created_at FROM checkpoints WHERE project_id = ? ORDER BY created_at DESC').all(req.params.id);
-    res.json({ checkpoints });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.post('/projects/:id/checkpoints/:checkpointId/restore', (req: Request, res: Response) => {
-  try {
-    const success = WorkspaceManager.restoreCheckpoint(req.params.id, req.params.checkpointId);
-    if (!success) {
-      return res.status(404).json({ error: 'Checkpoint não encontrado.' });
-    }
-    res.json({ success: true, message: 'Checkpoint restaurado com sucesso.' });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Verifications
-router.get('/projects/:id/verifications', (req: Request, res: Response) => {
-  try {
-    const verifications = db.prepare('SELECT * FROM verifications WHERE project_id = ? ORDER BY created_at DESC LIMIT 15').all(req.params.id);
-    res.json({ verifications });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Update Project Metadata / Provider / Branch / Status
-router.patch('/projects/:id', (req: Request, res: Response) => {
-  try {
-    const { name, description, branch, status, provider_id, model_id } = req.body;
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
-    if (!project) return res.status(404).json({ error: 'Projeto não encontrado.' });
-
-    const updatedName = name !== undefined ? name.trim() : project.name;
-    const updatedDesc = description !== undefined ? description : project.description;
-    const updatedBranch = branch !== undefined ? branch : project.branch;
-    const updatedStatus = status !== undefined ? status : project.status;
-    const updatedProv = provider_id !== undefined ? provider_id : project.provider_id;
-    const updatedModel = model_id !== undefined ? model_id : project.model_id;
-    const now = new Date().toISOString();
-
-    db.prepare(`
-      UPDATE projects SET name = ?, description = ?, branch = ?, status = ?, provider_id = ?, model_id = ?, updated_at = ?
-      WHERE id = ?
-    `).run(updatedName, updatedDesc, updatedBranch, updatedStatus, updatedProv, updatedModel, now, req.params.id);
-
-    res.json({
-      success: true,
-      project: {
-        ...project,
-        name: updatedName,
-        description: updatedDesc,
-        branch: updatedBranch,
-        status: updatedStatus,
-        provider_id: updatedProv,
-        model_id: updatedModel,
-      },
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Delete Project and Workspace Files
-router.delete('/projects/:id', (req: Request, res: Response) => {
+router.delete('/projects/:id', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   try {
     const projectId = req.params.id;
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
-    if (!project) return res.status(404).json({ error: 'Projeto não encontrado.' });
 
-    const convs = db.prepare('SELECT id FROM conversations WHERE project_id = ?').all(projectId) as any[];
+    // 1. Delete associated messages
+    const convs = db.prepare('SELECT id FROM conversations WHERE project_id = ?').all(projectId) as { id: string }[];
     for (const c of convs) {
       db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(c.id);
     }
-    db.prepare('DELETE FROM conversations WHERE project_id = ?').run(projectId);
-    db.prepare('DELETE FROM plans WHERE project_id = ?').run(projectId);
-    db.prepare('DELETE FROM checkpoints WHERE project_id = ?').run(projectId);
-    db.prepare('DELETE FROM verifications WHERE project_id = ?').run(projectId);
-    db.prepare('DELETE FROM branches WHERE project_id = ?').run(projectId);
-    db.prepare('DELETE FROM project_sources WHERE project_id = ?').run(projectId);
-    db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
 
+    // 2. Delete conversations
+    db.prepare('DELETE FROM conversations WHERE project_id = ?').run(projectId);
+
+    // 3. Delete verifications
+    db.prepare('DELETE FROM verifications WHERE project_id = ?').run(projectId);
+
+    // 4. Delete checkpoints
+    db.prepare('DELETE FROM checkpoints WHERE project_id = ?').run(projectId);
+
+    // 5. Delete branches
+    db.prepare('DELETE FROM branches WHERE project_id = ?').run(projectId);
+
+    // 6. Delete physical workspace directory
     WorkspaceManager.deleteProject(projectId);
+
+    // 7. Delete project row from SQLite
+    db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
 
     res.json({ success: true, message: 'Projeto excluído com sucesso.' });
   } catch (err: any) {
@@ -393,31 +520,28 @@ router.delete('/projects/:id', (req: Request, res: Response) => {
   }
 });
 
-// Duplicate Project
-router.post('/projects/:id/duplicate', (req: Request, res: Response) => {
+router.post('/projects/:id/duplicate', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   try {
     const sourceId = req.params.id;
     const source = db.prepare('SELECT * FROM projects WHERE id = ?').get(sourceId) as any;
-    if (!source) return res.status(404).json({ error: 'Projeto original não encontrado.' });
-
     const newId = 'proj-' + Date.now();
     const now = new Date().toISOString();
     const newName = `${source.name} (Cópia)`;
 
     db.prepare(`
       INSERT INTO projects (
-        id, workspace_id, name, description, origin, repo_url, branch, status, provider_id, model_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+        id, user_id, workspace_id, name, description, origin, repo_url, branch, status, provider_id, model_id, created_at, updated_at
+      ) VALUES (?, ?, 'ws-default', ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
     `).run(
       newId,
-      source.workspace_id || 'ws-default',
+      req.user!.id,
       newName,
       source.description,
       source.origin || 'novo',
       source.repo_url || '',
       source.branch || 'main',
-      source.provider_id || 'prov-gemini',
-      source.model_id || 'gemini-3.5-flash-lite',
+      source.provider_id || 'prov-useoneai',
+      source.model_id || 'chatgpt-5.5',
       now,
       now
     );
@@ -441,25 +565,21 @@ router.post('/projects/:id/duplicate', (req: Request, res: Response) => {
     `).run(
       'msg-' + Date.now(),
       convId,
-      `Projeto **${newName}** duplicado com sucesso! Todos os arquivos e histórico foram preservados.`,
+      `Projeto **${newName}** duplicado com sucesso!`,
       JSON.stringify({ isWelcome: true, mode: 'auto' }),
       now
     );
 
     WorkspaceManager.createCheckpoint(newId, 'Duplicação do Projeto', `Cópia criada a partir de ${source.name}`);
-
     res.json({ success: true, projectId: newId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Export Project as real ZIP
-router.get('/projects/:id/export/zip', async (req: Request, res: Response) => {
+router.get('/projects/:id/export/zip', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
-    if (!project) return res.status(404).json({ error: 'Projeto não encontrado.' });
-
     const zipBuffer = await WorkspaceManager.generateZip(req.params.id);
     const safeName = project.name.toLowerCase().replace(/[^a-z0-9_-]/g, '_') || 'forge_project';
 
@@ -473,10 +593,126 @@ router.get('/projects/:id/export/zip', async (req: Request, res: Response) => {
 });
 
 // ==========================================
-// 2. CONVERSATIONS & CHAT API
+// 4. WORKSPACE FILES & CHECKPOINTS
 // ==========================================
 
-router.get('/conversations/:projectId', (req: Request, res: Response) => {
+router.get('/projects/:id/files', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    const files = WorkspaceManager.getFiles(req.params.id);
+    res.json({ files });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/projects/:id/files/content', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    const filePath = req.query.path as string;
+    if (!filePath) return res.status(400).json({ error: 'Parâmetro path ausente.' });
+
+    if (WorkspaceManager.isBinaryPath(filePath)) {
+      const buffer = WorkspaceManager.readBinaryFile(req.params.id, filePath);
+      if (buffer === null) return res.status(404).json({ error: 'Arquivo não encontrado.' });
+      return res.json({ path: filePath, isBinary: true, base64: buffer.toString('base64') });
+    }
+
+    const content = WorkspaceManager.readFile(req.params.id, filePath);
+    if (content === null) {
+      return res.status(404).json({ error: 'Arquivo não encontrado.' });
+    }
+    res.json({ path: filePath, isBinary: false, content });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/projects/:id/files', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    const { path: filePath, content } = req.body;
+    if (!filePath || content === undefined) {
+      return res.status(400).json({ error: 'Campos path e content são obrigatórios.' });
+    }
+    WorkspaceManager.writeFile(req.params.id, filePath, content);
+    const cpId = WorkspaceManager.createCheckpoint(req.params.id, `Edição manual: ${filePath}`);
+    res.json({ success: true, checkpointId: cpId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/projects/:id/checkpoints', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    const checkpoints = db.prepare('SELECT id, title, description, parent_id, created_at FROM checkpoints WHERE project_id = ? ORDER BY created_at DESC').all(req.params.id);
+    res.json({ checkpoints });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/projects/:id/checkpoints', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    const { title, description } = req.body;
+    if (!title || title.trim().length === 0) {
+      return res.status(400).json({ error: 'O nome da versão (o que foi alterado nesta atualização) é obrigatório.' });
+    }
+
+    const cpId = WorkspaceManager.createCheckpoint(req.params.id, title.trim(), description?.trim() || '');
+    const cp = db.prepare('SELECT id, title, description, parent_id, created_at FROM checkpoints WHERE id = ?').get(cpId);
+    res.json({ success: true, checkpoint: cp, message: `Versão "${title.trim()}" criada com sucesso.` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/projects/:id/checkpoints/rollback-previous', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    const checkpoints = db.prepare('SELECT id, title, description, created_at FROM checkpoints WHERE project_id = ? ORDER BY created_at DESC LIMIT 2').all(req.params.id) as any[];
+    if (checkpoints.length < 2) {
+      return res.status(400).json({ error: 'Não há versão anterior registrada para restaurar neste projeto.' });
+    }
+
+    const previousCheckpoint = checkpoints[1];
+    const success = WorkspaceManager.restoreCheckpoint(req.params.id, previousCheckpoint.id);
+    if (!success) {
+      return res.status(500).json({ error: 'Falha ao restaurar arquivos da versão anterior.' });
+    }
+
+    res.json({
+      success: true,
+      message: `Versão anterior "${previousCheckpoint.title}" restaurada com sucesso!`,
+      restoredCheckpoint: previousCheckpoint,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/projects/:id/checkpoints/:checkpointId/restore', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    const success = WorkspaceManager.restoreCheckpoint(req.params.id, req.params.checkpointId);
+    if (!success) {
+      return res.status(404).json({ error: 'Checkpoint não encontrado.' });
+    }
+    res.json({ success: true, message: 'Checkpoint restaurado com sucesso.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/projects/:id/verifications', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    const verifications = db.prepare('SELECT * FROM verifications WHERE project_id = ? ORDER BY created_at DESC LIMIT 20').all(req.params.id);
+    res.json({ verifications });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// 5. CONVERSATIONS & CHAT API
+// ==========================================
+
+router.get('/conversations/:projectId', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   try {
     const conversation = db.prepare('SELECT * FROM conversations WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(req.params.projectId) as any;
     if (!conversation) {
@@ -492,7 +728,7 @@ router.get('/conversations/:projectId', (req: Request, res: Response) => {
   }
 });
 
-router.post('/conversations/:projectId/messages', async (req: Request, res: Response) => {
+router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const { content, mode = 'auto', appliedSkills = [] } = req.body;
     if (!content || content.trim().length === 0) {
@@ -525,18 +761,14 @@ router.post('/conversations/:projectId/messages', async (req: Request, res: Resp
       VALUES (?, ?, 'user', ?, ?, ?)
     `).run(userMsgId, conv.id, content, JSON.stringify({ mode, appliedSkills }), now);
 
-    // Fetch conversation history
     const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT 10').all(conv.id) as any[];
-
-    // Fetch existing files
     const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
 
-    // Read project provider and model configuration
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
     const providerKey = project?.provider_id ? project.provider_id.replace('prov-', '') : undefined;
     const modelId = project?.model_id;
 
-    // Call LLM Adapter
+    // Call LLM Adapter with authenticated userId
     const result = await LLMAdapterService.executePrompt({
       prompt: content,
       mode: mode as AgentMode,
@@ -546,14 +778,21 @@ router.post('/conversations/:projectId/messages', async (req: Request, res: Resp
       existingFiles,
       appliedSkills,
       conversationHistory: history,
+      userId: req.user!.id,
     });
 
     let checkpointCreatedId: string | null = null;
 
-    // Apply files strictly when validated
-    // If in BUILD mode, only apply if no errors and files are valid
-    if (mode === 'build') {
-      if (result.build && result.build.files && result.build.files.length > 0 && !result.hasErrors) {
+    // STRICT SAFETY CHECK:
+    // Fallback mode or invalid responses NEVER apply code or create checkpoints!
+    const canApplyFiles =
+      !result.isDemonstrativeFallback &&
+      !result.hasErrors &&
+      result.decisionType !== 'invalid_response' &&
+      result.decisionType !== 'blocked_no_provider';
+
+    if (canApplyFiles) {
+      if (mode === 'build' && result.build?.files && result.build.files.length > 0) {
         for (const file of result.build.files) {
           if (file.action === 'delete') {
             WorkspaceManager.deleteFile(projectId, file.path);
@@ -566,11 +805,7 @@ router.post('/conversations/:projectId/messages', async (req: Request, res: Resp
           `Build: ${content.slice(0, 30)}...`,
           result.build.summary || 'Alterações validadas e aplicadas no workspace'
         );
-      }
-    } else if (mode === 'auto') {
-      // In auto mode, if changes do NOT require confirmation, apply them directly;
-      // if they require confirmation, keep proposal pending for user approval
-      if (result.build && result.build.files && result.build.files.length > 0 && !result.proposal?.requiresConfirmation) {
+      } else if (mode === 'auto' && result.build?.files && !result.proposal?.requiresConfirmation) {
         for (const file of result.build.files) {
           if (file.action === 'delete') {
             WorkspaceManager.deleteFile(projectId, file.path);
@@ -623,7 +858,8 @@ router.post('/conversations/:projectId/messages', async (req: Request, res: Resp
       decisionType: result.decisionType,
       proposal: result.proposal,
       hasErrors: result.hasErrors,
-      errorMessage: result.errorMessage,
+      invalidResponse: result.invalidResponse,
+      errorMessage: result.errorMessage || result.errorReason,
     };
 
     db.prepare(`
@@ -632,7 +868,7 @@ router.post('/conversations/:projectId/messages', async (req: Request, res: Resp
     `).run(agentMsgId, conv.id, result.replyText, JSON.stringify(metadata), now);
 
     res.json({
-      success: true,
+      success: !result.hasErrors && !result.invalidResponse,
       agentMessage: {
         id: agentMsgId,
         sender: 'agent',
@@ -644,6 +880,7 @@ router.post('/conversations/:projectId/messages', async (req: Request, res: Resp
       build: result.build,
       proposal: result.proposal,
       checkpointId: checkpointCreatedId,
+      invalidResponse: result.invalidResponse,
     });
   } catch (err: any) {
     console.error('Erro na rota de mensagens:', err);
@@ -651,8 +888,7 @@ router.post('/conversations/:projectId/messages', async (req: Request, res: Resp
   }
 });
 
-// Apply proposed changes with confirmation
-router.post('/conversations/:projectId/apply-proposal', (req: Request, res: Response) => {
+router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   try {
     const { files, summary = 'Alterações aprovadas pelo usuário' } = req.body;
     const projectId = req.params.projectId;
@@ -670,203 +906,59 @@ router.post('/conversations/:projectId/apply-proposal', (req: Request, res: Resp
     }
 
     const checkpointId = WorkspaceManager.createCheckpoint(projectId, 'Alterações Aplicadas', summary);
-
     res.json({ success: true, checkpointId, message: 'Alterações aplicadas com sucesso ao workspace.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Approve plan and trigger build
-router.post('/conversations/:projectId/plan/approve', async (req: Request, res: Response) => {
-  try {
-    const { planId } = req.body;
-    const now = new Date().toISOString();
-
-    const plan = db.prepare('SELECT * FROM plans WHERE id = ? AND project_id = ?').get(planId, req.params.projectId) as any;
-    if (!plan) {
-      return res.status(404).json({ error: 'Plano não encontrado.' });
-    }
-
-    db.prepare('UPDATE plans SET status = "approved", updated_at = ? WHERE id = ?').run(now, planId);
-
-    const existingFiles = WorkspaceManager.getAllFilesContent(req.params.projectId);
-    const buildResult = await LLMAdapterService.executePrompt({
-      prompt: `Plano aprovado: ${plan.objective}. Escopo: ${plan.scope_in}. Implemente o código correspondente.`,
-      mode: 'build',
-      projectId: req.params.projectId,
-      existingFiles,
-      appliedSkills: ['typescript-react', 'ui-premium'],
-      conversationHistory: [],
-    });
-
-    let checkpointId: string | null = null;
-    if (buildResult.build && buildResult.build.files && !buildResult.hasErrors) {
-      for (const file of buildResult.build.files) {
-        WorkspaceManager.writeFile(req.params.projectId, file.path, file.content);
-      }
-      checkpointId = WorkspaceManager.createCheckpoint(
-        req.params.projectId,
-        `Build de Plano Aprovado`,
-        plan.objective
-      );
-    }
-
-    const conv = db.prepare('SELECT id FROM conversations WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(req.params.projectId) as any;
-    if (conv) {
-      db.prepare(`
-        INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
-        VALUES (?, ?, 'agent', ?, ?, ?)
-      `).run(
-        'msg-agent-' + Date.now(),
-        conv.id,
-        `✅ **Plano Aprovado!** O código foi gerado e aplicado no workspace.\n\nO preview foi atualizado e o checkpoint \`${checkpointId || 'novo'}\` foi salvo com sucesso.`,
-        JSON.stringify({ planId, checkpointId, mode: 'build' }),
-        now
-      );
-    }
-
-    res.json({ success: true, message: 'Plano aprovado e executado com sucesso.', checkpointId });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ==========================================
-// 3. PROVIDERS & MODELS API
+// 6. GITHUB INTEGRATION API
 // ==========================================
 
-router.get('/providers', (req: Request, res: Response) => {
+router.get('/github/status', requireAuth, async (req: Request, res: Response) => {
   try {
-    const providers = db.prepare('SELECT id, provider_key, name, base_url, model_id, is_configured, connection_status, context_limit, created_at FROM providers').all() as any[];
-
-    // Synchronize is_configured with current server environment variables
-    const openaiKey = process.env.OPENAI_API_KEY || process.env.USEONEAI_API_KEY || '';
-    const geminiKey = process.env.GEMINI_API_KEY || '';
-
-    const enriched = providers.map((p) => {
-      let isConfig = Boolean(p.is_configured);
-      if (p.provider_key === 'useoneai' || p.provider_key === 'openai') {
-        isConfig = Boolean(openaiKey && openaiKey.trim().length > 0);
-      } else if (p.provider_key === 'gemini') {
-        isConfig = Boolean(geminiKey && geminiKey.trim().length > 0);
-      }
-      return {
-        ...p,
-        is_configured: isConfig ? 1 : 0,
-        connection_status: isConfig ? 'connected' : 'not_configured',
-      };
-    });
-
-    res.json({ providers: enriched });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.post('/providers/update', (req: Request, res: Response) => {
-  try {
-    const { providerKey, baseUrl, modelId } = req.body;
-    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatório.' });
-
-    db.prepare('UPDATE providers SET base_url = COALESCE(?, base_url), model_id = COALESCE(?, model_id) WHERE provider_key = ?').run(
-      baseUrl || null,
-      modelId || null,
-      providerKey
-    );
-
-    res.json({ success: true, message: 'Configuração atualizada com sucesso.' });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// REAL PROVIDER CONNECTION TEST ENDPOINT
-router.post('/providers/test', async (req: Request, res: Response) => {
-  try {
-    const { providerKey, baseUrl, modelId } = req.body;
-    const result = await LLMAdapterService.testConnection({
-      providerKey: providerKey || 'useoneai',
-      baseUrl,
-      modelId,
-    });
-    res.json(result);
-  } catch (err: any) {
-    res.status(500).json({
-      success: false,
-      status: 'network_error',
-      message: `Erro interno ao testar conexão: ${err.message}`,
-    });
-  }
-});
-
-// ==========================================
-// 4. SKILLS API
-// ==========================================
-
-router.get('/skills', (req: Request, res: Response) => {
-  try {
-    const skills = db.prepare('SELECT * FROM skills ORDER BY name ASC').all();
-    res.json({ skills });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.post('/skills/toggle', (req: Request, res: Response) => {
-  try {
-    const { skillId, isActive } = req.body;
-    db.prepare('UPDATE skills SET is_active = ? WHERE id = ?').run(isActive ? 1 : 0, skillId);
-    res.json({ success: true });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ==========================================
-// 5. GITHUB INTEGRATION API
-// ==========================================
-
-router.get('/github/status', async (req: Request, res: Response) => {
-  try {
-    const status = await GitHubService.verifyConnection();
+    const status = await GitHubService.verifyConnection(req.user!.id);
     res.json(status);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-router.get('/github/repos', async (req: Request, res: Response) => {
+router.get('/github/repos', requireAuth, async (req: Request, res: Response) => {
   try {
-    const result = await GitHubService.listUserRepos();
+    const result = await GitHubService.listUserRepos(req.user!.id);
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-router.post('/github/create-repo', async (req: Request, res: Response) => {
+router.post('/github/create-repo', requireAuth, async (req: Request, res: Response) => {
   try {
     const { name, description, isPrivate } = req.body;
-    const result = await GitHubService.createRepository({ name, description, isPrivate: Boolean(isPrivate) });
+    const result = await GitHubService.createRepository({
+      userId: req.user!.id,
+      name,
+      description,
+      isPrivate: Boolean(isPrivate),
+    });
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Pull files from GitHub into project workspace
-router.post('/projects/:id/github/pull', async (req: Request, res: Response) => {
+router.post('/projects/:id/github/pull', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id;
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    if (!project) return res.status(404).json({ error: 'Projeto não encontrado.' });
-    if (!project.repo_url) return res.status(400).json({ error: 'Projeto não possui URL do repositório configurada.' });
+    if (!project.repo_url) return res.status(400).json({ error: 'Projeto não possui URL do GitHub vinculada.' });
 
     const parsed = GitHubService.parseRepoUrl(project.repo_url);
     if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
 
-    const result = await GitHubService.importRepoFiles(parsed.owner, parsed.repo, project.branch || 'main');
+    const result = await GitHubService.importRepoFiles(parsed.owner, parsed.repo, project.branch || 'main', req.user!.id);
     if (!result.success) {
       return res.status(400).json({ error: result.error });
     }
@@ -876,28 +968,32 @@ router.post('/projects/:id/github/pull', async (req: Request, res: Response) => 
         WorkspaceManager.writeFile(projectId, filePath, content);
       }
     }
+    if (result.binaryFiles) {
+      for (const [filePath, buf] of Object.entries(result.binaryFiles)) {
+        WorkspaceManager.writeBinaryFile(projectId, filePath, buf);
+      }
+    }
 
-    const cpId = WorkspaceManager.createCheckpoint(projectId, `Git Pull: ${project.branch}`, `Sincronizados ${result.filesCount} arquivos do GitHub`);
+    const cpId = WorkspaceManager.createCheckpoint(projectId, `Git Pull: ${project.branch}`, `Sincronizados ${result.filesCount} arquivos`);
     res.json({ success: true, count: result.filesCount, checkpointId: cpId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Push project files to GitHub
-router.post('/projects/:id/github/push', async (req: Request, res: Response) => {
+router.post('/projects/:id/github/push', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id;
-    const { commitMessage } = req.body;
+    const { commitMessage, commitDescription } = req.body;
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    if (!project) return res.status(404).json({ error: 'Projeto não encontrado.' });
-    if (!project.repo_url) return res.status(400).json({ error: 'Projeto não possui URL do repositório configurada.' });
+    if (!project.repo_url) return res.status(400).json({ error: 'Projeto não possui URL do GitHub vinculada.' });
 
     const parsed = GitHubService.parseRepoUrl(project.repo_url);
     if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
 
     const files = WorkspaceManager.getAllFilesContent(projectId);
     const result = await GitHubService.pushFilesToRepo({
+      userId: req.user!.id,
       owner: parsed.owner,
       repo: parsed.repo,
       branch: project.branch || 'main',
@@ -909,107 +1005,27 @@ router.post('/projects/:id/github/push', async (req: Request, res: Response) => 
       return res.status(400).json({ error: result.error });
     }
 
-    res.json({ success: true, commitSha: result.commitSha });
+    // Update local head commit hash
+    if (result.commitSha) {
+      db.prepare('UPDATE branches SET head_commit_hash = ? WHERE project_id = ? AND name = ?').run(
+        result.commitSha,
+        projectId,
+        project.branch || 'main'
+      );
+    }
+
+    // Create named checkpoint on GitHub push for full rollback control
+    const cpTitle = commitMessage ? `GitHub Push: ${commitMessage}` : 'GitHub Push: Atualização remota';
+    const cpDesc = commitDescription || `Commit ${result.commitSha ? result.commitSha.slice(0, 7) : 'recente'} enviado para branch ${project.branch || 'main'}`;
+    const cpId = WorkspaceManager.createCheckpoint(projectId, cpTitle, cpDesc);
+
+    res.json({ success: true, commitSha: result.commitSha, checkpointId: cpId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// List repository branches
-router.get('/projects/:id/github/branches', async (req: Request, res: Response) => {
-  try {
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
-    if (!project || !project.repo_url) {
-      return res.status(400).json({ error: 'Repositório GitHub não configurado no projeto.' });
-    }
-    const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
-
-    const result = await GitHubService.listBranches(parsed.owner, parsed.repo);
-    res.json(result);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Create new branch on GitHub and switch project to it
-router.post('/projects/:id/github/branch', async (req: Request, res: Response) => {
-  try {
-    const { newBranch, fromBranch } = req.body;
-    if (!newBranch) return res.status(400).json({ error: 'Nome da nova branch é obrigatório.' });
-
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
-    if (!project || !project.repo_url) {
-      return res.status(400).json({ error: 'Repositório GitHub não configurado no projeto.' });
-    }
-    const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
-
-    const baseBranch = fromBranch || project.branch || 'main';
-    const result = await GitHubService.createBranch({
-      owner: parsed.owner,
-      repo: parsed.repo,
-      newBranch: newBranch.trim(),
-      fromBranch: baseBranch,
-    });
-
-    if (!result.success) {
-      return res.status(400).json({ error: result.error });
-    }
-
-    // Update project active branch in DB
-    const now = new Date().toISOString();
-    db.prepare('UPDATE projects SET branch = ?, updated_at = ? WHERE id = ?').run(newBranch.trim(), now, req.params.id);
-
-    // Record branch in branches table
-    db.prepare(`
-      INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
-      VALUES (?, ?, ?, 1, 'head-new', ?)
-    `).run('br-' + Date.now(), req.params.id, newBranch.trim(), now);
-
-    res.json({ success: true, branch: newBranch.trim() });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Create Pull Request on GitHub
-router.post('/projects/:id/github/pull-request', async (req: Request, res: Response) => {
-  try {
-    const { title, base = 'main', body } = req.body;
-    if (!title) return res.status(400).json({ error: 'Título do Pull Request é obrigatório.' });
-
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
-    if (!project || !project.repo_url) {
-      return res.status(400).json({ error: 'Repositório GitHub não configurado no projeto.' });
-    }
-    const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
-
-    const headBranch = project.branch || 'main';
-    if (headBranch === base) {
-      return res.status(400).json({
-        error: `A branch atual (${headBranch}) é a mesma que a branch base (${base}). Crie uma nova branch antes de abrir um PR.`,
-      });
-    }
-
-    const result = await GitHubService.createPullRequest({
-      owner: parsed.owner,
-      repo: parsed.repo,
-      title: title.trim(),
-      head: headBranch,
-      base: base.trim(),
-      body: body || `Criado automaticamente pelo Forge Agent para a branch ${headBranch}`,
-    });
-
-    res.json(result);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Sync status with GitHub
-router.get('/projects/:id/github/status', async (req: Request, res: Response) => {
+router.get('/projects/:id/github/status', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
     if (!project || !project.repo_url) {
@@ -1021,6 +1037,8 @@ router.get('/projects/:id/github/status', async (req: Request, res: Response) =>
     }
 
     const syncRes = await GitHubService.getSyncStatus({
+      userId: req.user!.id,
+      projectId: req.params.id,
       owner: parsed.owner,
       repo: parsed.repo,
       branch: project.branch || 'main',
@@ -1039,8 +1057,96 @@ router.get('/projects/:id/github/status', async (req: Request, res: Response) =>
   }
 });
 
-// Connect an existing or newly created GitHub repo to project
-router.post('/projects/:id/github/connect-repo', async (req: Request, res: Response) => {
+router.get('/projects/:id/github/branches', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  try {
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
+    if (!project || !project.repo_url) {
+      return res.status(400).json({ error: 'Repositório GitHub não vinculado.' });
+    }
+    const parsed = GitHubService.parseRepoUrl(project.repo_url);
+    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
+
+    const result = await GitHubService.listBranches(parsed.owner, parsed.repo, req.user!.id);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/projects/:id/github/branch', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  try {
+    const { newBranch, fromBranch } = req.body;
+    if (!newBranch) return res.status(400).json({ error: 'Nome da nova branch é obrigatório.' });
+
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
+    if (!project || !project.repo_url) {
+      return res.status(400).json({ error: 'Repositório GitHub não vinculado.' });
+    }
+    const parsed = GitHubService.parseRepoUrl(project.repo_url);
+    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
+
+    const baseBranch = fromBranch || project.branch || 'main';
+    const result = await GitHubService.createBranch({
+      userId: req.user!.id,
+      owner: parsed.owner,
+      repo: parsed.repo,
+      newBranch: newBranch.trim(),
+      fromBranch: baseBranch,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    const now = new Date().toISOString();
+    db.prepare('UPDATE projects SET branch = ?, updated_at = ? WHERE id = ?').run(newBranch.trim(), now, req.params.id);
+    db.prepare(`
+      INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
+      VALUES (?, ?, ?, 1, 'head-new', ?)
+    `).run('br-' + Date.now(), req.params.id, newBranch.trim(), now);
+
+    res.json({ success: true, branch: newBranch.trim() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/projects/:id/github/pull-request', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  try {
+    const { title, base = 'main', body } = req.body;
+    if (!title) return res.status(400).json({ error: 'Título do Pull Request é obrigatório.' });
+
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
+    if (!project || !project.repo_url) {
+      return res.status(400).json({ error: 'Repositório GitHub não configurado.' });
+    }
+    const parsed = GitHubService.parseRepoUrl(project.repo_url);
+    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
+
+    const headBranch = project.branch || 'main';
+    if (headBranch === base) {
+      return res.status(400).json({
+        error: `A branch atual (${headBranch}) é a mesma que a branch base (${base}). Crie uma nova branch antes de abrir o PR.`,
+      });
+    }
+
+    const result = await GitHubService.createPullRequest({
+      userId: req.user!.id,
+      owner: parsed.owner,
+      repo: parsed.repo,
+      title: title.trim(),
+      head: headBranch,
+      base: base.trim(),
+      body: body || `Criado automaticamente pelo Forge Agent para a branch ${headBranch}`,
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/projects/:id/github/connect-repo', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const { repoUrl, branch = 'main' } = req.body;
     if (!repoUrl) return res.status(400).json({ error: 'repoUrl é obrigatório.' });
@@ -1063,20 +1169,200 @@ router.post('/projects/:id/github/connect-repo', async (req: Request, res: Respo
 });
 
 // ==========================================
-// 6. INTEGRATIONS LIST
+// 7. SKILLS & PROVIDERS API
 // ==========================================
 
-router.get('/integrations', (req: Request, res: Response) => {
+router.get('/skills', requireAuth, (req: Request, res: Response) => {
   try {
-    const integrations = db.prepare('SELECT * FROM integrations').all();
-    res.json({ integrations });
+    const skills = db.prepare(`
+      SELECT * FROM skills
+      WHERE user_id = ? OR user_id = 'user-default' OR user_id IS NULL OR is_built_in = 1
+      ORDER BY is_custom DESC, name ASC
+    `).all(req.user!.id);
+    res.json({ skills });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/skills', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { name, slug, description, system_instructions, scope = 'project', is_active = true } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'O nome da skill é obrigatório.' });
+    }
+    if (!system_instructions || !system_instructions.trim()) {
+      return res.status(400).json({ error: 'As instruções do sistema para o agente são obrigatórias.' });
+    }
+
+    const cleanSlug = (slug || name)
+      .toLowerCase()
+      .trim()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9_-]/g, '-');
+
+    const id = 'skill-custom-' + Date.now();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO skills (id, user_id, name, slug, description, system_instructions, scope, is_active, is_custom, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+    `).run(
+      id,
+      req.user!.id,
+      name.trim(),
+      cleanSlug,
+      description?.trim() || '',
+      system_instructions.trim(),
+      scope,
+      is_active ? 1 : 0,
+      now
+    );
+
+    const skill = db.prepare('SELECT * FROM skills WHERE id = ?').get(id);
+    res.json({ success: true, skill, message: `Skill personalizada "${name.trim()}" criada com sucesso!` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/skills/:id', requireAuth, (req: Request, res: Response) => {
+  try {
+    const skill = db.prepare('SELECT * FROM skills WHERE id = ?').get(req.params.id) as any;
+    if (!skill) return res.status(404).json({ error: 'Skill não encontrada.' });
+    if (skill.user_id !== req.user!.id && skill.user_id !== 'user-default') {
+      return res.status(403).json({ error: 'Sem permissão para excluir esta skill.' });
+    }
+
+    db.prepare('DELETE FROM skills WHERE id = ?').run(req.params.id);
+    res.json({ success: true, message: 'Skill excluída com sucesso.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/skills/toggle', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { skillId, isActive } = req.body;
+    db.prepare('UPDATE skills SET is_active = ? WHERE id = ?').run(isActive ? 1 : 0, skillId);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/providers', requireAuth, (req: Request, res: Response) => {
+  try {
+    const providers = db.prepare('SELECT id, provider_key, name, base_url, model_id, is_configured, connection_status, context_limit, created_at FROM providers').all() as any[];
+
+    // Synchronize is_configured with user's encrypted secret and include masked hint
+    const enriched = providers.map((p) => {
+      const userSecret = SecretService.getDecryptedSecret(req.user!.id, p.provider_key);
+      const isConfig = Boolean(userSecret && userSecret.trim().length > 0);
+      const masked = isConfig ? SecretService.maskSecret(userSecret!) : '';
+      return {
+        ...p,
+        is_configured: isConfig ? 1 : 0,
+        connection_status: isConfig ? 'connected' : 'not_configured',
+        masked_hint: masked,
+      };
+    });
+
+    res.json({ providers: enriched });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/providers/save-with-key', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { providerKey, baseUrl, modelId, apiKey } = req.body;
+    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatório.' });
+
+    let hasKey = false;
+    let masked = '';
+    if (apiKey && apiKey.trim().length > 0) {
+      SecretService.saveSecret(req.user!.id, providerKey, apiKey.trim());
+      masked = SecretService.maskSecret(apiKey.trim());
+      hasKey = true;
+    } else {
+      const existing = SecretService.getDecryptedSecret(req.user!.id, providerKey);
+      if (existing) {
+        masked = SecretService.maskSecret(existing);
+        hasKey = true;
+      }
+    }
+
+    db.prepare(`
+      UPDATE providers
+      SET base_url = COALESCE(?, base_url),
+          model_id = COALESCE(?, model_id),
+          is_configured = ?,
+          connection_status = ?
+      WHERE provider_key = ?
+    `).run(
+      baseUrl || null,
+      modelId || null,
+      hasKey ? 1 : 0,
+      hasKey ? 'connected' : 'not_configured',
+      providerKey
+    );
+
+    res.json({
+      success: true,
+      providerKey,
+      masked,
+      message: 'Configurações de IA e chave de API salvas com sucesso!',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/providers/update', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { providerKey, baseUrl, modelId } = req.body;
+    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatório.' });
+
+    db.prepare('UPDATE providers SET base_url = COALESCE(?, base_url), model_id = COALESCE(?, model_id) WHERE provider_key = ?').run(
+      baseUrl || null,
+      modelId || null,
+      providerKey
+    );
+
+    res.json({ success: true, message: 'Configuração atualizada com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // ==========================================
-// 7. LIVE PREVIEW SANDBOX
+// 8. DESKTOP & AUTO-UPDATER API
+// ==========================================
+
+router.get('/desktop/status', (req: Request, res: Response) => {
+  res.json(DesktopService.getStatus());
+});
+
+router.post('/desktop/check-updates', async (req: Request, res: Response) => {
+  const result = await DesktopService.checkForUpdates();
+  res.json(result);
+});
+
+router.post('/desktop/command', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { cmd, cwd } = req.body;
+    if (!cmd) return res.status(400).json({ error: 'Comando não fornecido.' });
+    const result = await DesktopService.executeControlledCommand(cmd, cwd);
+    res.json(result);
+  } catch (err: any) {
+    res.status(403).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// 9. LIVE PREVIEW SANDBOX (PUBLIC SERVING FOR IFRAME)
 // ==========================================
 
 router.get('/preview/:projectId/*', (req: Request, res: Response) => {

@@ -1,5 +1,32 @@
 export type AgentMode = 'auto' | 'plan' | 'build' | 'review' | 'publish';
 
+export interface AuthUser {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  created_at: string;
+}
+
+export interface SecretSummary {
+  id: string;
+  service_key: string;
+  masked_hint: string;
+  status: string;
+  is_default: boolean;
+  is_active: boolean;
+  last_tested_at?: string;
+  last_error?: string;
+  updated_at: string;
+}
+
+export interface ConnectionTestResult {
+  success: boolean;
+  code: 'approved' | 'invalid_key' | 'invalid_model' | 'invalid_url' | 'network_error' | 'timeout' | 'incompatible_response';
+  message: string;
+  details?: any;
+}
+
 export interface FileChangeProposal {
   path: string;
   action: 'create' | 'modify' | 'delete';
@@ -83,12 +110,14 @@ export interface Plan {
 
 export interface Skill {
   id: string;
+  user_id?: string;
   name: string;
   slug: string;
   description: string;
   system_instructions: string;
   scope: 'message' | 'project' | 'workspace';
   is_active: number | boolean;
+  is_custom?: number | boolean;
   created_at: string;
 }
 
@@ -101,6 +130,7 @@ export interface Provider {
   is_configured: number | boolean;
   connection_status: 'connected' | 'not_configured' | 'error';
   context_limit: number;
+  masked_hint?: string;
   created_at: string;
 }
 

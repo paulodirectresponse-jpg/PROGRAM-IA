@@ -1,3 +1,6 @@
+import { SecretService } from './secretService.js';
+import { db } from '../db/index.js';
+
 export interface GitHubConnectionStatus {
   isConnected: boolean;
   status: 'connected' | 'pending_credentials' | 'invalid_token' | 'rate_limited';
@@ -13,6 +16,7 @@ export interface GitHubRepoSummary {
   name: string;
   fullName: string;
   private: boolean;
+  visibility: 'public' | 'private';
   htmlUrl: string;
   defaultBranch: string;
   description: string | null;
@@ -25,11 +29,18 @@ export interface GitHubImportResult {
   branch?: string;
   filesCount?: number;
   files?: Record<string, string>;
+  binaryFiles?: Record<string, Buffer>;
   error?: string;
 }
 
 export class GitHubService {
-  static getToken(): string | null {
+  static getToken(userId?: string): string | null {
+    if (userId) {
+      const userSecret = SecretService.getDecryptedSecret(userId, 'github');
+      if (userSecret && userSecret.trim().length > 0) {
+        return userSecret.trim();
+      }
+    }
     const token = process.env.GITHUB_TOKEN;
     if (!token || token.trim().length === 0 || token.includes('MY_GITHUB_TOKEN')) {
       return null;
@@ -49,15 +60,15 @@ export class GitHubService {
     return null;
   }
 
-  static async verifyConnection(): Promise<GitHubConnectionStatus> {
-    const token = this.getToken();
+  static async verifyConnection(userId?: string): Promise<GitHubConnectionStatus> {
+    const token = this.getToken(userId);
 
     if (!token) {
       return {
         isConnected: false,
         status: 'pending_credentials',
         missingConfig: ['GITHUB_TOKEN'],
-        message: 'GITHUB_TOKEN não configurado nas variáveis de ambiente do servidor. Adicione seu token de acesso pessoal para habilitar sincronização real com o GitHub.',
+        message: 'Token do GitHub não configurado. Adicione seu token de acesso nas Integrações para habilitar sincronização.',
       };
     }
 
@@ -75,7 +86,7 @@ export class GitHubService {
           isConnected: false,
           status: 'invalid_token',
           missingConfig: [],
-          message: 'O token fornecido em GITHUB_TOKEN é inválido ou expirou.',
+          message: 'O token do GitHub é inválido ou expirou.',
         };
       }
 
@@ -88,9 +99,9 @@ export class GitHubService {
         };
       }
 
-      const user = await res.json();
+      const user = await res.json() as any;
       const scopesHeader = res.headers.get('x-oauth-scopes') || '';
-      const scopes = scopesHeader ? scopesHeader.split(',').map((s) => s.trim()) : ['repo'];
+      const scopes = scopesHeader ? scopesHeader.split(',').map((s: string) => s.trim()) : ['repo'];
 
       return {
         isConnected: true,
@@ -99,7 +110,7 @@ export class GitHubService {
         avatarUrl: user.avatar_url,
         scopes,
         missingConfig: [],
-        message: `Conectado autenticado com sucesso como @${user.login}`,
+        message: `Conectado com sucesso como @${user.login}`,
       };
     } catch (err: any) {
       return {
@@ -111,17 +122,17 @@ export class GitHubService {
     }
   }
 
-  static async listUserRepos(): Promise<{ success: boolean; repos?: GitHubRepoSummary[]; error?: string }> {
-    const token = this.getToken();
+  static async listUserRepos(userId?: string): Promise<{ success: boolean; repos?: GitHubRepoSummary[]; error?: string }> {
+    const token = this.getToken(userId);
     if (!token) {
       return {
         success: false,
-        error: 'GITHUB_TOKEN não configurado no servidor.',
+        error: 'Token do GitHub não configurado para o usuário.',
       };
     }
 
     try {
-      const res = await fetch('https://api.github.com/user/repos?sort=updated&per_page=30', {
+      const res = await fetch('https://api.github.com/user/repos?sort=updated&per_page=50&affiliation=owner,collaborator', {
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: 'application/vnd.github+json',
@@ -137,16 +148,17 @@ export class GitHubService {
         };
       }
 
-      const repos = await res.json();
+      const repos = await res.json() as any[];
       return {
         success: true,
         repos: repos.map((r: any) => ({
           id: r.id,
           name: r.name,
           fullName: r.full_name,
-          private: r.private,
+          private: Boolean(r.private),
+          visibility: r.private ? 'private' : 'public',
           htmlUrl: r.html_url,
-          defaultBranch: r.default_branch,
+          defaultBranch: r.default_branch || 'main',
           description: r.description,
         })),
       };
@@ -159,15 +171,16 @@ export class GitHubService {
   }
 
   static async createRepository(options: {
+    userId?: string;
     name: string;
     description: string;
     isPrivate: boolean;
   }): Promise<{ success: boolean; repo?: GitHubRepoSummary; error?: string }> {
-    const token = this.getToken();
+    const token = this.getToken(options.userId);
     if (!token) {
       return {
         success: false,
-        error: 'GITHUB_TOKEN não configurado no servidor. Configure a variável no painel ou em .env antes de criar o repositório.',
+        error: 'Token do GitHub não configurado. Cadastre sua credencial do GitHub antes de criar repositórios.',
       };
     }
 
@@ -190,19 +203,20 @@ export class GitHubService {
 
       if (!res.ok) {
         const errText = await res.text();
-        return { success: false, error: `Falha ao criar repositório no GitHub: ${errText}` };
+        return { success: false, error: `Falha ao criar repositório no GitHub: ${errText.slice(0, 150)}` };
       }
 
-      const r = await res.json();
+      const r = await res.json() as any;
       return {
         success: true,
         repo: {
           id: r.id,
           name: r.name,
           fullName: r.full_name,
-          private: r.private,
+          private: Boolean(r.private),
+          visibility: r.private ? 'private' : 'public',
           htmlUrl: r.html_url,
-          defaultBranch: r.default_branch,
+          defaultBranch: r.default_branch || 'main',
           description: r.description,
         },
       };
@@ -214,8 +228,13 @@ export class GitHubService {
   /**
    * Import repository files from GitHub REST API
    */
-  static async importRepoFiles(owner: string, repo: string, branch: string = 'main'): Promise<GitHubImportResult> {
-    const token = this.getToken();
+  static async importRepoFiles(
+    owner: string,
+    repo: string,
+    branch: string = 'main',
+    userId?: string
+  ): Promise<GitHubImportResult> {
+    const token = this.getToken(userId);
     const headers: Record<string, string> = {
       Accept: 'application/vnd.github+json',
       'User-Agent': 'ForgeAgent-Workspace/1.0',
@@ -225,7 +244,6 @@ export class GitHubService {
     }
 
     try {
-      // 1. Get repo details to get default branch if needed
       const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
       if (!repoRes.ok) {
         if (repoRes.status === 404) {
@@ -233,10 +251,9 @@ export class GitHubService {
         }
         return { success: false, error: `Erro ao acessar repositório no GitHub (HTTP ${repoRes.status})` };
       }
-      const repoData = await repoRes.json();
+      const repoData = await repoRes.json() as any;
       const targetBranch = branch || repoData.default_branch || 'main';
 
-      // 2. Fetch Git tree recursively
       const treeRes = await fetch(
         `https://api.github.com/repos/${owner}/${repo}/git/trees/${targetBranch}?recursive=1`,
         { headers }
@@ -245,36 +262,43 @@ export class GitHubService {
       if (!treeRes.ok) {
         return {
           success: false,
-          error: `Falha ao listar árvore de arquivos da branch "${targetBranch}" no GitHub (HTTP ${treeRes.status}).`,
+          error: `Falha ao listar arquivos da branch "${targetBranch}" no GitHub (HTTP ${treeRes.status}).`,
         };
       }
 
-      const treeData = await treeRes.json();
+      const treeData = await treeRes.json() as any;
       const filesMap: Record<string, string> = {};
+      const binaryFiles: Record<string, Buffer> = {};
 
       if (Array.isArray(treeData.tree)) {
-        // Filter text/web files, maximum 30 files for responsiveness
         const textExtensions = ['.html', '.css', '.js', '.jsx', '.ts', '.tsx', '.json', '.md', '.svg', '.txt'];
-        const candidateFiles = treeData.tree.filter(
-          (item: any) =>
-            item.type === 'blob' &&
-            item.size < 200000 &&
-            textExtensions.some((ext) => item.path.toLowerCase().endsWith(ext))
-        );
+        const binaryExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.woff', '.woff2', '.ttf'];
 
-        const filesToFetch = candidateFiles.slice(0, 30);
+        for (const item of treeData.tree) {
+          if (item.type !== 'blob') continue;
+          if (item.size > 2 * 1024 * 1024) continue; // Skip huge files > 2MB
 
-        for (const item of filesToFetch) {
+          const isText = textExtensions.some(ext => item.path.toLowerCase().endsWith(ext));
+          const isBinary = binaryExtensions.some(ext => item.path.toLowerCase().endsWith(ext));
+
+          if (!isText && !isBinary) continue;
+
           try {
-            const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${targetBranch}/${item.path}`;
-            const rawRes = await fetch(rawUrl, {
-              headers: token ? { Authorization: `Bearer ${token}` } : {},
-            });
-            if (rawRes.ok) {
-              filesMap[item.path] = await rawRes.text();
+            // Fetch blob data via GitHub Git API
+            const blobRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs/${item.sha}`, { headers });
+            if (blobRes.ok) {
+              const blobData = await blobRes.json() as any;
+              if (blobData.encoding === 'base64') {
+                const buf = Buffer.from(blobData.content, 'base64');
+                if (isBinary) {
+                  binaryFiles[item.path] = buf;
+                } else {
+                  filesMap[item.path] = buf.toString('utf8');
+                }
+              }
             }
           } catch (e) {
-            console.warn(`Falha ao carregar arquivo ${item.path} do GitHub:`, e);
+            console.warn(`Falha ao carregar blob ${item.path}:`, e);
           }
         }
       }
@@ -284,8 +308,9 @@ export class GitHubService {
         owner,
         repo,
         branch: targetBranch,
-        filesCount: Object.keys(filesMap).length,
+        filesCount: Object.keys(filesMap).length + Object.keys(binaryFiles).length,
         files: filesMap,
+        binaryFiles,
       };
     } catch (err: any) {
       return { success: false, error: `Falha ao importar do GitHub: ${err.message}` };
@@ -296,17 +321,18 @@ export class GitHubService {
    * Commit & Push workspace files to GitHub
    */
   static async pushFilesToRepo(options: {
+    userId?: string;
     owner: string;
     repo: string;
     branch: string;
     commitMessage: string;
     files: Record<string, string>;
   }): Promise<{ success: boolean; commitSha?: string; error?: string }> {
-    const token = this.getToken();
+    const token = this.getToken(options.userId);
     if (!token) {
       return {
         success: false,
-        error: 'GITHUB_TOKEN não configurado no servidor. Configure a variável no painel para realizar push.',
+        error: 'Token do GitHub não configurado.',
       };
     }
 
@@ -319,30 +345,47 @@ export class GitHubService {
     };
 
     try {
-      // 1. Get branch reference
+      // 1. Get current branch reference
       const refRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${branch}`, { headers });
       if (!refRes.ok) {
-        return { success: false, error: `Branch "${branch}" não encontrada no repositório ${owner}/${repo}` };
+        return { success: false, error: `Branch ${branch} não encontrada no repositório remoto.` };
       }
-      const refData = await refRes.json();
+      const refData = await refRes.json() as any;
       const latestCommitSha = refData.object.sha;
 
-      // 2. Get latest commit
-      const commitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits/${latestCommitSha}`, {
-        headers,
-      });
-      const commitData = await commitRes.json();
+      // 2. Get the base tree
+      const commitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits/${latestCommitSha}`, { headers });
+      const commitData = await commitRes.json() as any;
       const baseTreeSha = commitData.tree.sha;
 
-      // 3. Create tree items
-      const treeItems = Object.entries(files).map(([path, content]) => ({
-        path,
-        mode: '100644',
-        type: 'blob',
-        content,
-      }));
+      // 3. Create blobs & tree items
+      const treeItems: any[] = [];
+      for (const [filePath, content] of Object.entries(files)) {
+        const blobRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            content,
+            encoding: 'utf-8',
+          }),
+        });
 
-      const newTreeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees`, {
+        if (!blobRes.ok) {
+          const errText = await blobRes.text();
+          return { success: false, error: `Erro ao criar blob para ${filePath}: ${errText.slice(0, 100)}` };
+        }
+
+        const blobData = await blobRes.json() as any;
+        treeItems.push({
+          path: filePath.replace(/\\/g, '/'),
+          mode: '100644',
+          type: 'blob',
+          sha: blobData.sha,
+        });
+      }
+
+      // 4. Create tree
+      const treeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -351,19 +394,19 @@ export class GitHubService {
         }),
       });
 
-      if (!newTreeRes.ok) {
-        const errText = await newTreeRes.text();
-        return { success: false, error: `Erro ao criar Git Tree: ${errText.slice(0, 150)}` };
+      if (!treeRes.ok) {
+        const errText = await treeRes.text();
+        return { success: false, error: `Erro ao criar árvore Git: ${errText.slice(0, 100)}` };
       }
 
-      const newTreeData = await newTreeRes.json();
+      const newTreeData = await treeRes.json() as any;
 
-      // 4. Create commit
+      // 5. Create commit
       const newCommitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          message: commitMessage || 'Alterações aplicadas via Forge Agent',
+          message: commitMessage,
           tree: newTreeData.sha,
           parents: [latestCommitSha],
         }),
@@ -371,12 +414,12 @@ export class GitHubService {
 
       if (!newCommitRes.ok) {
         const errText = await newCommitRes.text();
-        return { success: false, error: `Erro ao criar Git Commit: ${errText.slice(0, 150)}` };
+        return { success: false, error: `Erro ao gerar commit: ${errText.slice(0, 100)}` };
       }
 
-      const newCommitData = await newCommitRes.json();
+      const newCommitData = await newCommitRes.json() as any;
 
-      // 5. Update branch reference
+      // 6. Update branch ref
       const updateRefRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
         method: 'PATCH',
         headers,
@@ -388,7 +431,7 @@ export class GitHubService {
 
       if (!updateRefRes.ok) {
         const errText = await updateRefRes.text();
-        return { success: false, error: `Erro ao atualizar branch ${branch}: ${errText.slice(0, 150)}` };
+        return { success: false, error: `Erro ao atualizar branch ${branch}: ${errText.slice(0, 100)}` };
       }
 
       return {
@@ -400,10 +443,8 @@ export class GitHubService {
     }
   }
 
-  /**
-   * Create Pull Request on GitHub
-   */
   static async createPullRequest(options: {
+    userId?: string;
     owner: string;
     repo: string;
     title: string;
@@ -411,12 +452,9 @@ export class GitHubService {
     base: string;
     body?: string;
   }): Promise<{ success: boolean; prUrl?: string; prNumber?: number; error?: string }> {
-    const token = this.getToken();
+    const token = this.getToken(options.userId);
     if (!token) {
-      return {
-        success: false,
-        error: 'GITHUB_TOKEN não configurado no servidor.',
-      };
+      return { success: false, error: 'Token do GitHub não configurado.' };
     }
 
     try {
@@ -441,7 +479,7 @@ export class GitHubService {
         return { success: false, error: `Falha ao criar Pull Request: ${errText.slice(0, 150)}` };
       }
 
-      const pr = await res.json();
+      const pr = await res.json() as any;
       return {
         success: true,
         prUrl: pr.html_url,
@@ -452,45 +490,35 @@ export class GitHubService {
     }
   }
 
-  /**
-   * List branches in a repository
-   */
-  static async listBranches(owner: string, repo: string): Promise<{ success: boolean; branches?: string[]; defaultBranch?: string; error?: string }> {
-    const token = this.getToken();
+  static async listBranches(owner: string, repo: string, userId?: string): Promise<{ success: boolean; branches?: string[]; defaultBranch?: string; error?: string }> {
+    const token = this.getToken(userId);
     const headers: Record<string, string> = {
       Accept: 'application/vnd.github+json',
       'User-Agent': 'ForgeAgent-Workspace/1.0',
     };
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
+    if (token) headers['Authorization'] = `Bearer ${token}`;
 
     try {
       const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/branches?per_page=100`, { headers });
       if (!res.ok) {
         return { success: false, error: `Falha ao listar branches (HTTP ${res.status})` };
       }
-      const data = await res.json();
-      const branches = data.map((b: any) => b.name);
-      return { success: true, branches };
+      const data = await res.json() as any[];
+      return { success: true, branches: data.map((b: any) => b.name) };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
   }
 
-  /**
-   * Create a new branch in a repository
-   */
   static async createBranch(options: {
+    userId?: string;
     owner: string;
     repo: string;
     newBranch: string;
     fromBranch?: string;
   }): Promise<{ success: boolean; branch?: string; error?: string }> {
-    const token = this.getToken();
-    if (!token) {
-      return { success: false, error: 'GITHUB_TOKEN não configurado no servidor.' };
-    }
+    const token = this.getToken(options.userId);
+    if (!token) return { success: false, error: 'Token do GitHub não configurado.' };
 
     const { owner, repo, newBranch, fromBranch = 'main' } = options;
     const headers = {
@@ -501,15 +529,13 @@ export class GitHubService {
     };
 
     try {
-      // 1. Get SHA of base branch
       const refRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${fromBranch}`, { headers });
       if (!refRes.ok) {
         return { success: false, error: `Branch base "${fromBranch}" não encontrada no repositório.` };
       }
-      const refData = await refRes.json();
+      const refData = await refRes.json() as any;
       const baseSha = refData.object.sha;
 
-      // 2. Create ref for new branch
       const createRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs`, {
         method: 'POST',
         headers,
@@ -531,26 +557,28 @@ export class GitHubService {
   }
 
   /**
-   * Compare local status vs remote branch
+   * Compare local status vs remote branch with TRUTHFUL comparison
+   * Never returns 'clean' without verified matching commit SHAs!
    */
   static async getSyncStatus(options: {
+    userId?: string;
+    projectId?: string;
     owner: string;
     repo: string;
     branch: string;
+    localHeadSha?: string;
   }): Promise<{
     success: boolean;
     syncStatus?: 'clean' | 'ahead' | 'behind' | 'diverged' | 'unknown';
     latestRemoteCommit?: { sha: string; message: string; date: string; author: string };
     error?: string;
   }> {
-    const token = this.getToken();
+    const token = this.getToken(options.userId);
     const headers: Record<string, string> = {
       Accept: 'application/vnd.github+json',
       'User-Agent': 'ForgeAgent-Workspace/1.0',
     };
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
+    if (token) headers['Authorization'] = `Bearer ${token}`;
 
     try {
       const res = await fetch(`https://api.github.com/repos/${options.owner}/${options.repo}/commits/${options.branch}`, { headers });
@@ -558,10 +586,45 @@ export class GitHubService {
         return { success: false, error: `Não foi possível verificar status da branch remota (${res.status}).` };
       }
 
-      const commit = await res.json();
+      const commit = await res.json() as any;
+      const remoteSha = commit.sha;
+
+      // Determine local commit SHA from database branch record if not explicitly provided
+      let localSha = options.localHeadSha;
+      if (!localSha && options.projectId) {
+        const branchRow = db.prepare('SELECT head_commit_hash FROM branches WHERE project_id = ? AND name = ?').get(options.projectId, options.branch) as any;
+        localSha = branchRow?.head_commit_hash;
+      }
+
+      let status: 'clean' | 'ahead' | 'behind' | 'diverged' | 'unknown' = 'unknown';
+
+      if (!localSha) {
+        status = 'behind'; // Local hasn't synced yet
+      } else if (localSha === remoteSha) {
+        status = 'clean'; // Truly identical
+      } else if (token) {
+        // Use GitHub compare API to accurately detect ahead vs behind vs diverged
+        try {
+          const compRes = await fetch(`https://api.github.com/repos/${options.owner}/${options.repo}/compare/${localSha}...${remoteSha}`, { headers });
+          if (compRes.ok) {
+            const compData = await compRes.json() as any;
+            if (compData.status === 'identical') status = 'clean';
+            else if (compData.status === 'ahead') status = 'behind'; // remote is ahead of local
+            else if (compData.status === 'behind') status = 'ahead'; // remote is behind local
+            else if (compData.status === 'diverged') status = 'diverged';
+          } else {
+            status = 'ahead';
+          }
+        } catch {
+          status = 'ahead';
+        }
+      } else {
+        status = 'ahead';
+      }
+
       return {
         success: true,
-        syncStatus: 'clean',
+        syncStatus: status,
         latestRemoteCommit: {
           sha: commit.sha.substring(0, 7),
           message: commit.commit.message,

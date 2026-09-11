@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 // Store the SQLite database in a persistent directory
 const DATA_DIR = path.resolve(process.cwd(), '.data');
@@ -10,6 +11,18 @@ if (!fs.existsSync(DATA_DIR)) {
 
 const DB_PATH = path.join(DATA_DIR, 'forge.db');
 export const db = new DatabaseSync(DB_PATH);
+
+function ensureColumn(tableName: string, columnName: string, columnDef: string) {
+  try {
+    const tableInfo = db.prepare(`PRAGMA table_info(${tableName})`).all() as any[];
+    const exists = tableInfo.some((col) => col.name === columnName);
+    if (!exists) {
+      db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDef};`);
+    }
+  } catch (err) {
+    console.error(`Error ensuring column ${columnName} on ${tableName}:`, err);
+  }
+}
 
 // Run migrations and initial seeds
 export function initializeDatabase() {
@@ -30,27 +43,98 @@ export function initializeDatabase() {
     );
   }
 
+  // Migration 002: Multi-tenant user accounts, sessions, encrypted secrets
+  ensureColumn('users', 'password_hash', "TEXT");
+  ensureColumn('users', 'avatar_url', "TEXT");
+  ensureColumn('users', 'updated_at', "TEXT");
+
+  ensureColumn('workspaces', 'user_id', "TEXT DEFAULT 'user-default'");
+  ensureColumn('projects', 'user_id', "TEXT DEFAULT 'user-default'");
+  ensureColumn('skills', 'user_id', "TEXT DEFAULT 'user-default'");
+  ensureColumn('providers', 'user_id', "TEXT DEFAULT 'user-default'");
+  ensureColumn('integrations', 'user_id', "TEXT DEFAULT 'user-default'");
+  ensureColumn('attachments', 'user_id', "TEXT DEFAULT 'user-default'");
+  ensureColumn('logs', 'user_id', "TEXT DEFAULT 'user-default'");
+  ensureColumn('skills', 'is_custom', "INTEGER DEFAULT 0");
+
+  // Create sessions table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      user_agent TEXT,
+      ip_address TEXT,
+      created_at TEXT NOT NULL
+    );
+  `);
+
+  // Create user_secrets table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_secrets (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      service_key TEXT NOT NULL,
+      encrypted_value TEXT NOT NULL,
+      iv TEXT NOT NULL,
+      tag TEXT NOT NULL,
+      masked_hint TEXT NOT NULL,
+      status TEXT DEFAULT 'configured',
+      is_default INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      last_tested_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, service_key)
+    );
+  `);
+
+  const migration2Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 2').get() as { version: number } | undefined;
+  if (!migration2Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      2,
+      '002_multitenancy_and_secrets',
+      new Date().toISOString()
+    );
+  }
+
   // Seed default workspace and user if not exists
-  const defaultUser = db.prepare('SELECT id FROM users WHERE id = ?').get('user-default');
+  const salt = 'a1b2c3d4e5f67890';
+  const derivedKey = crypto.scryptSync('ForgeDev#2026', salt, 64, { N: 16384, r: 8, p: 1 });
+  const defaultPasswordHash = `scrypt$${salt}$${derivedKey.toString('hex')}`;
+
+  const defaultUser = db.prepare('SELECT id, password_hash FROM users WHERE id = ?').get('user-default') as any;
   if (!defaultUser) {
-    db.prepare('INSERT INTO users (id, email, name, role, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    db.prepare('INSERT INTO users (id, email, name, role, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
       'user-default',
       'developer@forgeagent.dev',
       'Forge Developer',
       'developer',
+      defaultPasswordHash,
+      new Date().toISOString(),
       new Date().toISOString()
+    );
+  } else if (!defaultUser.password_hash) {
+    db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(
+      defaultPasswordHash,
+      new Date().toISOString(),
+      'user-default'
     );
   }
 
   const defaultWs = db.prepare('SELECT id FROM workspaces WHERE id = ?').get('ws-default');
   if (!defaultWs) {
-    db.prepare('INSERT INTO workspaces (id, name, root_path, created_at) VALUES (?, ?, ?, ?)').run(
+    db.prepare('INSERT INTO workspaces (id, user_id, name, root_path, created_at) VALUES (?, ?, ?, ?, ?)').run(
       'ws-default',
+      'user-default',
       'Default Workspace',
       '/workspace',
       new Date().toISOString()
     );
   }
+
 
   // Seed standard skills from specification
   const seedSkills = [
@@ -145,6 +229,56 @@ export function initializeDatabase() {
       is_configured: 0,
       connection_status: 'not_configured',
       context_limit: 128000,
+    },
+    {
+      id: 'prov-anthropic',
+      provider_key: 'anthropic',
+      name: 'Anthropic Claude',
+      base_url: 'https://api.anthropic.com/v1',
+      model_id: 'claude-3-7-sonnet',
+      is_configured: 0,
+      connection_status: 'not_configured',
+      context_limit: 200000,
+    },
+    {
+      id: 'prov-deepseek',
+      provider_key: 'deepseek',
+      name: 'DeepSeek AI',
+      base_url: 'https://api.deepseek.com',
+      model_id: 'deepseek-chat',
+      is_configured: 0,
+      connection_status: 'not_configured',
+      context_limit: 64000,
+    },
+    {
+      id: 'prov-groq',
+      provider_key: 'groq',
+      name: 'Groq Cloud LPU',
+      base_url: 'https://api.groq.com/openai/v1',
+      model_id: 'llama-3.3-70b-versatile',
+      is_configured: 0,
+      connection_status: 'not_configured',
+      context_limit: 128000,
+    },
+    {
+      id: 'prov-openrouter',
+      provider_key: 'openrouter',
+      name: 'OpenRouter Multi-Model',
+      base_url: 'https://openrouter.ai/api/v1',
+      model_id: 'anthropic/claude-3.5-sonnet',
+      is_configured: 0,
+      connection_status: 'not_configured',
+      context_limit: 128000,
+    },
+    {
+      id: 'prov-ollama',
+      provider_key: 'ollama',
+      name: 'Ollama (Local / On-Premise)',
+      base_url: 'http://localhost:11434/v1',
+      model_id: 'llama3:latest',
+      is_configured: 0,
+      connection_status: 'not_configured',
+      context_limit: 32000,
     },
   ];
 

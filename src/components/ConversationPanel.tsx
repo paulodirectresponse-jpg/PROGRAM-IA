@@ -390,27 +390,30 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
         {/* Selected skills pills */}
         {selectedSkills.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-1">
-            {selectedSkills.map((slug) => (
-              <span
-                key={slug}
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-950 border border-cyan-800/60 text-[10px] text-cyan-300 font-mono"
-              >
-                <span>@{slug}</span>
-                <button
-                  type="button"
-                  onClick={() => toggleSkill(slug)}
-                  className="hover:text-cyan-100 cursor-pointer"
+            {selectedSkills.map((slug) => {
+              const skillObj = availableSkills.find((s) => s.slug === slug);
+              return (
+                <span
+                  key={slug}
+                  className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-cyan-950/80 border border-cyan-800/60 text-[10px] text-cyan-300 font-medium"
                 >
-                  <X size={10} />
-                </button>
-              </span>
-            ))}
+                  <span>{skillObj?.name || slug}</span>
+                  <button
+                    type="button"
+                    onClick={() => toggleSkill(slug)}
+                    className="hover:text-cyan-100 cursor-pointer text-cyan-400"
+                  >
+                    <X size={10} />
+                  </button>
+                </span>
+              );
+            })}
           </div>
         )}
 
         {showSkillPicker && (
-          <div className="p-2 rounded-lg bg-slate-900 border border-slate-800 max-h-32 overflow-y-auto custom-scrollbar space-y-1 text-xs">
-            <div className="text-[10px] font-mono text-slate-400 px-1">Selecione skills contextuais:</div>
+          <div className="p-2 rounded-lg bg-slate-900 border border-slate-800 max-h-36 overflow-y-auto custom-scrollbar space-y-1 text-xs">
+            <div className="text-[10px] font-semibold text-slate-400 px-1 uppercase tracking-wider">Skills do Agente:</div>
             {availableSkills.map((s) => {
               const isSel = selectedSkills.includes(s.slug);
               return (
@@ -418,12 +421,12 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                   key={s.id}
                   type="button"
                   onClick={() => toggleSkill(s.slug)}
-                  className={`w-full text-left px-2 py-1 rounded text-[11px] flex items-center justify-between transition cursor-pointer ${
-                    isSel ? 'bg-cyan-950/80 text-cyan-300' : 'text-slate-300 hover:bg-slate-800'
+                  className={`w-full text-left px-2 py-1.5 rounded-md text-[11px] flex items-center justify-between transition cursor-pointer ${
+                    isSel ? 'bg-cyan-950 text-cyan-300 border border-cyan-800/60' : 'text-slate-300 hover:bg-slate-800'
                   }`}
                 >
-                  <span>@{s.slug}</span>
-                  <span className="text-[10px] text-slate-500 truncate max-w-[140px]">{s.name}</span>
+                  <span className="font-medium">{s.name}</span>
+                  <span className="text-[10px] text-slate-400 font-mono">{s.slug}</span>
                 </button>
               );
             })}

@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { db } from '../db/index.js';
+import { SecretService } from './secretService.js';
 
 export type AgentMode = 'auto' | 'plan' | 'build' | 'review' | 'publish';
 
@@ -46,12 +47,14 @@ export interface LLMExecutionResult {
   isDemonstrativeFallback: boolean;
   providerUsed: string;
   modelUsed: string;
-  decisionType?: 'explanation' | 'plan' | 'change' | 'review' | 'publish';
+  decisionType?: 'explanation' | 'plan' | 'change' | 'review' | 'publish' | 'invalid_response' | 'blocked_no_provider';
   plan?: PlanOutput;
   build?: BuildOutput;
   proposal?: ChangeProposal;
   hasErrors?: boolean;
   errorMessage?: string;
+  invalidResponse?: boolean;
+  errorReason?: string;
 }
 
 export interface ProviderConnectionTestResult {
@@ -74,7 +77,8 @@ export class LLMAdapterService {
       lower.includes('o que é') ||
       lower.includes('por que') ||
       lower.includes('me explique') ||
-      lower.includes('o que significa')
+      lower.includes('o que significa') ||
+      lower.includes('qual a diferença')
     ) {
       return 'explanation';
     }
@@ -112,14 +116,26 @@ export class LLMAdapterService {
 
   /**
    * Centralized Single Source of Truth for Provider Configuration
+   * Resolves per-user encrypted keys first, then falls back to server env
    */
-  static getProviderConfig(targetKey?: string) {
-    // 1. Check sqlite providers table
+  static getProviderConfig(targetKey?: string, userId?: string) {
     const providerKey = targetKey || 'useoneai';
-    const row = db.prepare('SELECT * FROM providers WHERE provider_key = ?').get(providerKey) as any;
 
-    const openaiKey = process.env.OPENAI_API_KEY || process.env.USEONEAI_API_KEY || '';
-    const geminiKey = process.env.GEMINI_API_KEY || '';
+    let userKey = '';
+    if (userId) {
+      userKey = SecretService.getDecryptedSecret(userId, providerKey) || '';
+    }
+
+    // Lookup custom provider settings for this user or global default
+    let row = userId
+      ? (db.prepare('SELECT * FROM providers WHERE user_id = ? AND provider_key = ?').get(userId, providerKey) as any)
+      : null;
+    if (!row) {
+      row = db.prepare('SELECT * FROM providers WHERE provider_key = ? LIMIT 1').get(providerKey) as any;
+    }
+
+    const openaiKey = userKey || process.env.OPENAI_API_KEY || process.env.USEONEAI_API_KEY || '';
+    const geminiKey = (userId ? SecretService.getDecryptedSecret(userId, 'gemini') : '') || process.env.GEMINI_API_KEY || '';
 
     if (providerKey === 'gemini' || (targetKey === undefined && !openaiKey && geminiKey)) {
       return {
@@ -148,15 +164,13 @@ export class LLMAdapterService {
   /**
    * Determine available active configured provider
    */
-  static getActiveProviderConfig() {
-    // Check UseOneAI / OpenAI first
-    const useoneConfig = this.getProviderConfig('useoneai');
+  static getActiveProviderConfig(userId?: string) {
+    const useoneConfig = this.getProviderConfig('useoneai', userId);
     if (useoneConfig.isConfigured) {
       return useoneConfig;
     }
 
-    // Check Gemini
-    const geminiConfig = this.getProviderConfig('gemini');
+    const geminiConfig = this.getProviderConfig('gemini', userId);
     if (geminiConfig.isConfigured) {
       return geminiConfig;
     }
@@ -165,25 +179,20 @@ export class LLMAdapterService {
   }
 
   /**
-   * Real provider connection test with precise diagnostic reporting:
-   * - conexão aprovada (success)
-   * - chave inválida (invalid_key)
-   * - modelo inválido (invalid_model)
-   * - URL inválida (invalid_url)
-   * - erro de rede (network_error)
-   * - resposta incompatível (incompatible_response)
+   * Real provider connection test with precise diagnostic reporting
    */
   static async testConnection(options: {
     providerKey?: string;
     baseUrl?: string;
     modelId?: string;
+    apiKey?: string;
+    userId?: string;
   }): Promise<ProviderConnectionTestResult> {
-    const config = this.getProviderConfig(options.providerKey);
+    const config = this.getProviderConfig(options.providerKey, options.userId);
     const baseUrl = (options.baseUrl || config.baseUrl || '').trim();
     const modelId = (options.modelId || config.modelId || '').trim();
-    const apiKey = config.apiKey ? config.apiKey.trim() : '';
+    const apiKey = (options.apiKey || config.apiKey || '').trim();
 
-    // 1. Validate URL syntax
     if (config.type === 'openai_compatible') {
       try {
         const parsedUrl = new URL(baseUrl);
@@ -203,68 +212,65 @@ export class LLMAdapterService {
       }
     }
 
-    // 2. Validate API Key existence on server
     if (!apiKey || apiKey.length === 0) {
       return {
         success: false,
         status: 'invalid_key',
-        message: 'Chave de API não configurada no servidor. Configure a variável de ambiente correspondente.',
+        message: 'Chave de API não configurada. Salve uma credencial válida para este provedor.',
       };
     }
 
-    // 3. Test Gemini Provider
     if (config.type === 'gemini') {
       try {
         const ai = new GoogleGenAI({ apiKey });
         const res = await ai.models.generateContent({
           model: modelId,
-          contents: 'Ping test. Reply with: OK',
+          contents: 'Ping de validação de conexão. Responda apenas "OK".',
         });
-        if (res && (res.text || (res as any).candidates)) {
+
+        if (res && res.text) {
           return {
             success: true,
             status: 'success',
-            message: `Conexão aprovada! O modelo Gemini "${modelId}" respondeu com sucesso.`,
+            message: `Conexão Gemini aprovada! O modelo "${modelId}" respondeu perfeitamente.`,
           };
         }
+
         return {
           success: false,
           status: 'incompatible_response',
-          message: 'Resposta incompatível retornada pela API do Gemini.',
+          message: 'O modelo Gemini respondeu sem texto válido.',
         };
       } catch (err: any) {
         const errStr = (err.message || '').toLowerCase();
-        if (errStr.includes('api_key') || errStr.includes('unauthorized') || errStr.includes('401') || errStr.includes('403')) {
+        if (errStr.includes('api_key_invalid') || errStr.includes('api key not valid') || errStr.includes('401')) {
           return {
             success: false,
             status: 'invalid_key',
-            message: 'Chave inválida: a chave do Gemini foi rejeitada pela API.',
+            message: 'Chave inválida: a GEMINI_API_KEY informada foi rejeitada pela API do Google.',
           };
         }
-        if (errStr.includes('not found') || errStr.includes('404') || errStr.includes('model')) {
+        if (errStr.includes('not found') || errStr.includes('404')) {
           return {
             success: false,
             status: 'invalid_model',
-            message: `Modelo inválido: o modelo "${modelId}" não foi encontrado ou não está disponível.`,
+            message: `Modelo inválido: o modelo "${modelId}" não foi encontrado ou não está acessível com sua chave.`,
           };
         }
         return {
           success: false,
           status: 'network_error',
-          message: `Erro de rede ao conectar à API do Gemini: ${err.message}`,
+          message: `Erro na validação Gemini: ${err.message}`,
         };
       }
     }
 
-    // 4. Test OpenAI-Compatible / UseOneAI Provider
+    // OpenAI-compatible / UseOneAI test
     try {
-      const cleanBase = baseUrl.replace(/\/+$/, '');
-      const endpoint = `${cleanBase}/chat/completions`;
-
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-      const response = await fetch(endpoint, {
+      const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -272,24 +278,22 @@ export class LLMAdapterService {
         },
         body: JSON.stringify({
           model: modelId,
-          messages: [{ role: 'user', content: 'Ping' }],
-          max_tokens: 5,
+          messages: [{ role: 'user', content: 'Ping de teste. Responda apenas OK.' }],
+          max_tokens: 10,
         }),
         signal: controller.signal,
       });
 
       clearTimeout(timeoutId);
-
       const statusCode = response.status;
       const responseText = await response.text();
 
-      // Check HTTP Status codes
       if (statusCode === 401 || statusCode === 403) {
         return {
           success: false,
           status: 'invalid_key',
           statusCode,
-          message: `Chave inválida: autenticação falhou com HTTP ${statusCode}. Verifique sua chave de acesso.`,
+          message: `Chave inválida: acesso negado pelo provedor (HTTP ${statusCode}). Verifique sua chave de API.`,
         };
       }
 
@@ -298,11 +302,10 @@ export class LLMAdapterService {
           success: false,
           status: 'invalid_model',
           statusCode,
-          message: `Modelo inválido: o modelo "${modelId}" não foi encontrado no endpoint (HTTP 404).`,
+          message: `Modelo ou endpoint inválido: o modelo "${modelId}" não foi encontrado no endpoint (HTTP 404).`,
         };
       }
 
-      // Parse JSON
       let data: any;
       try {
         data = JSON.parse(responseText);
@@ -317,26 +320,6 @@ export class LLMAdapterService {
 
       if (!response.ok) {
         const errorMsg = data?.error?.message || data?.message || responseText.slice(0, 150);
-        const lowerErr = errorMsg.toLowerCase();
-
-        if (lowerErr.includes('api key') || lowerErr.includes('unauthorized') || lowerErr.includes('invalid_api_key')) {
-          return {
-            success: false,
-            status: 'invalid_key',
-            statusCode,
-            message: `Chave inválida: ${errorMsg}`,
-          };
-        }
-
-        if (lowerErr.includes('model') || lowerErr.includes('does not exist') || lowerErr.includes('not found')) {
-          return {
-            success: false,
-            status: 'invalid_model',
-            statusCode,
-            message: `Modelo inválido: ${errorMsg}`,
-          };
-        }
-
         return {
           success: false,
           status: 'incompatible_response',
@@ -345,7 +328,6 @@ export class LLMAdapterService {
         };
       }
 
-      // Check if standard choices structure exists
       if (Array.isArray(data.choices) && data.choices.length > 0) {
         return {
           success: true,
@@ -366,7 +348,7 @@ export class LLMAdapterService {
         return {
           success: false,
           status: 'network_error',
-          message: 'Erro de rede: tempo limite de conexão esgotado (timeout de 12s).',
+          message: 'Erro de rede: tempo limite de conexão esgotado (timeout de 15s).',
         };
       }
       return {
@@ -378,8 +360,7 @@ export class LLMAdapterService {
   }
 
   /**
-   * Robust parser extracting text from various LLM content types:
-   * string, array of parts, text objects
+   * Robust parser extracting text from various LLM content types
    */
   static extractContentText(rawContent: any): string {
     if (typeof rawContent === 'string') {
@@ -405,7 +386,7 @@ export class LLMAdapterService {
   /**
    * Resilient JSON extractor:
    * Accepts pure JSON, markdown ```json, or embedded { ... }
-   * Safely returns null if not JSON without throwing errors
+   * Never throws or interrupts with Unexpected token errors!
    */
   static extractStructuredJson(text: string): any | null {
     if (!text || typeof text !== 'string') return null;
@@ -416,7 +397,7 @@ export class LLMAdapterService {
       try {
         return JSON.parse(this.sanitizeJsonString(trimmed));
       } catch {
-        // Not direct JSON, continue
+        // Continue fallback scanning
       }
     }
 
@@ -458,17 +439,58 @@ export class LLMAdapterService {
   }
 
   /**
+   * Validates a file proposal strictly for path safety, size limits, and validity
+   */
+  static validateFileProposal(f: any): { valid: boolean; reason?: string; file?: FileChangeProposal } {
+    if (!f || typeof f !== 'object') {
+      return { valid: false, reason: 'Arquivo inválido: formato não é um objeto.' };
+    }
+
+    let filePath = String(f.path || '').trim();
+    if (!filePath) {
+      return { valid: false, reason: 'Caminho do arquivo não especificado.' };
+    }
+
+    // Path Traversal Security check
+    if (filePath.includes('..') || filePath.startsWith('/') || filePath.startsWith('\\')) {
+      return { valid: false, reason: `Caminho inseguro detectado: ${filePath}` };
+    }
+
+    filePath = filePath.replace(/\\/g, '/');
+    const action = f.action === 'delete' ? 'delete' : f.action === 'create' ? 'create' : 'modify';
+    const content = typeof f.content === 'string' ? f.content : '';
+
+    if (action !== 'delete' && !content) {
+      return { valid: false, reason: `Arquivo ${filePath} sem conteúdo especificado.` };
+    }
+
+    if (content.length > 5 * 1024 * 1024) {
+      return { valid: false, reason: `Arquivo ${filePath} excede limite de 5MB.` };
+    }
+
+    return {
+      valid: true,
+      file: {
+        path: filePath,
+        action,
+        content,
+      },
+    };
+  }
+
+  /**
    * Extract files from regular Markdown code blocks when the LLM
    * outputs standard markdown instead of JSON structures.
    */
   static extractFilesFromMarkdown(text: string): FileChangeProposal[] {
     const results: FileChangeProposal[] = [];
-    // Match code blocks with possible filename or lang
     const codeBlockRegex = /```([a-zA-Z0-9_\-./]+)?(?::|\s+filename=|\s+path=|\s+title=)?\s*([^\n\r]*)\n([\s\S]*?)```/g;
     let match;
+
     while ((match = codeBlockRegex.exec(text)) !== null) {
       const langOrFirst = (match[1] || '').trim();
       let rawHeader = (match[2] || '').trim().replace(/["'`]/g, '');
+      rawHeader = rawHeader.replace(/^(?:FILE|file|filepath|path|filename|title)[:=\s]+\s*/i, '').trim();
       const code = match[3];
 
       let detectedPath = '';
@@ -477,7 +499,6 @@ export class LLMAdapterService {
       } else if (langOrFirst && /^[a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+$/.test(langOrFirst)) {
         detectedPath = langOrFirst;
       } else {
-        // Look inside first 4 lines of code for comment indicator
         const firstLines = code.split('\n').slice(0, 4).join('\n');
         const commentMatch =
           firstLines.match(/<!--\s*(?:filename:\s*)?([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+)\s*-->/i) ||
@@ -489,17 +510,19 @@ export class LLMAdapterService {
       }
 
       if (detectedPath && code.trim().length > 0) {
-        if (!results.some((r) => r.path === detectedPath)) {
-          results.push({
-            path: detectedPath,
-            action: 'modify',
-            content: code,
-          });
+        const validation = this.validateFileProposal({
+          path: detectedPath,
+          action: 'modify',
+          content: code,
+        });
+        if (validation.valid && validation.file) {
+          if (!results.some((r) => r.path === validation.file!.path)) {
+            results.push(validation.file);
+          }
         }
       }
     }
 
-    // If no path was identified, but an HTML document code block exists:
     if (results.length === 0) {
       const htmlBlockMatch = text.match(/```(?:html)?\s*\n([\s\S]*?)```/i);
       if (htmlBlockMatch && (htmlBlockMatch[1].includes('<html') || htmlBlockMatch[1].includes('<!DOCTYPE'))) {
@@ -514,9 +537,6 @@ export class LLMAdapterService {
     return results;
   }
 
-  /**
-   * Generate lightweight unified diff for UI display
-   */
   static computeDiff(oldContent: string | null, newContent: string): string {
     if (!oldContent) {
       const lines = newContent.split('\n');
@@ -552,6 +572,57 @@ export class LLMAdapterService {
   }
 
   /**
+   * Parse file changes proposal from text
+   */
+  static parseFileChanges(content: string): ChangeProposal | null {
+    const files = this.extractFilesFromMarkdown(content);
+    if (files.length === 0) return null;
+    return {
+      id: 'prop-' + Date.now(),
+      summary: `${files.length} arquivo(s) modificado(s)`,
+      diffSummary: files.map((f) => `${f.action.toUpperCase()} ${f.path}`).join(', '),
+      requiresConfirmation: files.length > 1,
+      files,
+      status: 'pending',
+    };
+  }
+
+  /**
+   * Extract plan output from structured or unstructured text
+   */
+  static extractPlan(text: string): PlanOutput | null {
+    const structured = this.extractStructuredJson(text);
+    if (structured && (structured.objective || structured.plan)) {
+      return structured.plan || structured;
+    }
+
+    const objMatch = text.match(/##\s*Objetivo\s*\n([\s\S]*?)(?=\n##|$)/i);
+    const inMatch = text.match(/##\s*Escopo Incluído\s*\n([\s\S]*?)(?=\n##|$)/i);
+    const outMatch = text.match(/##\s*Escopo Não Incluído\s*\n([\s\S]*?)(?=\n##|$)/i);
+    const critMatch = text.match(/##\s*Critérios de Aceite\s*\n([\s\S]*?)(?=\n##|$)/i);
+
+    if (objMatch) {
+      const criteria = critMatch
+        ? critMatch[1]
+            .split('\n')
+            .map((l) => l.replace(/^[-*]\s*(\[[ xX]\]\s*)?/, '').trim())
+            .filter(Boolean)
+        : ['Validar implementação'];
+
+      return {
+        objective: objMatch[1].trim(),
+        scope_in: inMatch ? inMatch[1].trim() : '',
+        scope_out: outMatch ? outMatch[1].trim() : '',
+        files_affected: [],
+        integrations: [],
+        risks: [],
+        acceptance_criteria: criteria,
+      };
+    }
+    return null;
+  }
+
+  /**
    * Main Prompt Execution with Support for "auto" mode
    */
   static async executePrompt(options: {
@@ -563,11 +634,13 @@ export class LLMAdapterService {
     conversationHistory: Array<{ sender: string; content: string }>;
     providerKey?: string;
     modelId?: string;
+    userId?: string;
   }): Promise<LLMExecutionResult> {
-    const { prompt, mode, appliedSkills, existingFiles, conversationHistory, providerKey, modelId } = options;
-    let providerConfig = providerKey ? this.getProviderConfig(providerKey) : null;
+    const { prompt, mode, appliedSkills, existingFiles, conversationHistory, providerKey, modelId, userId } = options;
+
+    let providerConfig = providerKey ? this.getProviderConfig(providerKey, userId) : null;
     if (!providerConfig || !providerConfig.isConfigured) {
-      providerConfig = this.getActiveProviderConfig();
+      providerConfig = this.getActiveProviderConfig(userId);
     }
     if (providerConfig && modelId) {
       providerConfig = { ...providerConfig, modelId };
@@ -576,8 +649,7 @@ export class LLMAdapterService {
     const skillsText = appliedSkills.length > 0 ? `\nSkills Ativas: ${appliedSkills.join(', ')}.` : '';
     const filesList = Object.keys(existingFiles).join(', ') || 'Nenhum arquivo ainda criado.';
 
-    // If an active real provider is configured, call it
-    if (providerConfig) {
+    if (providerConfig && providerConfig.isConfigured) {
       try {
         if (providerConfig.type === 'openai_compatible') {
           return await this.callOpenAICompatible(providerConfig, {
@@ -722,7 +794,7 @@ Responda sempre em português claro, elegante e profissional.`;
       throw new Error(`API retornou HTTP ${response.status}: ${errText.substring(0, 300)}`);
     }
 
-    const data = await response.json();
+    const data = await response.json() as any;
     const rawContent = data.choices?.[0]?.message?.content;
     const textContent = this.extractContentText(rawContent);
 
@@ -738,82 +810,52 @@ Responda sempre em português claro, elegante e profissional.`;
 
     const fullPrompt = `${systemPrompt}\n\nHistórico Recente:\n${context.conversationHistory
       .slice(-4)
-      .map((h: any) => `${h.sender}: ${h.content}`)
-      .join('\n')}\n\nUsuário: ${context.prompt}`;
+      .map((h: any) => `${h.sender.toUpperCase()}: ${h.content}`)
+      .join('\n')}\n\nUSUÁRIO: ${context.prompt}`;
 
-    const candidateModels = [
-      config.modelId || 'gemini-3.5-flash-lite',
-      'gemini-3.5-flash-lite',
-      'gemini-3-flash-preview',
-      'gemini-3.6-flash',
-    ];
+    const res = await ai.models.generateContent({
+      model: config.modelId,
+      contents: fullPrompt,
+    });
 
-    let lastError: any = null;
-    let successfulModel = config.modelId || 'gemini-3.5-flash-lite';
-    let textContent = '';
-
-    for (const m of candidateModels) {
-      try {
-        const res = await ai.models.generateContent({
-          model: m,
-          contents: fullPrompt,
-        });
-        textContent = res.text || '';
-        successfulModel = m;
-        break;
-      } catch (err: any) {
-        lastError = err;
-        console.warn(`Tentativa com modelo Gemini ${m} falhou:`, err.message || err);
-      }
-    }
-
-    if (!textContent && lastError) {
-      throw lastError;
-    }
-
-    return this.parseLLMResponse(textContent, context.mode, config.name, successfulModel, context.existingFiles);
+    const textContent = res.text || '';
+    return this.parseLLMResponse(textContent, context.mode, config.name, config.modelId, context.existingFiles);
   }
 
-  /**
-   * Resilient parsing of LLM response
-   */
-  static parseLLMResponse(
+  private static parseLLMResponse(
     content: string,
     mode: AgentMode,
     providerName: string,
     modelId: string,
-    existingFiles: Record<string, string> = {}
+    existingFiles: Record<string, string>
   ): LLMExecutionResult {
     const structured = this.extractStructuredJson(content);
 
-    let plan: PlanOutput | undefined;
-    let build: BuildOutput | undefined;
-    let proposal: ChangeProposal | undefined;
-    let decisionType: 'explanation' | 'plan' | 'change' | 'review' | 'publish' = 'explanation';
-    let hasErrors = false;
-    let errorMessage: string | undefined;
-
     // 1. AUTO MODE HANDLING
     if (mode === 'auto') {
+      let decisionType: LLMExecutionResult['decisionType'] = 'explanation';
+      let plan: PlanOutput | undefined;
+      let build: BuildOutput | undefined;
+      let proposal: ChangeProposal | undefined;
+
       if (structured) {
-        // Plan detected
         if (structured.plan || structured.type === 'plan' || structured.objective) {
           decisionType = 'plan';
           plan = structured.plan || structured;
-        }
-        // File change detected in JSON
-        else if (structured.files && Array.isArray(structured.files) && structured.files.length > 0) {
+        } else if (structured.files && Array.isArray(structured.files) && structured.files.length > 0) {
           decisionType = 'change';
-          const validFiles: FileChangeProposal[] = structured.files.filter(
-            (f: any) => f && typeof f.path === 'string' && typeof f.content === 'string'
-          );
+          const validFiles: FileChangeProposal[] = [];
+
+          for (const rawFile of structured.files) {
+            const val = this.validateFileProposal(rawFile);
+            if (val.valid && val.file) {
+              const old = existingFiles[val.file.path] || null;
+              val.file.diff = this.computeDiff(old, val.file.content);
+              validFiles.push(val.file);
+            }
+          }
 
           if (validFiles.length > 0) {
-            for (const f of validFiles) {
-              const old = existingFiles[f.path] || null;
-              f.diff = this.computeDiff(old, f.content);
-            }
-
             const requiresConf = Boolean(
               structured.requires_confirmation ?? (validFiles.length > 1 || validFiles.some((f) => f.action === 'delete'))
             );
@@ -836,7 +878,6 @@ Responda sempre em português claro, elegante e profissional.`;
         }
       }
 
-      // If no structured files, check if the LLM outputted files in markdown code blocks
       if (!build && !plan) {
         const mdFiles = this.extractFilesFromMarkdown(content);
         if (mdFiles.length > 0) {
@@ -861,12 +902,10 @@ Responda sempre em português claro, elegante e profissional.`;
             files: mdFiles,
           };
         } else {
-          // Plain text response in auto mode is treated as clean explanation
           decisionType = 'explanation';
         }
       }
 
-      // Clean conversational reply text for UI
       let cleanReply = content;
       if (structured && (structured.explanation || structured.summary)) {
         cleanReply = structured.explanation || structured.summary;
@@ -885,52 +924,64 @@ Responda sempre em português claro, elegante e profissional.`;
       };
     }
 
-    // 2. BUILD MODE HANDLING (Structured or Markdown fallback)
+    // 2. BUILD MODE HANDLING
     if (mode === 'build') {
-      let validFiles: FileChangeProposal[] = [];
+      let candidateFiles: any[] = [];
       if (structured && Array.isArray(structured.files) && structured.files.length > 0) {
-        validFiles = structured.files.filter(
-          (f: any) => f && typeof f.path === 'string' && typeof f.content === 'string'
-        );
+        candidateFiles = structured.files;
       } else {
-        // Try fallback to markdown code blocks
-        validFiles = this.extractFilesFromMarkdown(content);
+        candidateFiles = this.extractFilesFromMarkdown(content);
+      }
+
+      const validFiles: FileChangeProposal[] = [];
+      for (const candidate of candidateFiles) {
+        const val = this.validateFileProposal(candidate);
+        if (val.valid && val.file) {
+          const old = existingFiles[val.file.path] || null;
+          val.file.diff = this.computeDiff(old, val.file.content);
+          validFiles.push(val.file);
+        }
       }
 
       if (validFiles.length > 0) {
-        for (const f of validFiles) {
-          const old = existingFiles[f.path] || null;
-          f.diff = this.computeDiff(old, f.content);
-        }
-
-        build = {
+        const build: BuildOutput = {
           summary: structured?.summary || 'Código gerado com sucesso',
           explanation: structured?.explanation || content,
           files: validFiles,
         };
-        decisionType = 'change';
-      } else {
-        // Conversational explanation without files
-        decisionType = 'explanation';
+
+        return {
+          replyText: content,
+          mode: 'build',
+          decisionType: 'change',
+          isDemonstrativeFallback: false,
+          providerUsed: providerName,
+          modelUsed: modelId,
+          build,
+          hasErrors: false,
+        };
       }
 
+      // No valid files found in build mode!
+      // In accordance with Requirement 5: do not apply changes, mark response as invalid, do not declare success.
       return {
         replyText: content,
         mode: 'build',
-        decisionType,
+        decisionType: 'invalid_response',
         isDemonstrativeFallback: false,
         providerUsed: providerName,
         modelUsed: modelId,
-        build,
-        hasErrors: false,
+        hasErrors: true,
+        invalidResponse: true,
+        errorReason: 'O modelo não retornou arquivos válidos ou estruturados no modo de construção.',
       };
     }
 
     // 3. PLAN MODE HANDLING
     if (mode === 'plan') {
+      let plan: PlanOutput | undefined;
       if (structured && (structured.objective || structured.plan)) {
         plan = structured.plan || structured;
-        decisionType = 'plan';
       }
       return {
         replyText: content,
@@ -955,267 +1006,90 @@ Responda sempre em português claro, elegante e profissional.`;
   }
 
   /**
-   * Deterministic demonstrative fallback when no API key is available or during offline execution
+   * Deterministic demonstrative fallback when no API key is available.
+   * NEVER applies code automatically!
+   * Blocks real alterations and provides clean explanations or plans.
    */
   static generateDemonstrativeFallback(
     prompt: string,
     mode: AgentMode,
-    existingFiles: Record<string, string>,
-    appliedSkills: string[]
+    _existingFiles: Record<string, string>,
+    _appliedSkills: string[]
   ): LLMExecutionResult {
-    const notice = `> ℹ️ **[MODO DEMONSTRATIVO: Provedor de IA não configurado ou sem chave ativa]**\n> Nenhuma chave foi encontrada em \`OPENAI_API_KEY\` ou \`GEMINI_API_KEY\`. Para habilitar chamadas reais de IA pelo UseOneAI ou Gemini, acesse a aba **Provedores** na barra lateral e configure suas credenciais seguras no servidor.\n\n`;
-
-    // Auto Mode Fallback Decision
-    if (mode === 'auto') {
-      const lower = prompt.toLowerCase();
-      const isExplanation = lower.includes('o que') || lower.includes('como funciona') || lower.includes('explique') || lower.includes('olá') || lower.includes('ajuda');
-      const isPlanning = lower.includes('planeje') || lower.includes('arquitetura') || lower.includes('escopo');
-
-      if (isExplanation) {
-        return {
-          replyText: `${notice}Olá! Estou no modo **Automático**. Eu analiso sua solicitação e executo a ação mais apropriada: explico conceitos, planejo arquiteturas ou implemento alterações diretamente no código do workspace.\n\nPara começar, você pode me pedir para criar uma tela, adicionar componentes ou explicar a estrutura do projeto.`,
-          mode: 'auto',
-          decisionType: 'explanation',
-          isDemonstrativeFallback: true,
-          providerUsed: 'Forge Local Fallback Engine',
-          modelUsed: 'deterministic-auto-v1',
-        };
-      }
-
-      if (isPlanning) {
-        return this.generateDemonstrativeFallback(prompt, 'plan', existingFiles, appliedSkills);
-      }
-
-      // Default to code change in auto mode
-      return this.generateDemonstrativeFallback(prompt, 'build', existingFiles, appliedSkills);
-    }
+    const notice = `> ℹ️ **[PROVEDOR DE IA NÃO CONFIGURADO]**\n> Nenhuma chave foi configurada para o UseOneAI ou Gemini na sua conta. Acesse a aba **Integrações e Credenciais** para adicionar sua chave de API segura.\n\n`;
 
     if (mode === 'plan') {
       const plan: PlanOutput = {
-        objective: `Implementar solicitação: "${prompt.slice(0, 80)}"`,
-        scope_in: 'Criação de componentes reativos, estilos integrados e layout adaptativo no sandbox.',
-        scope_out: 'Deploy externo em nuvem ou bancos remotos de terceiros nesta iteração.',
+        objective: `Planejamento preliminar: "${prompt.slice(0, 80)}"`,
+        scope_in: 'Estruturação conceitual dos componentes e lógica.',
+        scope_out: 'Deploy externo e chamadas de produção nesta fase demonstrativa.',
         files_affected: ['index.html'],
         integrations: ['Forge Preview Sandbox', 'Audit Logs'],
-        risks: ['Necessidade de validação visual de compatibilidade de tela.'],
+        risks: ['Provedor de IA inativo para geração automática de código.'],
         acceptance_criteria: [
-          'Interface funcional carregando sem erros no Live Preview.',
-          'Interatividade imediata nos botões de ação.',
-          'Nenhum segredo ou token exposto no código fonte.',
+          'Configurar chave de API em Integrações e Credenciais.',
+          'Interface funcional validada pelo usuário no sandbox.',
         ],
       };
 
-      const replyText = `${notice}### 📋 Plano Técnico Proposto pelo Forge Agent
+      const replyText = `${notice}### 📋 Plano Técnico Demonstrativo (Sem Provedor Ativo)
 
 - **Objetivo**: ${plan.objective}
 - **Escopo Incluído**: ${plan.scope_in}
 - **Escopo Excluído**: ${plan.scope_out}
-- **Arquivos Afetados**: \`${plan.files_affected.join('`, `')}\`
+- **Arquivos Previstos**: \`${plan.files_affected.join('`, `')}\`
 - **Critérios de Aceite**:
 ${plan.acceptance_criteria.map((c) => `  - [ ] ${c}`).join('\n')}
 
-Revise os detalhes acima. Clique no botão **"Aprovar Plano"** ou alterne para o modo **Construir** para gerar o código e atualizar o preview ao vivo.`;
+Para gerar e aplicar este código no workspace, configure uma chave de API nas **Integrações e Credenciais**.`;
 
       return {
         replyText,
         mode: 'plan',
         decisionType: 'plan',
         isDemonstrativeFallback: true,
-        providerUsed: 'Forge Local Fallback Engine',
-        modelUsed: 'deterministic-plan-v1',
+        providerUsed: 'Forge Local Engine (Demonstrativo)',
+        modelUsed: 'offline-planner-v1',
         plan,
       };
     }
 
     if (mode === 'build') {
-      const titleClean = prompt.replace(/[^\w\sÀ-ú]/gi, '').slice(0, 40) || 'Aplicação Forge';
-      const newHtml = `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${titleClean} — Forge Agent</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <style>
-    body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #0b0f19; color: #f8fafc; }
-  </style>
-</head>
-<body class="p-6 md:p-8 min-h-screen flex flex-col justify-between">
-  <div class="max-w-4xl w-full mx-auto space-y-6">
-    <!-- Header -->
-    <header class="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800/80 pb-5 gap-4">
-      <div>
-        <div class="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-cyan-950/80 border border-cyan-800/50 text-cyan-300 text-xs font-medium tracking-wide mb-2">
-          <span class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
-          Versão Vertical Construída
-        </div>
-        <h1 class="text-2xl font-bold text-slate-100">${titleClean}</h1>
-        <p class="text-xs text-slate-400 mt-1">Solicitação: "${prompt.slice(0, 100)}"</p>
-      </div>
-      <div class="flex items-center gap-2">
-        <span class="px-2.5 py-1 text-xs rounded bg-slate-800 text-slate-300 border border-slate-700">Status: Ativo</span>
-      </div>
-    </header>
-
-    <!-- Cards Grid -->
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div class="p-4 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-slate-700 transition">
-        <span class="text-xs text-slate-400">Total de Entradas</span>
-        <div class="text-3xl font-bold text-slate-100 mt-1" id="counter-val">12</div>
-        <div class="text-xs text-emerald-400 mt-2">↑ 24% nas últimas 24h</div>
-      </div>
-      <div class="p-4 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-slate-700 transition">
-        <span class="text-xs text-slate-400">Eficiência de Execução</span>
-        <div class="text-3xl font-bold text-cyan-400 mt-1">99.8%</div>
-        <div class="text-xs text-slate-400 mt-2">Sandbox otimizado</div>
-      </div>
-      <div class="p-4 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-slate-700 transition">
-        <span class="text-xs text-slate-400">Verificações de Segurança</span>
-        <div class="text-3xl font-bold text-emerald-400 mt-1">100%</div>
-        <div class="text-xs text-slate-400 mt-2">Nenhum segredo exposto</div>
-      </div>
-    </div>
-
-    <!-- Interactive List Panel -->
-    <div class="p-5 rounded-xl bg-slate-900/80 border border-slate-800 space-y-4">
-      <div class="flex items-center justify-between">
-        <h2 class="text-sm font-semibold text-slate-200">Gerenciador de Itens Dinâmicos</h2>
-        <div class="flex gap-2">
-          <input id="item-input" type="text" placeholder="Adicionar novo registro..." class="px-3 py-1.5 text-xs rounded-lg bg-slate-950 border border-slate-700 text-slate-200 focus:outline-none focus:border-cyan-500 w-52" />
-          <button id="btn-add" class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-950 transition cursor-pointer">
-            + Adicionar
-          </button>
-        </div>
-      </div>
-
-      <ul id="items-list" class="divide-y divide-slate-800/80 text-xs">
-        <li class="py-2.5 flex items-center justify-between text-slate-300">
-          <span class="flex items-center gap-2">
-            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-            Configuração de arquitetura inicial
-          </span>
-          <span class="text-slate-500 font-mono">Concluído</span>
-        </li>
-        <li class="py-2.5 flex items-center justify-between text-slate-300">
-          <span class="flex items-center gap-2">
-            <span class="w-2 h-2 rounded-full bg-cyan-400"></span>
-            Implementação da interface reativa no sandbox
-          </span>
-          <span class="text-slate-500 font-mono">Em Execução</span>
-        </li>
-      </ul>
-    </div>
-  </div>
-
-  <footer class="text-center text-xs text-slate-500 border-t border-slate-900 pt-4 mt-8">
-    Gerado pelo Forge Agent • Live Sandbox Preview
-  </footer>
-
-  <script>
-    let count = 12;
-    const counterEl = document.getElementById('counter-val');
-    const inputEl = document.getElementById('item-input');
-    const listEl = document.getElementById('items-list');
-
-    document.getElementById('btn-add').addEventListener('click', () => {
-      const val = inputEl.value.trim();
-      if (!val) return;
-      count++;
-      counterEl.textContent = count;
-      const li = document.createElement('li');
-      li.className = 'py-2.5 flex items-center justify-between text-slate-300 animate-fade-in';
-      li.innerHTML = \`
-        <span class="flex items-center gap-2">
-          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-          \${val}
-        </span>
-        <span class="text-slate-500 font-mono">Adicionado agora</span>
-      \`;
-      listEl.prepend(li);
-      inputEl.value = '';
-    });
-
-    inputEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        document.getElementById('btn-add').click();
-      }
-    });
-  </script>
-</body>
-</html>`;
-
-      const oldIndex = existingFiles['index.html'] || null;
-      const diffStr = this.computeDiff(oldIndex, newHtml);
-
-      const build: BuildOutput = {
-        summary: `Atualizei a estrutura de arquivos no sandbox para atender: "${prompt.slice(0, 60)}"`,
-        explanation: 'Arquivo index.html regenerado com componentes interativos, Tailwind CSS estilizado em modo escuro e scripts de manipulação de estado local.',
-        files: [
-          {
-            path: 'index.html',
-            action: 'modify',
-            content: newHtml,
-            diff: diffStr,
-          },
-        ],
-      };
-
-      const replyText = `${notice}### 🚀 Código Gerado e Aplicado com Sucesso!
-
-- **Ação**: Atualização de \`index.html\` no sandbox do projeto.
-- **Resumo**: Interface interativa adaptada ao seu pedido com controles dinâmicos de lista e métricas.
-- **Status do Preview**: O live preview ao lado foi recarregado automaticamente.
-- **Novo Checkpoint**: Snapshot salvo com histórico de rollback disponível.`;
-
+      // Per Requirement 6: fallback NEVER applies code automatically!
       return {
-        replyText,
+        replyText: `${notice}Não foi possível alterar os arquivos do workspace porque nenhum provedor de IA com chave válida está configurado na sua conta.\n\nPara que o Forge Agent possa gerar, modificar e testar código real:\n1. Acesse **Integrações e Credenciais** no menu lateral;\n2. Configure sua chave do **UseOneAI** ou **Gemini**;\n3. Teste a conexão e tente novamente.`,
         mode: 'build',
-        decisionType: 'change',
+        decisionType: 'blocked_no_provider',
         isDemonstrativeFallback: true,
-        providerUsed: 'Forge Local Fallback Engine',
-        modelUsed: 'deterministic-build-v1',
-        build,
+        providerUsed: 'Forge Local Engine (Demonstrativo)',
+        modelUsed: 'offline-blocked-v1',
+        hasErrors: true,
+        errorMessage: 'Alteração bloqueada: nenhum provedor de IA configurado na conta.',
       };
     }
 
-    if (mode === 'review') {
-      const replyText = `${notice}### 🔍 Relatório de Revisão e Quality Gates
-
-- **Build & Execução**: ✅ Aprovado (HTML e recursos carregando no sandbox).
-- **Detecção de Segredos**: ✅ Aprovado (Nenhuma credencial ou token privado exposto).
-- **Acessibilidade**: ✅ Aprovado (Contraste superior a 4.5:1 nas superfícies escuras).
-- **Critérios de Aceite**: Aprovados para o escopo desta versão vertical.
-
-Tudo pronto para publicação ou para uma nova solicitação.`;
-
+    // Auto or explanation mode
+    const intent = this.classifyIntent(prompt);
+    if (intent === 'build') {
       return {
-        replyText,
-        mode: 'review',
-        decisionType: 'review',
+        replyText: `${notice}Você solicitou uma alteração de código, mas nenhum provedor de IA com chave válida está ativo na sua conta.\n\nPor favor, cadastre sua chave de API em **Integrações e Credenciais** para habilitar a geração e edição automática de arquivos.`,
+        mode: 'auto',
+        decisionType: 'blocked_no_provider',
         isDemonstrativeFallback: true,
-        providerUsed: 'Forge Local Fallback Engine',
-        modelUsed: 'deterministic-review-v1',
+        providerUsed: 'Forge Local Engine (Demonstrativo)',
+        modelUsed: 'offline-blocked-v1',
+        hasErrors: true,
+        errorMessage: 'Alteração bloqueada: nenhum provedor de IA configurado na conta.',
       };
     }
-
-    // Publish mode
-    const replyText = `${notice}### 📦 Resumo para Publicação
-
-- **Projeto**: Projeto pronto e verificado no workspace local.
-- **Destinos Disponíveis**:
-  - Exportação completa em arquivo ZIP (Disponível imediatamente).
-  - Sincronização e Commit com GitHub (Requer configuração do \`GITHUB_TOKEN\` na aba **Integrações**).
-
-Nenhuma ação destrutiva ou commit remoto foi realizado sem sua expressa autorização.`;
 
     return {
-      replyText,
-      mode: 'publish',
-      decisionType: 'publish',
+      replyText: `${notice}Olá! Estou operando no modo **Demonstrativo**, pois nenhuma chave de API está cadastrada para sua conta.\n\nPosso explicar conceitos e sanar dúvidas arquiteturais. Para gerar código e atualizar arquivos em tempo real, adicione sua chave de API em **Integrações e Credenciais**.`,
+      mode: 'auto',
+      decisionType: 'explanation',
       isDemonstrativeFallback: true,
-      providerUsed: 'Forge Local Fallback Engine',
-      modelUsed: 'deterministic-publish-v1',
+      providerUsed: 'Forge Local Engine (Demonstrativo)',
+      modelUsed: 'offline-explainer-v1',
     };
   }
 }

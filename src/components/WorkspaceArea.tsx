@@ -24,6 +24,12 @@ import {
   ArrowUpFromLine,
   Loader2,
   Check,
+  Trash2,
+  Plus,
+  Copy,
+  History,
+  Clock,
+  Tag,
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { Project, ProjectFileItem, Verification, Checkpoint, GitHubStatus } from '../types';
@@ -35,8 +41,14 @@ interface WorkspaceAreaProps {
   checkpoints: Checkpoint[];
   onRefreshFiles: () => void;
   onRestoreCheckpoint: (cpId: string) => void;
+  onRollbackPrevious?: () => void;
+  onOpenCheckpoints?: () => void;
   githubStatus: GitHubStatus | null;
   previewNonce: number;
+  onDeleteProject?: (project: Project) => void;
+  onDuplicateProject?: (projectId: string) => void;
+  onExportZip?: (projectId: string) => void;
+  onOpenNewProject?: () => void;
 }
 
 export type WorkspaceTab = 'preview' | 'code' | 'verifications' | 'files' | 'deploy' | 'logs';
@@ -48,8 +60,14 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
   checkpoints,
   onRefreshFiles,
   onRestoreCheckpoint,
+  onRollbackPrevious,
+  onOpenCheckpoints,
   githubStatus,
   previewNonce,
+  onDeleteProject,
+  onDuplicateProject,
+  onExportZip,
+  onOpenNewProject,
 }) => {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('preview');
   const [previewDevice, setPreviewDevice] = useState<'desktop' | 'tablet' | 'mobile'>('desktop');
@@ -352,8 +370,27 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
 
   if (!project) {
     return (
-      <div className="flex-1 flex items-center justify-center text-slate-500 bg-slate-950">
-        Nenhum projeto ativo selecionado.
+      <div id="workspace-empty-state" className="flex-1 flex flex-col items-center justify-center text-slate-400 bg-slate-950 p-6 space-y-4">
+        <div className="w-14 h-14 rounded-2xl bg-slate-900 border border-slate-800 text-slate-500 flex items-center justify-center">
+          <FolderTree size={28} />
+        </div>
+        <div className="text-center space-y-1 max-w-sm">
+          <h3 className="text-base font-semibold text-slate-200">Nenhum projeto ativo</h3>
+          <p className="text-xs text-slate-500">
+            Você não possui nenhum projeto selecionado ou todos os projetos foram excluídos.
+          </p>
+        </div>
+        {onOpenNewProject && (
+          <button
+            type="button"
+            id="btn-empty-new-project"
+            onClick={onOpenNewProject}
+            className="px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs transition flex items-center gap-2 shadow-lg shadow-cyan-950/40 cursor-pointer"
+          >
+            <Plus size={14} />
+            Criar Novo Projeto
+          </button>
+        )}
       </div>
     );
   }
@@ -368,136 +405,188 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
           <button
             id="tab-btn-preview"
             onClick={() => setActiveTab('preview')}
-            className={`h-full px-3 text-xs font-medium flex items-center gap-2 border-b-2 transition cursor-pointer ${
+            title="Preview ao Vivo (Play)"
+            aria-label="Preview ao Vivo"
+            className={`h-full px-3.5 flex items-center justify-center border-b-2 transition cursor-pointer ${
               activeTab === 'preview'
-                ? 'border-cyan-400 text-cyan-300 font-semibold bg-slate-900/50'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'border-cyan-400 text-cyan-300 bg-slate-900/60'
+                : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/30'
             }`}
           >
-            <Play size={13} className="text-emerald-400" />
-            Preview ao Vivo
+            <Play size={15} className="text-emerald-400 fill-emerald-400/20" />
           </button>
 
           <button
             id="tab-btn-code"
             onClick={() => setActiveTab('code')}
-            className={`h-full px-3 text-xs font-medium flex items-center gap-2 border-b-2 transition cursor-pointer ${
+            title="Código Fonte e Diff"
+            aria-label="Código Fonte"
+            className={`h-full px-3.5 flex items-center justify-center border-b-2 transition cursor-pointer ${
               activeTab === 'code'
-                ? 'border-cyan-400 text-cyan-300 font-semibold bg-slate-900/50'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'border-cyan-400 text-cyan-300 bg-slate-900/60'
+                : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/30'
             }`}
           >
-            <Code2 size={13} className="text-cyan-400" />
-            Código e Diff
+            <Code2 size={16} className="text-cyan-400" />
           </button>
 
           <button
             id="tab-btn-verifications"
             onClick={() => setActiveTab('verifications')}
-            className={`h-full px-3 text-xs font-medium flex items-center gap-2 border-b-2 transition cursor-pointer ${
+            title={`Verificações & Quality Gates (${verifications.length})`}
+            aria-label="Verificações"
+            className={`h-full px-3.5 flex items-center justify-center gap-1.5 border-b-2 transition cursor-pointer ${
               activeTab === 'verifications'
-                ? 'border-cyan-400 text-cyan-300 font-semibold bg-slate-900/50'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'border-cyan-400 text-cyan-300 bg-slate-900/60'
+                : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/30'
             }`}
           >
-            <FileCheck2 size={13} className="text-amber-400" />
-            Verificações
-            <span className="text-[10px] px-1 rounded-full bg-slate-800 text-slate-300">
-              {verifications.length}
-            </span>
+            <FileCheck2 size={16} className="text-amber-400" />
+            {verifications.length > 0 && (
+              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-300">
+                {verifications.length}
+              </span>
+            )}
           </button>
 
           <button
             id="tab-btn-files"
             onClick={() => setActiveTab('files')}
-            className={`h-full px-3 text-xs font-medium flex items-center gap-2 border-b-2 transition cursor-pointer ${
+            title={`Gerenciador de Arquivos (${files.length})`}
+            aria-label="Arquivos"
+            className={`h-full px-3.5 flex items-center justify-center gap-1.5 border-b-2 transition cursor-pointer ${
               activeTab === 'files'
-                ? 'border-cyan-400 text-cyan-300 font-semibold bg-slate-900/50'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'border-cyan-400 text-cyan-300 bg-slate-900/60'
+                : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/30'
             }`}
           >
-            <FolderTree size={13} className="text-indigo-400" />
-            Arquivos
-            <span className="text-[10px] px-1 rounded-full bg-slate-800 text-slate-300">
-              {files.length}
-            </span>
+            <FolderTree size={16} className="text-indigo-400" />
+            {files.length > 0 && (
+              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-300">
+                {files.length}
+              </span>
+            )}
           </button>
 
           <button
             id="tab-btn-deploy"
             onClick={() => setActiveTab('deploy')}
-            className={`h-full px-3 text-xs font-medium flex items-center gap-2 border-b-2 transition cursor-pointer ${
+            title="Deploy & Repositório"
+            aria-label="Deploy"
+            className={`h-full px-3.5 flex items-center justify-center border-b-2 transition cursor-pointer ${
               activeTab === 'deploy'
-                ? 'border-cyan-400 text-cyan-300 font-semibold bg-slate-900/50'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'border-cyan-400 text-cyan-300 bg-slate-900/60'
+                : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/30'
             }`}
           >
-            <Rocket size={13} className="text-purple-400" />
-            Deploy & GitHub
+            <Rocket size={16} className="text-purple-400" />
           </button>
 
           <button
             id="tab-btn-logs"
             onClick={() => setActiveTab('logs')}
-            className={`h-full px-3 text-xs font-medium flex items-center gap-2 border-b-2 transition cursor-pointer ${
+            title="Logs & Telemetria"
+            aria-label="Logs"
+            className={`h-full px-3.5 flex items-center justify-center border-b-2 transition cursor-pointer ${
               activeTab === 'logs'
-                ? 'border-cyan-400 text-cyan-300 font-semibold bg-slate-900/50'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'border-cyan-400 text-cyan-300 bg-slate-900/60'
+                : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/30'
             }`}
           >
-            <ScrollText size={13} className="text-slate-400" />
-            Logs
+            <ScrollText size={16} className="text-slate-400" />
           </button>
         </div>
 
-        {/* Tab-specific top controls */}
-        {activeTab === 'preview' && (
-          <div className="flex items-center gap-2">
-            {/* Resolution Switcher */}
-            <div className="flex items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800">
-              <button
-                onClick={() => setPreviewDevice('desktop')}
-                title="Visualização Desktop"
-                className={`p-1 rounded ${previewDevice === 'desktop' ? 'bg-slate-800 text-cyan-400' : 'text-slate-500 hover:text-slate-300'}`}
-              >
-                <Monitor size={13} />
-              </button>
-              <button
-                onClick={() => setPreviewDevice('tablet')}
-                title="Visualização Tablet (768px)"
-                className={`p-1 rounded ${previewDevice === 'tablet' ? 'bg-slate-800 text-cyan-400' : 'text-slate-500 hover:text-slate-300'}`}
-              >
-                <Tablet size={13} />
-              </button>
-              <button
-                onClick={() => setPreviewDevice('mobile')}
-                title="Visualização Mobile (375px)"
-                className={`p-1 rounded ${previewDevice === 'mobile' ? 'bg-slate-800 text-cyan-400' : 'text-slate-500 hover:text-slate-300'}`}
-              >
-                <Smartphone size={13} />
-              </button>
-            </div>
+        {/* Tab-specific & project top controls */}
+        <div className="flex items-center gap-2">
+          {activeTab === 'preview' && (
+            <>
+              {/* Resolution Switcher */}
+              <div className="flex items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800">
+                <button
+                  onClick={() => setPreviewDevice('desktop')}
+                  title="Visualização Desktop"
+                  className={`p-1 rounded ${previewDevice === 'desktop' ? 'bg-slate-800 text-cyan-400' : 'text-slate-500 hover:text-slate-300'}`}
+                >
+                  <Monitor size={13} />
+                </button>
+                <button
+                  onClick={() => setPreviewDevice('tablet')}
+                  title="Visualização Tablet (768px)"
+                  className={`p-1 rounded ${previewDevice === 'tablet' ? 'bg-slate-800 text-cyan-400' : 'text-slate-500 hover:text-slate-300'}`}
+                >
+                  <Tablet size={13} />
+                </button>
+                <button
+                  onClick={() => setPreviewDevice('mobile')}
+                  title="Visualização Mobile (375px)"
+                  className={`p-1 rounded ${previewDevice === 'mobile' ? 'bg-slate-800 text-cyan-400' : 'text-slate-500 hover:text-slate-300'}`}
+                >
+                  <Smartphone size={13} />
+                </button>
+              </div>
 
-            <button
-              id="btn-preview-refresh"
-              onClick={() => setPreviewKey(Date.now())}
-              title="Recarregar Preview"
-              className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-cyan-400 hover:bg-slate-800 transition cursor-pointer"
-            >
-              <RotateCcw size={13} />
-            </button>
+              <button
+                id="btn-preview-refresh"
+                onClick={() => setPreviewKey(Date.now())}
+                title="Recarregar Preview"
+                className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-cyan-400 hover:bg-slate-800 transition cursor-pointer"
+              >
+                <RotateCcw size={13} />
+              </button>
 
-            <a
-              href={previewUrl}
-              target="_blank"
-              rel="noreferrer"
-              title="Abrir Preview em Nova Aba"
-              className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-cyan-400 hover:bg-slate-800 transition flex items-center gap-1 text-xs"
-            >
-              <ExternalLink size={13} />
-            </a>
+              <a
+                href={previewUrl}
+                target="_blank"
+                rel="noreferrer"
+                title="Abrir Preview em Nova Aba"
+                className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-cyan-400 hover:bg-slate-800 transition flex items-center gap-1 text-xs"
+              >
+                <ExternalLink size={13} />
+              </a>
+
+              <div className="w-[1px] h-4 bg-slate-800 my-auto" />
+            </>
+          )}
+
+          {/* Quick Project Actions */}
+          <div className="flex items-center gap-1">
+            {onExportZip && (
+              <button
+                type="button"
+                onClick={() => onExportZip(project.id)}
+                title={`Baixar ZIP do projeto "${project.name}"`}
+                aria-label="Exportar ZIP"
+                className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition cursor-pointer"
+              >
+                <Download size={13} />
+              </button>
+            )}
+            {onDuplicateProject && (
+              <button
+                type="button"
+                onClick={() => onDuplicateProject(project.id)}
+                title={`Duplicar projeto "${project.name}"`}
+                aria-label="Duplicar Projeto"
+                className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition cursor-pointer"
+              >
+                <Copy size={13} />
+              </button>
+            )}
+            {onDeleteProject && (
+              <button
+                type="button"
+                id="btn-workspace-delete-project"
+                onClick={() => onDeleteProject(project)}
+                title={`Excluir projeto "${project.name}"`}
+                aria-label="Excluir Projeto"
+                className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-rose-400 hover:border-rose-900/60 hover:bg-rose-950/40 transition cursor-pointer"
+              >
+                <Trash2 size={13} />
+              </button>
+            )}
           </div>
-        )}
+        </div>
       </div>
 
       {/* Main Tab Content */}

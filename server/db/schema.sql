@@ -233,7 +233,8 @@ CREATE TABLE IF NOT EXISTS deployments (
 -- 20. integrations
 CREATE TABLE IF NOT EXISTS integrations (
   id TEXT PRIMARY KEY,
-  service_name TEXT UNIQUE NOT NULL, -- 'github', 'useoneai', 'gemini'
+  user_id TEXT DEFAULT 'user-default',
+  service_name TEXT NOT NULL, -- 'github', 'useoneai', 'gemini'
   config_json TEXT,
   status TEXT DEFAULT 'pending_credentials', -- 'connected', 'pending_credentials', 'error'
   last_verified_at TEXT,
@@ -249,3 +250,34 @@ CREATE TABLE IF NOT EXISTS audit_events (
   details_json TEXT,
   created_at TEXT NOT NULL
 );
+
+-- 22. sessions (Persistent auth sessions)
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  user_agent TEXT,
+  ip_address TEXT,
+  created_at TEXT NOT NULL
+);
+
+-- 23. user_secrets (AES-256-GCM encrypted per-user credentials)
+CREATE TABLE IF NOT EXISTS user_secrets (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  service_key TEXT NOT NULL,
+  encrypted_value TEXT NOT NULL,
+  iv TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  masked_hint TEXT NOT NULL,
+  status TEXT DEFAULT 'configured',
+  is_default INTEGER DEFAULT 0,
+  is_active INTEGER DEFAULT 1,
+  last_tested_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(user_id, service_key)
+);
+

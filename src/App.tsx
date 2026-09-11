@@ -7,6 +7,12 @@ import { ProvidersModal } from './components/ProvidersModal';
 import { SkillsModal } from './components/SkillsModal';
 import { CheckpointsModal } from './components/CheckpointsModal';
 import { IntegrationsModal } from './components/IntegrationsModal';
+import { AuthModal } from './components/AuthModal';
+import { CredentialsModal } from './components/CredentialsModal';
+import { SettingsProfileModal, SettingsTab } from './components/SettingsProfileModal';
+import { DeleteProjectModal } from './components/DeleteProjectModal';
+import { testFirestoreConnection, deleteFirestoreProjectDoc } from './lib/firebase';
+import { CheckCircle2, AlertCircle, X } from 'lucide-react';
 import {
   Project,
   Conversation,
@@ -20,9 +26,11 @@ import {
   AgentMode,
   Plan,
   ChangeProposal,
+  AuthUser,
 } from './types';
 
 export default function App() {
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -38,22 +46,63 @@ export default function App() {
   const [previewNonce, setPreviewNonce] = useState<number>(Date.now());
 
   // Modal visibility states
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [isCredentialsOpen, setIsCredentialsOpen] = useState(false);
   const [isNewProjectOpen, setIsNewProjectOpen] = useState(false);
   const [isProvidersOpen, setIsProvidersOpen] = useState(false);
   const [isSkillsOpen, setIsSkillsOpen] = useState(false);
   const [isCheckpointsOpen, setIsCheckpointsOpen] = useState(false);
   const [isIntegrationsOpen, setIsIntegrationsOpen] = useState(false);
+  const [isSettingsProfileOpen, setIsSettingsProfileOpen] = useState(false);
+  const [settingsProfileTab, setSettingsProfileTab] = useState<SettingsTab>('profile');
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
   // Abort controller ref
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Initial load
   useEffect(() => {
+    checkCurrentUser();
+    loadSkills();
+    loadProviders();
+    loadGitHubStatus();
+    testFirestoreConnection().catch((err) => console.warn('Firebase probe:', err));
+  }, []);
+
+  const checkCurrentUser = async () => {
+    try {
+      const res = await fetch('/api/auth/me');
+      const data = await res.json();
+      if (data.authenticated && data.user) {
+        setCurrentUser(data.user);
+      } else {
+        setCurrentUser(null);
+      }
+    } catch {
+      setCurrentUser(null);
+    } finally {
+      loadProjects();
+    }
+  };
+
+  const handleLoginSuccess = (user: AuthUser) => {
+    setCurrentUser(user);
     loadProjects();
     loadSkills();
     loadProviders();
     loadGitHubStatus();
-  }, []);
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    setProjects([]);
+    setActiveProject(null);
+    setMessages([]);
+    setFiles([]);
+    loadProjects();
+  };
 
   const loadProjects = async () => {
     try {
@@ -346,20 +395,63 @@ export default function App() {
     }
   };
 
-  // Delete project
-  const handleDeleteProject = async (projectId: string) => {
+  // Request project deletion (opens confirmation modal)
+  const handleRequestDeleteProject = (proj: Project) => {
+    setProjectToDelete(proj);
+    setIsDeleteModalOpen(true);
+  };
+
+  // Perform project deletion
+  const handleConfirmDeleteProject = async (projectId: string): Promise<boolean> => {
     try {
-      const res = await fetch(`/api/projects/${projectId}`, { method: 'DELETE' });
+      const res = await fetch(`/api/projects/${projectId}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
       const data = await res.json();
-      if (data.success) {
-        const remaining = projects.filter((p) => p.id !== projectId);
-        setProjects(remaining);
-        if (activeProject?.id === projectId && remaining.length > 0) {
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Falha ao excluir o projeto no servidor.');
+      }
+
+      // Sync Firestore removal in background if configured
+      deleteFirestoreProjectDoc(projectId).catch(() => {});
+
+      const remaining = projects.filter((p) => p.id !== projectId);
+      setProjects(remaining);
+
+      if (activeProject?.id === projectId) {
+        if (remaining.length > 0) {
           setActiveProject(remaining[0]);
+          await loadProjectDetails(remaining[0].id);
+        } else {
+          setActiveProject(null);
+          setFiles([]);
+          setMessages([]);
+          setActivePlan(null);
+          setCheckpoints([]);
+          setVerifications([]);
         }
       }
-    } catch (err) {
+
+      await loadProjects();
+
+      setToastMessage({
+        text: `Projeto "${projectToDelete?.name || ''}" excluído com sucesso.`,
+        type: 'success',
+      });
+      setTimeout(() => setToastMessage(null), 4000);
+
+      return true;
+    } catch (err: any) {
       console.error('Falha ao excluir projeto:', err);
+      setToastMessage({
+        text: err?.message || 'Erro ao excluir o projeto.',
+        type: 'error',
+      });
+      setTimeout(() => setToastMessage(null), 5000);
+      throw err;
     }
   };
 
@@ -376,14 +468,33 @@ export default function App() {
       <Sidebar
         projects={projects}
         activeProject={activeProject}
+        currentUser={currentUser}
+        onOpenAuth={() => {
+          setSettingsProfileTab('profile');
+          setIsSettingsProfileOpen(true);
+        }}
+        onOpenProfileSettings={(tab?: SettingsTab) => {
+          setSettingsProfileTab(tab || 'profile');
+          setIsSettingsProfileOpen(true);
+        }}
         onSelectProject={(p) => setActiveProject(p)}
         onOpenNewProject={() => setIsNewProjectOpen(true)}
         onOpenSkills={() => setIsSkillsOpen(true)}
-        onOpenProviders={() => setIsProvidersOpen(true)}
-        onOpenIntegrations={() => setIsIntegrationsOpen(true)}
+        onOpenProviders={() => {
+          setSettingsProfileTab('providers');
+          setIsSettingsProfileOpen(true);
+        }}
+        onOpenIntegrations={() => {
+          setSettingsProfileTab('integrations');
+          setIsSettingsProfileOpen(true);
+        }}
+        onOpenCredentials={() => {
+          setSettingsProfileTab('credentials');
+          setIsSettingsProfileOpen(true);
+        }}
         onOpenCheckpoints={() => setIsCheckpointsOpen(true)}
         onDuplicateProject={handleDuplicateProject}
-        onDeleteProject={handleDeleteProject}
+        onDeleteProject={handleRequestDeleteProject}
         onExportZip={handleExportZip}
         activeProvider={activeProvider}
         githubStatus={githubStatus}
@@ -413,9 +524,30 @@ export default function App() {
         onRestoreCheckpoint={handleRestoreCheckpoint}
         githubStatus={githubStatus}
         previewNonce={previewNonce}
+        onDeleteProject={handleRequestDeleteProject}
+        onDuplicateProject={handleDuplicateProject}
+        onExportZip={handleExportZip}
+        onOpenNewProject={() => setIsNewProjectOpen(true)}
       />
 
       {/* Modals */}
+      <AuthModal
+        isOpen={isAuthOpen}
+        onClose={() => setIsAuthOpen(false)}
+        currentUser={currentUser}
+        onLoginSuccess={handleLoginSuccess}
+        onLogout={handleLogout}
+      />
+
+      <CredentialsModal
+        isOpen={isCredentialsOpen}
+        onClose={() => setIsCredentialsOpen(false)}
+        onCredentialsUpdated={() => {
+          loadProviders();
+          loadGitHubStatus();
+        }}
+      />
+
       <NewProjectModal
         isOpen={isNewProjectOpen}
         onClose={() => setIsNewProjectOpen(false)}
@@ -449,8 +581,64 @@ export default function App() {
         onClose={() => setIsIntegrationsOpen(false)}
         githubStatus={githubStatus}
         onRefreshGitHub={loadGitHubStatus}
-        providers={providers}
+        activeProject={activeProject}
       />
+
+      {/* Unified User Profile & Settings Modal */}
+      <SettingsProfileModal
+        isOpen={isSettingsProfileOpen}
+        onClose={() => setIsSettingsProfileOpen(false)}
+        currentUser={currentUser}
+        onLoginSuccess={handleLoginSuccess}
+        onLogout={handleLogout}
+        defaultTab={settingsProfileTab}
+        providers={providers}
+        onUpdateProvider={handleUpdateProvider}
+        githubStatus={githubStatus}
+        onRefreshGitHub={loadGitHubStatus}
+        activeProject={activeProject}
+        onCredentialsUpdated={() => {
+          loadProviders();
+          loadGitHubStatus();
+        }}
+      />
+
+      {/* Delete Project Confirmation Modal */}
+      <DeleteProjectModal
+        isOpen={isDeleteModalOpen}
+        project={projectToDelete}
+        onClose={() => {
+          setIsDeleteModalOpen(false);
+          setProjectToDelete(null);
+        }}
+        onConfirmDelete={handleConfirmDeleteProject}
+      />
+
+      {/* Floating Status Notification Toast */}
+      {toastMessage && (
+        <div
+          id="forge-toast-notice"
+          className={`fixed bottom-5 right-5 z-50 flex items-center gap-2.5 px-4 py-3 rounded-xl border shadow-xl animate-in slide-in-from-bottom-3 duration-200 ${
+            toastMessage.type === 'success'
+              ? 'bg-slate-900 border-emerald-500/40 text-emerald-300 shadow-emerald-950/20'
+              : 'bg-slate-900 border-rose-500/40 text-rose-300 shadow-rose-950/20'
+          }`}
+        >
+          {toastMessage.type === 'success' ? (
+            <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
+          ) : (
+            <AlertCircle size={16} className="text-rose-400 shrink-0" />
+          )}
+          <span className="text-xs font-medium text-slate-200">{toastMessage.text}</span>
+          <button
+            type="button"
+            onClick={() => setToastMessage(null)}
+            className="p-0.5 rounded text-slate-400 hover:text-slate-200 transition ml-2 cursor-pointer"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
