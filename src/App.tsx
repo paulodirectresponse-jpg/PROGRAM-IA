@@ -65,10 +65,7 @@ export default function App() {
   // Initial load
   useEffect(() => {
     checkCurrentUser();
-    loadSkills();
-    loadProviders();
-    loadGitHubStatus();
-    testFirestoreConnection().catch((err) => console.warn('Firebase probe:', err));
+
   }, []);
 
   const checkCurrentUser = async () => {
@@ -77,13 +74,12 @@ export default function App() {
       const data = await res.json();
       if (data.authenticated && data.user) {
         setCurrentUser(data.user);
+        loadProjects(); loadSkills(); loadProviders(); loadGitHubStatus();
       } else {
         setCurrentUser(null);
       }
     } catch {
       setCurrentUser(null);
-    } finally {
-      loadProjects();
     }
   };
 
@@ -101,7 +97,7 @@ export default function App() {
     setActiveProject(null);
     setMessages([]);
     setFiles([]);
-    loadProjects();
+    setSkills([]); setProviders([]); setGithubStatus(null);
   };
 
   const loadProjects = async () => {
@@ -247,7 +243,8 @@ export default function App() {
       });
 
       const data = await res.json();
-      if (data.success && data.agentMessage) {
+      if (!res.ok) throw new Error(data.error || 'Não foi possível concluir o pedido.');
+      if (data.agentMessage) {
         setMessages((prev) => [...prev, data.agentMessage]);
         if (data.plan) {
           setActivePlan(data.plan);
@@ -489,7 +486,7 @@ export default function App() {
           setIsSettingsProfileOpen(true);
         }}
         onOpenCredentials={() => {
-          setSettingsProfileTab('credentials');
+          setSettingsProfileTab('integrations');
           setIsSettingsProfileOpen(true);
         }}
         onOpenCheckpoints={() => setIsCheckpointsOpen(true)}
@@ -532,7 +529,8 @@ export default function App() {
 
       {/* Modals */}
       <AuthModal
-        isOpen={isAuthOpen}
+        isOpen={isAuthOpen || !currentUser}
+        isMandatory={!currentUser}
         onClose={() => setIsAuthOpen(false)}
         currentUser={currentUser}
         onLoginSuccess={handleLoginSuccess}
@@ -566,6 +564,21 @@ export default function App() {
         onClose={() => setIsSkillsOpen(false)}
         skills={skills}
         onToggleSkill={handleToggleSkill}
+        onCreateSkill={async data => {
+          const res=await fetch('/api/skills',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+          const result=await res.json();if(!res.ok)throw new Error(result.error);
+          await loadSkills();return true;
+        }}
+        onUpdateSkill={async (id,data) => {
+          const res=await fetch(`/api/skills/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+          const result=await res.json();if(!res.ok)throw new Error(result.error);
+          await loadSkills();return true;
+        }}
+        onDeleteSkill={async id => {
+          const res=await fetch(`/api/skills/${id}`,{method:'DELETE'});
+          if(!res.ok){setToastMessage({text:'Não foi possível excluir a skill.',type:'error'});return false;}
+          await loadSkills();return true;
+        }}
       />
 
       <CheckpointsModal
@@ -642,3 +655,5 @@ export default function App() {
     </div>
   );
 }
+
+

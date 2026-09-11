@@ -1,3 +1,5 @@
+import { IntegrationService, integrationFields } from './services/integrationService.js';
+import { verifyFirebaseIdentity } from './services/firebaseIdentity.js';
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -10,6 +12,7 @@ import { GitHubService } from './services/githubService.js';
 import { DesktopService } from './services/desktopService.js';
 
 export const router = express.Router();
+const activeProjects = new Set<string>();
 
 // Extend Express Request type for authenticated user
 declare global {
@@ -40,14 +43,6 @@ function sessionAuthMiddleware(req: Request, res: Response, next: NextFunction) 
     }
   }
 
-  // Fallback for seamless developer and sandbox experience if database only has default user
-  if (!req.user) {
-    const defaultUser = AuthService.getUserById('user-default');
-    if (defaultUser) {
-      req.user = defaultUser;
-    }
-  }
-
   next();
 }
 
@@ -71,7 +66,7 @@ function csrfProtection(req: Request, res: Response, next: NextFunction) {
     if (sessionCookie) {
       const csrfCookie = req.cookies?.['forge_csrf'];
       const csrfHeader = req.headers['x-csrf-token'];
-      if (csrfCookie && csrfHeader && csrfCookie !== csrfHeader) {
+      if (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader) {
         return res.status(403).json({ error: 'Falha de validação CSRF (token inválido).' });
       }
     }
@@ -95,14 +90,8 @@ function requireProjectOwner(req: Request, res: Response, next: NextFunction) {
     return res.status(404).json({ error: 'Projeto não encontrado.' });
   }
 
-  if (
-    project.user_id &&
-    project.user_id !== req.user.id &&
-    project.user_id !== 'user-default' &&
-    req.user.id !== 'user-default' &&
-    req.user.role !== 'admin'
-  ) {
-    return res.status(403).json({ error: 'Acesso negado: este projeto pertence a outro usuário.' });
+  if (project.user_id !== req.user.id) {
+    return res.status(403).json({ error: 'Este projeto pertence a outro usuário.' });
   }
 
   next();
@@ -116,67 +105,16 @@ router.use(csrfProtection);
 // 1. AUTHENTICATION ROUTES
 // ==========================================
 
-router.post('/auth/register', async (req: Request, res: Response) => {
-  try {
-    const { email, password, name } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
-    }
-
-    const user = AuthService.register(email, name || '', password);
-    const session = AuthService.createSession(user.id);
-
-    res.cookie('forge_session', session.token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-      path: '/',
-    });
-
-    res.json({ success: true, user, token: session.token });
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-router.post('/auth/login', async (req: Request, res: Response) => {
-  try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
-    }
-
-    const { user, session } = AuthService.login(email, password);
-
-    res.cookie('forge_session', session.token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-      path: '/',
-    });
-
-    res.json({ success: true, user, token: session.token });
-  } catch (err: any) {
-    res.status(401).json({ error: err.message });
-  }
+router.post(['/auth/register', '/auth/login'], (_req, res) => {
+  res.status(410).json({ error: 'Entre pelo Firebase. O login local foi desativado.' });
 });
 
 router.post('/auth/firebase-login', async (req: Request, res: Response) => {
   try {
-    const { email, displayName, uid } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: 'E-mail é obrigatório para autenticação.' });
-    }
-
-    const { user, session } = AuthService.firebaseLogin(
-      email,
-      displayName || '',
-      uid || 'fb-user-' + Date.now(),
-      req.headers['user-agent'] as string,
-      req.ip
-    );
+    const limit = AuthService.checkRateLimit(req.ip || 'unknown');
+    if (!limit.allowed) return res.status(429).json({ error: 'Muitas tentativas. Aguarde um minuto.' });
+    const identity = await verifyFirebaseIdentity(req.body.idToken);
+    const { user, session } = AuthService.firebaseLogin(identity.email, identity.name, identity.uid, req.headers['user-agent'], req.ip);
 
     res.cookie('forge_session', session.token, {
       httpOnly: true,
@@ -186,7 +124,7 @@ router.post('/auth/firebase-login', async (req: Request, res: Response) => {
       path: '/',
     });
 
-    res.json({ success: true, user, token: session.token });
+    res.json({ success: true, user });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -211,6 +149,27 @@ router.post('/auth/logout', (req: Request, res: Response) => {
 // ==========================================
 // 2. SECRETS & CREDENTIALS API (PER-USER)
 // ==========================================
+
+router.get('/integrations', requireAuth, (req, res) => {
+  try { res.json({integrations: Object.keys(integrationFields).map(key => IntegrationService.summary(req.user!.id, key))}); }
+  catch { res.status(500).json({error:'Não foi possível carregar integrações.'}); }
+});
+router.put('/integrations/:service', requireAuth, (req, res) => {
+  try { res.json(IntegrationService.save(req.user!.id, req.params.service, req.body.fields || {})); }
+  catch { res.status(400).json({error:'Configuração inválida. Confira os campos e o JSON da conta de serviço.'}); }
+});
+router.post('/integrations/:service/test', requireAuth, async (req, res) => {
+  try { res.json(await IntegrationService.test(req.user!.id, req.params.service)); }
+  catch (err: any) { res.status(400).json({success:false,error:err.message}); }
+});
+router.post('/providers/test', requireAuth, async (req, res) => {
+  try {
+    const {providerKey, baseUrl, modelId, apiKey} = req.body;
+    const result = await LLMAdapterService.testConnection({providerKey, baseUrl, modelId, apiKey, userId:req.user!.id});
+    db.prepare('UPDATE providers SET connection_status = ? WHERE user_id = ? AND provider_key = ?').run(result.success?'connected':'error', req.user!.id, providerKey);
+    res.json(result);
+  } catch { res.status(400).json({success:false,message:'Falha ao testar o provedor.'}); }
+});
 
 router.get('/secrets', requireAuth, (req: Request, res: Response) => {
   try {
@@ -729,6 +688,10 @@ router.get('/conversations/:projectId', requireAuth, requireProjectOwner, (req: 
 });
 
 router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  if (activeProjects.has(req.params.projectId)) return res.status(409).json({error:'Já há uma execução neste projeto. Aguarde ou cancele antes de enviar outro pedido.'});
+  activeProjects.add(req.params.projectId);
+  const controller = new AbortController();
+  res.on('close', () => { if (!res.writableEnded) controller.abort(); });
   try {
     const { content, mode = 'auto', appliedSkills = [] } = req.body;
     if (!content || content.trim().length === 0) {
@@ -761,15 +724,16 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       VALUES (?, ?, 'user', ?, ?, ?)
     `).run(userMsgId, conv.id, content, JSON.stringify({ mode, appliedSkills }), now);
 
-    const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT 10').all(conv.id) as any[];
+    const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 20').all(conv.id).reverse() as any[];
     const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    const providerKey = project?.provider_id ? project.provider_id.replace('prov-', '') : undefined;
-    const modelId = project?.model_id;
+    const providerRow = db.prepare('SELECT provider_key FROM providers WHERE id = ? AND user_id = ?').get(project?.provider_id || '', req.user!.id) as any;
+    const providerKey = providerRow?.provider_key || 'useoneai';
+    const modelId = providerRow ? project?.model_id : undefined;
 
     // Call LLM Adapter with authenticated userId
-    const result = await LLMAdapterService.executePrompt({
+    let result = await LLMAdapterService.executePrompt({
       prompt: content,
       mode: mode as AgentMode,
       projectId,
@@ -779,7 +743,12 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       appliedSkills,
       conversationHistory: history,
       userId: req.user!.id,
+      signal: controller.signal,
     });
+    controller.signal.throwIfAborted();
+    if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
+      return res.status(409).json({error:'Os arquivos mudaram durante a revisão. Envie novamente para usar a versão atual.'});
+    }
 
     let checkpointCreatedId: string | null = null;
 
@@ -791,8 +760,12 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       result.decisionType !== 'invalid_response' &&
       result.decisionType !== 'blocked_no_provider';
 
+    if (canApplyFiles && result.build?.files?.length && (mode === 'build' || mode === 'auto') && !result.proposal?.requiresConfirmation) {
+      for (const file of result.build.files) WorkspaceManager.resolveSafePath(projectId, file.path);
+      WorkspaceManager.createCheckpoint(projectId, `Antes: ${content.slice(0, 60)}`, 'Ponto de restauração antes da alteração.');
+    }
     if (canApplyFiles) {
-      if (mode === 'build' && result.build?.files && result.build.files.length > 0) {
+      if (mode === 'build' && !result.proposal?.requiresConfirmation && result.build?.files && result.build.files.length > 0) {
         for (const file of result.build.files) {
           if (file.action === 'delete') {
             WorkspaceManager.deleteFile(projectId, file.path);
@@ -883,9 +856,8 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       invalidResponse: result.invalidResponse,
     });
   } catch (err: any) {
-    console.error('Erro na rota de mensagens:', err);
-    res.status(500).json({ error: err.message });
-  }
+    if (!res.destroyed) res.status(500).json({ error: err.message });
+  } finally { activeProjects.delete(req.params.projectId); }
 });
 
 router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
@@ -898,6 +870,11 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
     }
 
     for (const file of files) {
+      WorkspaceManager.resolveSafePath(projectId, file.path);
+      if (!['create', 'update', 'delete', 'modify'].includes(file.action) || (file.action !== 'delete' && typeof file.content !== 'string')) return res.status(400).json({error:'Arquivo proposto inválido.'});
+    }
+    WorkspaceManager.createCheckpoint(projectId, `Antes: ${summary.slice(0, 60)}`);
+    for (const file of files) {
       if (file.action === 'delete') {
         WorkspaceManager.deleteFile(projectId, file.path);
       } else if (typeof file.content === 'string') {
@@ -905,7 +882,7 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
       }
     }
 
-    const checkpointId = WorkspaceManager.createCheckpoint(projectId, 'Alterações Aplicadas', summary);
+    const checkpointId = WorkspaceManager.createCheckpoint(projectId, summary.slice(0, 100), summary);
     res.json({ success: true, checkpointId, message: 'Alterações aplicadas com sucesso ao workspace.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1176,7 +1153,7 @@ router.get('/skills', requireAuth, (req: Request, res: Response) => {
   try {
     const skills = db.prepare(`
       SELECT * FROM skills
-      WHERE user_id = ? OR user_id = 'user-default' OR user_id IS NULL OR is_built_in = 1
+      WHERE user_id = ?
       ORDER BY is_custom DESC, name ASC
     `).all(req.user!.id);
     res.json({ skills });
@@ -1227,11 +1204,20 @@ router.post('/skills', requireAuth, (req: Request, res: Response) => {
   }
 });
 
+router.put('/skills/:id', requireAuth, (req,res) => {
+  const skill=db.prepare('SELECT id FROM skills WHERE id=? AND user_id=?').get(req.params.id,req.user!.id);
+  if(!skill)return res.status(404).json({error:'Skill não encontrada.'});
+  const {name,description,system_instructions,scope}=req.body;
+  if(typeof name!=='string'||!name.trim()||typeof system_instructions!=='string'||!system_instructions.trim()||!['message','project','workspace'].includes(scope))return res.status(400).json({error:'Nome, instruções e escopo válidos são obrigatórios.'});
+  db.prepare('UPDATE skills SET name=?,description=?,system_instructions=?,scope=? WHERE id=? AND user_id=?').run(name.trim(),String(description||''),system_instructions.trim(),scope,req.params.id,req.user!.id);
+  res.json({success:true});
+});
+
 router.delete('/skills/:id', requireAuth, (req: Request, res: Response) => {
   try {
     const skill = db.prepare('SELECT * FROM skills WHERE id = ?').get(req.params.id) as any;
     if (!skill) return res.status(404).json({ error: 'Skill não encontrada.' });
-    if (skill.user_id !== req.user!.id && skill.user_id !== 'user-default') {
+    if (skill.user_id !== req.user!.id) {
       return res.status(403).json({ error: 'Sem permissão para excluir esta skill.' });
     }
 
@@ -1245,7 +1231,7 @@ router.delete('/skills/:id', requireAuth, (req: Request, res: Response) => {
 router.post('/skills/toggle', requireAuth, (req: Request, res: Response) => {
   try {
     const { skillId, isActive } = req.body;
-    db.prepare('UPDATE skills SET is_active = ? WHERE id = ?').run(isActive ? 1 : 0, skillId);
+    db.prepare('UPDATE skills SET is_active = ? WHERE id = ? AND user_id = ?').run(isActive ? 1 : 0, skillId, req.user!.id);
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1254,7 +1240,7 @@ router.post('/skills/toggle', requireAuth, (req: Request, res: Response) => {
 
 router.get('/providers', requireAuth, (req: Request, res: Response) => {
   try {
-    const providers = db.prepare('SELECT id, provider_key, name, base_url, model_id, is_configured, connection_status, context_limit, created_at FROM providers').all() as any[];
+    const providers = db.prepare('SELECT id, provider_key, name, base_url, model_id, is_configured, connection_status, context_limit, created_at FROM providers WHERE user_id = ?').all(req.user!.id) as any[];
 
     // Synchronize is_configured with user's encrypted secret and include masked hint
     const enriched = providers.map((p) => {
@@ -1264,7 +1250,7 @@ router.get('/providers', requireAuth, (req: Request, res: Response) => {
       return {
         ...p,
         is_configured: isConfig ? 1 : 0,
-        connection_status: isConfig ? 'connected' : 'not_configured',
+        connection_status: isConfig ? (p.connection_status || 'configured') : 'not_configured',
         masked_hint: masked,
       };
     });
@@ -1300,13 +1286,13 @@ router.post('/providers/save-with-key', requireAuth, async (req: Request, res: R
           model_id = COALESCE(?, model_id),
           is_configured = ?,
           connection_status = ?
-      WHERE provider_key = ?
+      WHERE provider_key = ? AND user_id = ?
     `).run(
       baseUrl || null,
       modelId || null,
       hasKey ? 1 : 0,
-      hasKey ? 'connected' : 'not_configured',
-      providerKey
+      hasKey ? 'configured' : 'not_configured',
+      providerKey, req.user!.id
     );
 
     res.json({
@@ -1325,10 +1311,10 @@ router.post('/providers/update', requireAuth, (req: Request, res: Response) => {
     const { providerKey, baseUrl, modelId } = req.body;
     if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatório.' });
 
-    db.prepare('UPDATE providers SET base_url = COALESCE(?, base_url), model_id = COALESCE(?, model_id) WHERE provider_key = ?').run(
+    db.prepare('UPDATE providers SET base_url = COALESCE(?, base_url), model_id = COALESCE(?, model_id) WHERE provider_key = ? AND user_id = ?').run(
       baseUrl || null,
       modelId || null,
-      providerKey
+      providerKey, req.user!.id
     );
 
     res.json({ success: true, message: 'Configuração atualizada com sucesso.' });
@@ -1350,22 +1336,15 @@ router.post('/desktop/check-updates', async (req: Request, res: Response) => {
   res.json(result);
 });
 
-router.post('/desktop/command', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const { cmd, cwd } = req.body;
-    if (!cmd) return res.status(400).json({ error: 'Comando não fornecido.' });
-    const result = await DesktopService.executeControlledCommand(cmd, cwd);
-    res.json(result);
-  } catch (err: any) {
-    res.status(403).json({ error: err.message });
-  }
+router.post('/desktop/command', requireAuth, (_req, res) => {
+  res.status(501).json({error:'Executor isolado não configurado. Comandos no servidor compartilhado não estão habilitados.'});
 });
 
 // ==========================================
 // 9. LIVE PREVIEW SANDBOX (PUBLIC SERVING FOR IFRAME)
 // ==========================================
 
-router.get('/preview/:projectId/*', (req: Request, res: Response) => {
+router.get('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const projectId = req.params.projectId;
   const projectDir = WorkspaceManager.getProjectDir(projectId);
 
@@ -1382,5 +1361,9 @@ router.get('/preview/:projectId/*', (req: Request, res: Response) => {
   }
 
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  if (!filePath.startsWith(projectDir + path.sep)) return res.status(403).end();
+  res.setHeader('Content-Security-Policy', "sandbox allow-scripts; default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; connect-src 'none'; form-action 'none'");
   res.sendFile(filePath);
 });
+
+

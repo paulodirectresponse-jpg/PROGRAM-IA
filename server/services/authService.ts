@@ -146,13 +146,15 @@ export class AuthService {
     ipAddress: string = ''
   ): { user: AuthUser; session: SessionInfo } {
     const normalizedEmail = email.trim().toLowerCase();
-    let user = this.getUserByEmail(normalizedEmail);
+    let user = db.prepare('SELECT id, email, name, role, created_at FROM users WHERE firebase_uid = ?').get(uid) as unknown as AuthUser | undefined;
+    const emailOwner = this.getUserByEmail(normalizedEmail);
+    if (!user && emailOwner) throw new Error('Esta conta exige migração de identidade pelo administrador.');
 
     if (!user) {
       const cleanName = name.trim() || normalizedEmail.split('@')[0];
       const userId = 'usr-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex');
       const now = new Date().toISOString();
-      const fakePassHash = this.hashPassword('firebase-oauth-' + uid);
+      const fakePassHash = this.hashPassword(crypto.randomBytes(48).toString('hex'));
 
       db.prepare(`
         INSERT INTO users (id, email, name, password_hash, role, created_at, updated_at)
@@ -176,6 +178,7 @@ export class AuthService {
       };
     }
 
+    db.prepare('UPDATE users SET firebase_uid = ? WHERE id = ?').run(uid, user.id);
     const session = this.createSession(user.id, userAgent, ipAddress);
     return { user, session };
   }
@@ -430,3 +433,4 @@ export class AuthService {
     }
   }
 }
+

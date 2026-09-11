@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { db } from '../db/index.js';
 
-const DATA_DIR = path.resolve(process.cwd(), '.data', 'projects');
+const DATA_DIR = path.resolve(process.env.FORGE_DATA_DIR || path.join(process.cwd(), '.data'), 'projects');
 
 export interface ProjectFile {
   name: string;
@@ -27,7 +27,8 @@ export class WorkspaceManager {
   }
 
   static getProjectDir(projectId: string): string {
-    const safeProjectId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (!/^[a-zA-Z0-9_-]+$/.test(projectId)) throw new Error('Identificador de projeto inválido.');
+    const safeProjectId = projectId;
     const dir = path.join(DATA_DIR, safeProjectId);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -61,6 +62,11 @@ export class WorkspaceManager {
     if (!resolved.startsWith(projectDir + path.sep) && resolved !== projectDir) {
       throw new Error(`Path traversal detectado: caminho fora do diretório do projeto (${relativePath})`);
     }
+    let cursor = resolved;
+    while (cursor !== projectDir) {
+      if (fs.existsSync(cursor) && fs.lstatSync(cursor).isSymbolicLink()) throw new Error('Link simbólico fora do escopo permitido.');
+      cursor = path.dirname(cursor);
+    }
     return resolved;
   }
 
@@ -72,6 +78,7 @@ export class WorkspaceManager {
       if (!fs.existsSync(dir)) return;
       const items = fs.readdirSync(dir, { withFileTypes: true });
       for (const item of items) {
+        if (item.isSymbolicLink()) continue;
         if (item.name === '.git' || item.name === 'node_modules' || item.name === '.DS_Store') {
           continue;
         }
@@ -160,6 +167,12 @@ export class WorkspaceManager {
 
   static createCheckpoint(projectId: string, title: string, description: string = ''): string {
     const snapshot = this.getAllFilesContent(projectId);
+    const binary: Record<string,string> = {};
+    for (const file of this.getFiles(projectId)) if (file.isBinary) {
+      const bytes=this.readBinaryFile(projectId,file.path);
+      if(bytes) binary[file.path]=bytes.toString('base64');
+    }
+    const storedSnapshot={format:2,text:snapshot,binary};
     const cpId = 'cp-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
     const now = new Date().toISOString();
 
@@ -169,7 +182,7 @@ export class WorkspaceManager {
     db.prepare(`
       INSERT INTO checkpoints (id, project_id, title, description, parent_id, files_snapshot_json, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(cpId, projectId, title, description, parentId, JSON.stringify(snapshot), now);
+    `).run(cpId, projectId, title, description, parentId, JSON.stringify(storedSnapshot), now);
 
     db.prepare('UPDATE projects SET current_checkpoint_id = ?, updated_at = ? WHERE id = ?').run(cpId, now, projectId);
 
@@ -183,12 +196,16 @@ export class WorkspaceManager {
     const cp = db.prepare('SELECT files_snapshot_json FROM checkpoints WHERE id = ? AND project_id = ?').get(checkpointId, projectId) as { files_snapshot_json: string } | undefined;
     if (!cp) return false;
 
-    const files: Record<string, string> = JSON.parse(cp.files_snapshot_json);
+    const stored = JSON.parse(cp.files_snapshot_json);
+    const files: Record<string, string> = stored.format === 2 ? stored.text : stored;
+    const binary: Record<string,string> = stored.format === 2 ? stored.binary : {};
+    for (const rel of [...Object.keys(files),...Object.keys(binary)]) this.resolveSafePath(projectId,rel);
+    this.createCheckpoint(projectId,'Antes de restaurar','Estado preservado antes da restauração.');
 
     // Clear existing text files
     const currentFiles = this.getFiles(projectId);
     for (const file of currentFiles) {
-      if (!file.isBinary) {
+      if (stored.format === 2 || !file.isBinary) {
         this.deleteFile(projectId, file.path);
       }
     }
@@ -198,7 +215,8 @@ export class WorkspaceManager {
       this.writeFile(projectId, relPath, content);
     }
 
-    db.prepare('UPDATE projects SET current_checkpoint_id = ?, updated_at = ? WHERE id = ?').run(checkpointId, new Date().toISOString(), projectId);
+    for (const [rel, encoded] of Object.entries(binary)) this.writeBinaryFile(projectId,rel,Buffer.from(encoded,'base64'));
+    this.createCheckpoint(projectId,`Restaurado: ${checkpointId}`,'Restauração local concluída. Sincronize para criar um novo commit no GitHub.');
     return true;
   }
 
@@ -211,7 +229,7 @@ export class WorkspaceManager {
     // 1. Secret Leak Detection
     let hasLeakedKey = false;
     let leakedInfo = '';
-    const secretPattern = /(AIza[0-9A-Za-z-_]{35}|sk-[a-zA-Z0-9]{32,}|ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{60,})/g;
+    const secretPattern = /(AIza[0-9A-Za-z-_]{35}|sk-[a-zA-Z0-9]{32,}|ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{60,})/;
 
     for (const [fileName, content] of Object.entries(files)) {
       if (secretPattern.test(content)) {
@@ -225,7 +243,7 @@ export class WorkspaceManager {
       INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
       VALUES (?, ?, ?, 'security', ?, ?, ?)
     `).run(
-      'ver-sec-' + Date.now(),
+      'ver-sec-' + crypto.randomUUID(),
       projectId,
       checkpointId,
       hasLeakedKey ? 'fail' : 'pass',
@@ -242,13 +260,13 @@ export class WorkspaceManager {
       INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
       VALUES (?, ?, ?, 'build', ?, ?, ?)
     `).run(
-      'ver-bld-' + Date.now(),
+      'ver-bld-' + crypto.randomUUID(),
       projectId,
       checkpointId,
-      hasHtmlEntry ? 'pass' : 'warn',
+      'warn',
       JSON.stringify({
         rule: 'Ponto de entrada da aplicação',
-        message: hasHtmlEntry ? 'Ponto de entrada (index.html ou React root) detectado com sucesso.' : 'Aviso: index.html não localizado.',
+        message: hasHtmlEntry ? 'Ponto de entrada detectado. Build ainda não executado.' : 'Aviso: index.html não localizado.',
       }),
       now
     );
@@ -269,13 +287,13 @@ export class WorkspaceManager {
       INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
       VALUES (?, ?, ?, 'typecheck', ?, ?, ?)
     `).run(
-      'ver-typ-' + Date.now(),
+      'ver-typ-' + crypto.randomUUID(),
       projectId,
       checkpointId,
-      syntaxPass ? 'pass' : 'fail',
+      syntaxPass ? 'warn' : 'fail',
       JSON.stringify({
         rule: 'Integridade de Sintaxe & Schemas',
-        message: syntaxPass ? 'Sintaxe e arquivos de configuração válidos.' : 'Falha: arquivos de configuração JSON inválidos.',
+        message: syntaxPass ? 'JSON válido. Compilação e checagem de tipos ainda não executadas.' : 'Falha: arquivos de configuração JSON inválidos.',
       }),
       now
     );
@@ -309,21 +327,21 @@ export class WorkspaceManager {
     // 5. Preview Sandbox readiness
     db.prepare(`
       INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
-      VALUES (?, ?, ?, 'preview', 'pass', ?, ?)
+      VALUES (?, ?, ?, 'preview', 'warn', ?, ?)
     `).run(
-      'ver-prv-' + Date.now(),
+      'ver-prv-' + crypto.randomUUID(),
       projectId,
       checkpointId,
       JSON.stringify({
         rule: 'Live Preview Sandbox',
-        message: 'Ambiente de visualização ativo na rota de sandbox.',
+        message: 'Verificação visual ainda não executada em navegador.',
       }),
       now
     );
   }
 
   static deleteProject(projectId: string): void {
-    const dir = path.join(DATA_DIR, projectId);
+    const dir = this.getProjectDir(projectId);
     if (fs.existsSync(dir)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -427,3 +445,4 @@ export class WorkspaceManager {
     return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
   }
 }
+

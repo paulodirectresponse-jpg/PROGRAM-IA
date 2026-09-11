@@ -27,7 +27,7 @@ export class DesktopService {
     return {
       isElectron: this.isElectronEnvironment(),
       platform: process.platform,
-      autoUpdateAvailable: true,
+      autoUpdateAvailable: false,
       updateStatus: this.updateStatus,
       currentVersion: '1.0.0',
     };
@@ -104,3 +104,4 @@ export class DesktopService {
     }
   }
 }
+

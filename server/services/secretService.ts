@@ -38,7 +38,7 @@ export class SecretService {
     }
 
     // Persist a machine master key in .data directory if not in env
-    const keyPath = path.resolve(process.cwd(), '.data', '.master_key');
+    const keyPath = path.resolve(process.env.FORGE_DATA_DIR || path.join(process.cwd(), '.data'), '.master_key');
     if (fs.existsSync(keyPath)) {
       const hex = fs.readFileSync(keyPath, 'utf8').trim();
       this.masterKey = Buffer.from(hex, 'hex');
@@ -47,11 +47,11 @@ export class SecretService {
 
     const generated = crypto.randomBytes(32);
     try {
-      const dataDir = path.resolve(process.cwd(), '.data');
+      const dataDir = path.resolve(process.env.FORGE_DATA_DIR || path.join(process.cwd(), '.data'));
       if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
       fs.writeFileSync(keyPath, generated.toString('hex'), { encoding: 'utf8', mode: 0o600 });
     } catch {
-      // If unable to write, keep in memory
+      throw new Error('Não foi possível persistir a chave mestra. Nenhuma credencial foi salva.');
     }
 
     this.masterKey = generated;
@@ -628,20 +628,7 @@ export class SecretService {
           });
         }
       } else if (serviceKey === 'firebase') {
-        return this.recordTestResult(userId, serviceKey, {
-          success: true,
-          code: 'approved',
-          message: 'Firebase configurado com Firestore e Autenticação federada ativos.',
-        });
-      }
-
-      // Generic fallback verification for other custom keys
-      if (key && key.trim().length >= 8) {
-        return this.recordTestResult(userId, serviceKey, {
-          success: true,
-          code: 'approved',
-          message: `Credencial para "${serviceKey}" salva e validada com sucesso.`,
-        });
+        return {success:false, code:'incompatible_response', message:'Configure e teste o projeto na seção Integrações > Firebase.'};
       }
 
       return {
@@ -677,3 +664,4 @@ export class SecretService {
     return result;
   }
 }
+
