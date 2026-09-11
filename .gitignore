@@ -6,3 +6,11 @@ coverage/
 *.log
 .env*
 !.env.example
+
+.data/
+*.db
+*.db-shm
+*.db-wal
+.master_key
+.validation/
+.validation-data/
