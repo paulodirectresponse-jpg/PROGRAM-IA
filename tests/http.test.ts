@@ -41,6 +41,7 @@ test('cookie mutations require a CSRF header',async()=>{
   const r=await fetch(`${base}/providers/update`,{method:'POST',headers:{Cookie:`forge_session=${tokenA}; forge_csrf=expected`,'Content-Type':'application/json'},body:JSON.stringify({providerKey:'useoneai',modelId:'test'})});
   assert.equal(r.status,403);
 });
+test('cloud sync reports local-only when Supabase is not configured',async()=>{const r=await fetch(`${base}/sync/status`,{headers:{Authorization:`Bearer ${tokenA}`}});assert.equal(r.status,200);const body=await r.json();assert.equal(body.configured,false);assert.equal(body.status,'local_only');});
 test('changing model configuration does not mutate another user',async()=>{
   const r=await fetch(`${base}/providers/update`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({providerKey:'useoneai',modelId:'my-model'})});
   assert.equal(r.status,200);

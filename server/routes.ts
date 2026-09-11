@@ -15,6 +15,7 @@ import { AgentEngine } from './agent-engine/agentEngine.js';
 import { AGENTS } from './agent-engine/agentRegistry.js';
 import { GitHubService } from './services/githubService.js';
 import { DesktopService } from './services/desktopService.js';
+import { CloudSyncService } from './services/cloudSyncService.js';
 
 export const router = express.Router();
 const activeProjects = new Set<string>();
@@ -71,7 +72,8 @@ function csrfProtection(req: Request, res: Response, next: NextFunction) {
     if (sessionCookie) {
       const csrfCookie = req.cookies?.['forge_csrf'];
       const csrfHeader = req.headers['x-csrf-token'];
-      if (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader) {
+      const sameOrigin = req.headers['sec-fetch-site']==='same-origin' && (!req.headers.origin || new URL(req.headers.origin).host===req.headers.host);
+      if (!sameOrigin && (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader)) {
         return res.status(403).json({ error: 'Falha de validação CSRF (token inválido).' });
       }
     }
@@ -105,6 +107,7 @@ function requireProjectOwner(req: Request, res: Response, next: NextFunction) {
 // Mount global session parser and CSRF check
 router.use(sessionAuthMiddleware);
 router.use(csrfProtection);
+router.use((req,res,next)=>{res.on('finish',()=>{if(req.user&&['POST','PUT','PATCH','DELETE'].includes(req.method)&&!req.path.startsWith('/sync/'))CloudSyncService.schedule(req.user.id);});next();});
 
 // ==========================================
 // 1. AUTHENTICATION ROUTES
@@ -129,7 +132,8 @@ router.post('/auth/firebase-login', async (req: Request, res: Response) => {
       path: '/',
     });
 
-    res.json({ success: true, user });
+    const sync = await CloudSyncService.bootstrap(user.id);
+    res.json({ success: true, user, sync });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -150,6 +154,10 @@ router.post('/auth/logout', (req: Request, res: Response) => {
   res.clearCookie('forge_session', { path: '/' });
   res.json({ success: true });
 });
+
+router.get('/sync/status',requireAuth,async(req,res)=>{try{const remote=await CloudSyncService.remote(req.user!.id);res.json({configured:CloudSyncService.configured(),status:remote?'synced':'local_only',revision:remote?.revision||0,updatedAt:remote?.updated_at||null,deviceId:remote?.device_id||null});}catch(e:any){res.status(502).json({configured:true,status:'error',error:e.message});}});
+router.post('/sync/push',requireAuth,async(req,res)=>{try{res.json(await CloudSyncService.push(req.user!.id));}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
+router.post('/sync/pull',requireAuth,async(req,res)=>{try{res.json(await CloudSyncService.pull(req.user!.id));}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
 
 // ==========================================
 // 2. SECRETS & CREDENTIALS API (PER-USER)

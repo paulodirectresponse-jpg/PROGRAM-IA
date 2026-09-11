@@ -60,6 +60,7 @@ export default function App() {
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+  const [syncStatus,setSyncStatus]=useState<'checking'|'synced'|'local_only'|'error'>('checking');
 
   // Abort controller ref
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -76,6 +77,7 @@ export default function App() {
       const data = await res.json();
       if (data.authenticated && data.user) {
         setCurrentUser(data.user);
+        refreshSyncStatus();
         loadProjects(); loadSkills(); loadProviders(); loadGitHubStatus();
       } else {
         setCurrentUser(null);
@@ -87,11 +89,14 @@ export default function App() {
 
   const handleLoginSuccess = (user: AuthUser) => {
     setCurrentUser(user);
+    refreshSyncStatus();
     loadProjects();
     loadSkills();
     loadProviders();
     loadGitHubStatus();
   };
+
+  const refreshSyncStatus=async()=>{try{const r=await fetch('/api/sync/status');const d=await r.json();setSyncStatus(r.ok?d.status:'error');}catch{setSyncStatus('error')}};
 
   const handleLogout = () => {
     setCurrentUser(null);
@@ -463,6 +468,7 @@ export default function App() {
 
   return (
     <div id="forge-agent-root" className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans select-none">
+      {currentUser&&<button onClick={async()=>{setSyncStatus('checking');const r=await fetch('/api/sync/push',{method:'POST'});setSyncStatus(r.ok?'synced':'error')}} className="fixed right-4 bottom-4 z-40 rounded-full border border-slate-700 bg-slate-900/90 px-3 py-1.5 text-[10px] text-slate-300 shadow-xl" title="Clique para sincronizar agora">{syncStatus==='synced'?'● Nuvem sincronizada':syncStatus==='local_only'?'○ Somente local':syncStatus==='error'?'× Erro de sincronização':'◌ Sincronizando'}</button>}
       {/* 1. Sidebar */}
       <Sidebar
         projects={projects}
