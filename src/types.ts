@@ -1,0 +1,129 @@
+export type AgentMode = 'plan' | 'build' | 'review' | 'publish';
+
+export interface Project {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description: string;
+  origin: 'novo' | 'local' | 'github';
+  repo_url?: string;
+  branch: string;
+  status: 'active' | 'archived';
+  current_checkpoint_id?: string;
+  provider_id?: string;
+  model_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Conversation {
+  id: string;
+  project_id: string;
+  title: string;
+  mode: AgentMode;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Message {
+  id: string;
+  conversation_id: string;
+  sender: 'user' | 'agent' | 'system';
+  content: string;
+  metadata_json?: string;
+  created_at: string;
+  metadata?: {
+    mode?: AgentMode;
+    appliedSkills?: string[];
+    isDemonstrativeFallback?: boolean;
+    providerUsed?: string;
+    modelUsed?: string;
+    planId?: string;
+    checkpointId?: string;
+    filesAffected?: string[];
+    isWelcome?: boolean;
+  };
+}
+
+export interface Plan {
+  id: string;
+  task_id?: string;
+  project_id: string;
+  objective: string;
+  scope_in: string;
+  scope_out: string;
+  files_affected_json: string;
+  integrations_json?: string;
+  risks_json?: string;
+  acceptance_criteria_json: string;
+  status: 'draft' | 'approved' | 'rejected';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Skill {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  system_instructions: string;
+  scope: 'message' | 'project' | 'workspace';
+  is_active: number | boolean;
+  created_at: string;
+}
+
+export interface Provider {
+  id: string;
+  provider_key: string;
+  name: string;
+  base_url: string;
+  model_id: string;
+  is_configured: number | boolean;
+  connection_status: 'connected' | 'not_configured' | 'error';
+  context_limit: number;
+  created_at: string;
+}
+
+export interface Checkpoint {
+  id: string;
+  project_id: string;
+  title: string;
+  description?: string;
+  parent_id?: string;
+  created_at: string;
+}
+
+export interface Verification {
+  id: string;
+  project_id: string;
+  checkpoint_id?: string;
+  gate_type: 'build' | 'typecheck' | 'lint' | 'security' | 'preview';
+  status: 'pass' | 'fail' | 'warn';
+  details_json?: string;
+  created_at: string;
+}
+
+export interface ProjectFileItem {
+  name: string;
+  path: string;
+  size: number;
+  updatedAt: string;
+}
+
+export interface GitHubStatus {
+  isConnected: boolean;
+  status: 'connected' | 'pending_credentials' | 'invalid_token' | 'rate_limited';
+  username?: string;
+  avatarUrl?: string;
+  scopes?: string[];
+  missingConfig: string[];
+  message: string;
+}
+
+export interface Integration {
+  id: string;
+  service_name: string;
+  config_json: string;
+  status: 'connected' | 'pending_credentials' | 'error';
+  last_verified_at: string;
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Forge Agent",
+  "description": "Plataforma web full-stack para criar, editar, testar, revisar e publicar projetos de software por conversa com agente de IA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
