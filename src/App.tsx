@@ -243,7 +243,8 @@ export default function App() {
       });
 
       const data = await res.json();
-      if (data.success && data.agentMessage) {
+      if (!res.ok) throw new Error(data.error || 'Não foi possível concluir o pedido.');
+      if (data.agentMessage) {
         setMessages((prev) => [...prev, data.agentMessage]);
         if (data.plan) {
           setActivePlan(data.plan);

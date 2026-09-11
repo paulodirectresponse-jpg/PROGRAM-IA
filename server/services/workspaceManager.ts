@@ -167,6 +167,12 @@ export class WorkspaceManager {
 
   static createCheckpoint(projectId: string, title: string, description: string = ''): string {
     const snapshot = this.getAllFilesContent(projectId);
+    const binary: Record<string,string> = {};
+    for (const file of this.getFiles(projectId)) if (file.isBinary) {
+      const bytes=this.readBinaryFile(projectId,file.path);
+      if(bytes) binary[file.path]=bytes.toString('base64');
+    }
+    const storedSnapshot={format:2,text:snapshot,binary};
     const cpId = 'cp-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
     const now = new Date().toISOString();
 
@@ -176,7 +182,7 @@ export class WorkspaceManager {
     db.prepare(`
       INSERT INTO checkpoints (id, project_id, title, description, parent_id, files_snapshot_json, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(cpId, projectId, title, description, parentId, JSON.stringify(snapshot), now);
+    `).run(cpId, projectId, title, description, parentId, JSON.stringify(storedSnapshot), now);
 
     db.prepare('UPDATE projects SET current_checkpoint_id = ?, updated_at = ? WHERE id = ?').run(cpId, now, projectId);
 
@@ -190,12 +196,16 @@ export class WorkspaceManager {
     const cp = db.prepare('SELECT files_snapshot_json FROM checkpoints WHERE id = ? AND project_id = ?').get(checkpointId, projectId) as { files_snapshot_json: string } | undefined;
     if (!cp) return false;
 
-    const files: Record<string, string> = JSON.parse(cp.files_snapshot_json);
+    const stored = JSON.parse(cp.files_snapshot_json);
+    const files: Record<string, string> = stored.format === 2 ? stored.text : stored;
+    const binary: Record<string,string> = stored.format === 2 ? stored.binary : {};
+    for (const rel of [...Object.keys(files),...Object.keys(binary)]) this.resolveSafePath(projectId,rel);
+    this.createCheckpoint(projectId,'Antes de restaurar','Estado preservado antes da restauração.');
 
     // Clear existing text files
     const currentFiles = this.getFiles(projectId);
     for (const file of currentFiles) {
-      if (!file.isBinary) {
+      if (stored.format === 2 || !file.isBinary) {
         this.deleteFile(projectId, file.path);
       }
     }
@@ -205,7 +215,8 @@ export class WorkspaceManager {
       this.writeFile(projectId, relPath, content);
     }
 
-    db.prepare('UPDATE projects SET current_checkpoint_id = ?, updated_at = ? WHERE id = ?').run(checkpointId, new Date().toISOString(), projectId);
+    for (const [rel, encoded] of Object.entries(binary)) this.writeBinaryFile(projectId,rel,Buffer.from(encoded,'base64'));
+    this.createCheckpoint(projectId,`Restaurado: ${checkpointId}`,'Restauração local concluída. Sincronize para criar um novo commit no GitHub.');
     return true;
   }
 
@@ -232,7 +243,7 @@ export class WorkspaceManager {
       INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
       VALUES (?, ?, ?, 'security', ?, ?, ?)
     `).run(
-      'ver-sec-' + Date.now(),
+      'ver-sec-' + crypto.randomUUID(),
       projectId,
       checkpointId,
       hasLeakedKey ? 'fail' : 'pass',
@@ -249,7 +260,7 @@ export class WorkspaceManager {
       INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
       VALUES (?, ?, ?, 'build', ?, ?, ?)
     `).run(
-      'ver-bld-' + Date.now(),
+      'ver-bld-' + crypto.randomUUID(),
       projectId,
       checkpointId,
       'warn',
@@ -276,7 +287,7 @@ export class WorkspaceManager {
       INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
       VALUES (?, ?, ?, 'typecheck', ?, ?, ?)
     `).run(
-      'ver-typ-' + Date.now(),
+      'ver-typ-' + crypto.randomUUID(),
       projectId,
       checkpointId,
       syntaxPass ? 'warn' : 'fail',
@@ -318,7 +329,7 @@ export class WorkspaceManager {
       INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
       VALUES (?, ?, ?, 'preview', 'warn', ?, ?)
     `).run(
-      'ver-prv-' + Date.now(),
+      'ver-prv-' + crypto.randomUUID(),
       projectId,
       checkpointId,
       JSON.stringify({

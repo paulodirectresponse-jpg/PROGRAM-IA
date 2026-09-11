@@ -5,6 +5,7 @@ import {AuthService} from '../server/services/authService.js';
 import {SecretService} from '../server/services/secretService.js';
 import {IntegrationService} from '../server/services/integrationService.js';
 import {verifyFirebaseIdentity} from '../server/services/firebaseIdentity.js';
+import {WorkspaceManager} from '../server/services/workspaceManager.js';
 
 const suffix = `${Date.now()}`;
 let a: string, b: string;
@@ -63,4 +64,17 @@ test('Firebase identity comes from verified response, not fields supplied by a b
 test('failed connection tests cannot produce a success status',async(t)=>{
   t.mock.method(globalThis,'fetch',async()=>new Response('{}',{status:403}));
   await assert.rejects(()=>IntegrationService.test(a,'cloudflare'),/403/);
+});
+test('checkpoint restores text and binary assets and removes subsequent files',()=>{
+  const id=`restore-${suffix}`;
+  const now=new Date().toISOString();
+  db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'Restore','novo',?,?)").run(id,a,`ws-${a}`,now,now);
+  WorkspaceManager.writeFile(id,'index.html','<html lang="pt"></html>');
+  WorkspaceManager.writeBinaryFile(id,'logo.png',Buffer.from([0,1,2,255]));
+  const checkpoint=WorkspaceManager.createCheckpoint(id,'Versão com logo');
+  WorkspaceManager.writeBinaryFile(id,'logo.png',Buffer.from([9]));
+  WorkspaceManager.writeFile(id,'extra.txt','later');
+  assert.equal(WorkspaceManager.restoreCheckpoint(id,checkpoint),true);
+  assert.deepEqual(WorkspaceManager.readBinaryFile(id,'logo.png'),Buffer.from([0,1,2,255]));
+  assert.equal(WorkspaceManager.readFile(id,'extra.txt'),null);
 });

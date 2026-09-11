@@ -1,3 +1,4 @@
+import { reviewBuild } from './services/reviewBuild.js';
 import { IntegrationService, integrationFields } from './services/integrationService.js';
 import { verifyFirebaseIdentity } from './services/firebaseIdentity.js';
 import express, { Request, Response, NextFunction } from 'express';
@@ -12,6 +13,7 @@ import { GitHubService } from './services/githubService.js';
 import { DesktopService } from './services/desktopService.js';
 
 export const router = express.Router();
+const activeProjects = new Set<string>();
 
 // Extend Express Request type for authenticated user
 declare global {
@@ -687,6 +689,10 @@ router.get('/conversations/:projectId', requireAuth, requireProjectOwner, (req: 
 });
 
 router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  if (activeProjects.has(req.params.projectId)) return res.status(409).json({error:'Já há uma execução neste projeto. Aguarde ou cancele antes de enviar outro pedido.'});
+  activeProjects.add(req.params.projectId);
+  const controller = new AbortController();
+  res.on('close', () => { if (!res.writableEnded) controller.abort(); });
   try {
     const { content, mode = 'auto', appliedSkills = [] } = req.body;
     if (!content || content.trim().length === 0) {
@@ -728,7 +734,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const modelId = providerRow ? project?.model_id : undefined;
 
     // Call LLM Adapter with authenticated userId
-    const result = await LLMAdapterService.executePrompt({
+    let result = await LLMAdapterService.executePrompt({
       prompt: content,
       mode: mode as AgentMode,
       projectId,
@@ -738,7 +744,22 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       appliedSkills,
       conversationHistory: history,
       userId: req.user!.id,
+      signal: controller.signal,
     });
+    let reviewEvents: unknown[] = [];
+    if (!result.hasErrors && !result.isDemonstrativeFallback && result.build?.files?.length && (mode === 'auto' || mode === 'build')) {
+      const reviewed = await reviewBuild(result, {prompt:content,projectId,userId:req.user!.id,providerKey,modelId,existingFiles,appliedSkills,signal:controller.signal});
+      result = reviewed.candidate;
+      reviewEvents = reviewed.events;
+      result.replyText += '\n\nRevisão de código concluída. Build e verificação visual ainda dependem do executor.';
+      if (result.build!.files.some(f => f.action === 'delete')) {
+        result.proposal = {id:'prop-'+Date.now(),summary:result.build!.summary,requiresConfirmation:true,files:result.build!.files,status:'pending'};
+      }
+    }
+    controller.signal.throwIfAborted();
+    if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
+      return res.status(409).json({error:'Os arquivos mudaram durante a revisão. Envie novamente para usar a versão atual.'});
+    }
 
     let checkpointCreatedId: string | null = null;
 
@@ -812,6 +833,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const metadata = {
       mode,
       appliedSkills,
+      reviewEvents,
       isDemonstrativeFallback: result.isDemonstrativeFallback,
       providerUsed: result.providerUsed,
       modelUsed: result.modelUsed,
@@ -846,9 +868,8 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       invalidResponse: result.invalidResponse,
     });
   } catch (err: any) {
-    console.error('Erro na rota de mensagens:', err);
-    res.status(500).json({ error: err.message });
-  }
+    if (!res.destroyed) res.status(500).json({ error: err.message });
+  } finally { activeProjects.delete(req.params.projectId); }
 });
 
 router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, (req: Request, res: Response) => {

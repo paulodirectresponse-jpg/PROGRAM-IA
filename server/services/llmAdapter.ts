@@ -187,6 +187,7 @@ export class LLMAdapterService {
     modelId?: string;
     apiKey?: string;
     userId?: string;
+    signal?: AbortSignal;
   }): Promise<ProviderConnectionTestResult> {
     const config = this.getProviderConfig(options.providerKey, options.userId);
     const baseUrl = (options.baseUrl || config.baseUrl || '').trim();
@@ -631,6 +632,7 @@ export class LLMAdapterService {
     providerKey?: string;
     modelId?: string;
     userId?: string;
+    signal?: AbortSignal;
   }): Promise<LLMExecutionResult> {
     const { prompt, mode, appliedSkills, existingFiles, conversationHistory, providerKey, modelId, userId } = options;
 
@@ -656,6 +658,7 @@ export class LLMAdapterService {
             filesList,
             existingFiles,
             conversationHistory,
+            signal: options.signal,
           });
         } else if (providerConfig.type === 'gemini') {
           return await this.callGemini(providerConfig, {
@@ -665,6 +668,7 @@ export class LLMAdapterService {
             filesList,
             existingFiles,
             conversationHistory,
+            signal: options.signal,
           });
         }
       } catch (err: any) {
@@ -770,6 +774,7 @@ Responda sempre em português claro, elegante e profissional.`;
 
     const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST',
+      signal: context.signal ? AbortSignal.any([context.signal, AbortSignal.timeout(90000)]) : AbortSignal.timeout(90000),
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
@@ -856,7 +861,7 @@ Responda sempre em português claro, elegante e profissional.`;
 
           if (validFiles.length > 0) {
             const requiresConf = Boolean(
-              structured.requires_confirmation ?? (validFiles.length > 1 || validFiles.some((f) => f.action === 'delete'))
+              structured.requires_confirmation || validFiles.some((f) => f.action === 'delete')
             );
 
             proposal = {
@@ -1015,7 +1020,7 @@ Responda sempre em português claro, elegante e profissional.`;
     _existingFiles: Record<string, string>,
     _appliedSkills: string[]
   ): LLMExecutionResult {
-    const notice = `> ℹ️ **[PROVEDOR DE IA NÃO CONFIGURADO]**\n> Nenhuma chave foi configurada para o UseOneAI ou Gemini na sua conta. Acesse a aba **Integrações e Credenciais** para adicionar sua chave de API segura.\n\n`;
+    const notice = `> ℹ️ **[PROVEDOR DE IA NÃO CONFIGURADO]**\n> Nenhuma chave foi configurada para o UseOneAI ou Gemini na sua conta. Acesse a aba **Modelos de IA** para adicionar sua chave de API segura.\n\n`;
 
     if (mode === 'plan') {
       const plan: PlanOutput = {
@@ -1026,7 +1031,7 @@ Responda sempre em português claro, elegante e profissional.`;
         integrations: ['Forge Preview Sandbox', 'Audit Logs'],
         risks: ['Provedor de IA inativo para geração automática de código.'],
         acceptance_criteria: [
-          'Configurar chave de API em Integrações e Credenciais.',
+          'Configurar chave de API em Modelos de IA.',
           'Interface funcional validada pelo usuário no sandbox.',
         ],
       };
@@ -1040,7 +1045,7 @@ Responda sempre em português claro, elegante e profissional.`;
 - **Critérios de Aceite**:
 ${plan.acceptance_criteria.map((c) => `  - [ ] ${c}`).join('\n')}
 
-Para gerar e aplicar este código no workspace, configure uma chave de API nas **Integrações e Credenciais**.`;
+Para gerar e aplicar este código no workspace, configure uma chave de API nas **Modelos de IA**.`;
 
       return {
         replyText,
@@ -1056,7 +1061,7 @@ Para gerar e aplicar este código no workspace, configure uma chave de API nas *
     if (mode === 'build') {
       // Per Requirement 6: fallback NEVER applies code automatically!
       return {
-        replyText: `${notice}Não foi possível alterar os arquivos do workspace porque nenhum provedor de IA com chave válida está configurado na sua conta.\n\nPara que o Forge Agent possa gerar, modificar e testar código real:\n1. Acesse **Integrações e Credenciais** no menu lateral;\n2. Configure sua chave do **UseOneAI** ou **Gemini**;\n3. Teste a conexão e tente novamente.`,
+        replyText: `${notice}Não foi possível alterar os arquivos do workspace porque nenhum provedor de IA com chave válida está configurado na sua conta.\n\nPara que o Forge Agent possa gerar, modificar e testar código real:\n1. Acesse **Modelos de IA** no menu lateral;\n2. Configure sua chave do **UseOneAI** ou **Gemini**;\n3. Teste a conexão e tente novamente.`,
         mode: 'build',
         decisionType: 'blocked_no_provider',
         isDemonstrativeFallback: true,
@@ -1071,7 +1076,7 @@ Para gerar e aplicar este código no workspace, configure uma chave de API nas *
     const intent = this.classifyIntent(prompt);
     if (intent === 'build') {
       return {
-        replyText: `${notice}Você solicitou uma alteração de código, mas nenhum provedor de IA com chave válida está ativo na sua conta.\n\nPor favor, cadastre sua chave de API em **Integrações e Credenciais** para habilitar a geração e edição automática de arquivos.`,
+        replyText: `${notice}Você solicitou uma alteração de código, mas nenhum provedor de IA com chave válida está ativo na sua conta.\n\nPor favor, cadastre sua chave de API em **Modelos de IA** para habilitar a geração e edição automática de arquivos.`,
         mode: 'auto',
         decisionType: 'blocked_no_provider',
         isDemonstrativeFallback: true,
@@ -1083,7 +1088,7 @@ Para gerar e aplicar este código no workspace, configure uma chave de API nas *
     }
 
     return {
-      replyText: `${notice}Olá! Estou operando no modo **Demonstrativo**, pois nenhuma chave de API está cadastrada para sua conta.\n\nPosso explicar conceitos e sanar dúvidas arquiteturais. Para gerar código e atualizar arquivos em tempo real, adicione sua chave de API em **Integrações e Credenciais**.`,
+      replyText: `${notice}Olá! Estou operando no modo **Demonstrativo**, pois nenhuma chave de API está cadastrada para sua conta.\n\nPosso explicar conceitos e sanar dúvidas arquiteturais. Para gerar código e atualizar arquivos em tempo real, adicione sua chave de API em **Modelos de IA**.`,
       mode: 'auto',
       decisionType: 'explanation',
       isDemonstrativeFallback: true,
