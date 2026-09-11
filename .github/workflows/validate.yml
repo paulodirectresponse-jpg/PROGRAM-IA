@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      FORGE_DATA_DIR: ${{ runner.temp }}/forge-validation
+      FORGE_DATA_DIR: .ci-data
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
