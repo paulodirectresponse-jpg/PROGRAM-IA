@@ -1,4 +1,3 @@
-import { reviewBuild } from './services/reviewBuild.js';
 import { IntegrationService, integrationFields } from './services/integrationService.js';
 import { verifyFirebaseIdentity } from './services/firebaseIdentity.js';
 import express, { Request, Response, NextFunction } from 'express';
@@ -746,16 +745,6 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       userId: req.user!.id,
       signal: controller.signal,
     });
-    let reviewEvents: unknown[] = [];
-    if (!result.hasErrors && !result.isDemonstrativeFallback && result.build?.files?.length && (mode === 'auto' || mode === 'build')) {
-      const reviewed = await reviewBuild(result, {prompt:content,projectId,userId:req.user!.id,providerKey,modelId,existingFiles,appliedSkills,signal:controller.signal});
-      result = reviewed.candidate;
-      reviewEvents = reviewed.events;
-      result.replyText += '\n\nRevisão de código concluída. Build e verificação visual ainda dependem do executor.';
-      if (result.build!.files.some(f => f.action === 'delete')) {
-        result.proposal = {id:'prop-'+Date.now(),summary:result.build!.summary,requiresConfirmation:true,files:result.build!.files,status:'pending'};
-      }
-    }
     controller.signal.throwIfAborted();
     if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
       return res.status(409).json({error:'Os arquivos mudaram durante a revisão. Envie novamente para usar a versão atual.'});
@@ -833,7 +822,6 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const metadata = {
       mode,
       appliedSkills,
-      reviewEvents,
       isDemonstrativeFallback: result.isDemonstrativeFallback,
       providerUsed: result.providerUsed,
       modelUsed: result.modelUsed,
@@ -1216,6 +1204,15 @@ router.post('/skills', requireAuth, (req: Request, res: Response) => {
   }
 });
 
+router.put('/skills/:id', requireAuth, (req,res) => {
+  const skill=db.prepare('SELECT id FROM skills WHERE id=? AND user_id=?').get(req.params.id,req.user!.id);
+  if(!skill)return res.status(404).json({error:'Skill não encontrada.'});
+  const {name,description,system_instructions,scope}=req.body;
+  if(typeof name!=='string'||!name.trim()||typeof system_instructions!=='string'||!system_instructions.trim()||!['message','project','workspace'].includes(scope))return res.status(400).json({error:'Nome, instruções e escopo válidos são obrigatórios.'});
+  db.prepare('UPDATE skills SET name=?,description=?,system_instructions=?,scope=? WHERE id=? AND user_id=?').run(name.trim(),String(description||''),system_instructions.trim(),scope,req.params.id,req.user!.id);
+  res.json({success:true});
+});
+
 router.delete('/skills/:id', requireAuth, (req: Request, res: Response) => {
   try {
     const skill = db.prepare('SELECT * FROM skills WHERE id = ?').get(req.params.id) as any;
@@ -1368,4 +1365,5 @@ router.get('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Requ
   res.setHeader('Content-Security-Policy', "sandbox allow-scripts; default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; connect-src 'none'; form-action 'none'");
   res.sendFile(filePath);
 });
+
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Sparkles, Check, ToggleLeft, ToggleRight, Plus, Trash2, ShieldAlert, Code2, Paintbrush, AlertCircle, ArrowLeft } from 'lucide-react';
+import { Pencil, X, Sparkles, Check, ToggleLeft, ToggleRight, Plus, Trash2, ShieldAlert, Code2, Paintbrush, AlertCircle, ArrowLeft } from 'lucide-react';
 import { Skill } from '../types';
 
 interface SkillsModalProps {
@@ -14,6 +14,7 @@ interface SkillsModalProps {
     system_instructions: string;
     scope: 'message' | 'project' | 'workspace';
   }) => Promise<boolean>;
+  onUpdateSkill?: (id: string, data: Record<string, unknown>) => Promise<boolean>;
   onDeleteSkill?: (skillId: string) => Promise<boolean>;
 }
 
@@ -24,7 +25,9 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({
   onToggleSkill,
   onCreateSkill,
   onDeleteSkill,
+  onUpdateSkill,
 }) => {
+  const [editingId,setEditingId] = useState<string|null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
@@ -51,15 +54,17 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({
     setIsSubmitting(true);
     try {
       if (onCreateSkill) {
-        const ok = await onCreateSkill({
+        const data = {
           name: name.trim(),
           slug: slug.trim() || undefined,
           description: description.trim(),
           system_instructions: instructions.trim(),
           scope,
-        });
+        };
+        const ok = editingId && onUpdateSkill ? await onUpdateSkill(editingId,data) : await onCreateSkill(data);
         if (ok) {
           setIsCreating(false);
+          setEditingId(null);
           setName('');
           setSlug('');
           setDescription('');
@@ -98,7 +103,7 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({
           <div className="flex items-center gap-2">
             {!isCreating && (
               <button
-                onClick={() => setIsCreating(true)}
+                onClick={() => { setEditingId(null); setName(''); setSlug(''); setDescription(''); setInstructions(''); setFormError(null); setIsCreating(true); }}
                 className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-medium flex items-center gap-1.5 transition cursor-pointer"
               >
                 <Plus size={14} />
@@ -253,6 +258,9 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0 mt-0.5">
+                      {onUpdateSkill && <button title="Editar skill" className="p-1 text-slate-400 hover:text-cyan-300" onClick={()=>{
+                        setEditingId(skill.id);setName(skill.name);setSlug(skill.slug);setDescription(skill.description);setInstructions(skill.system_instructions);setScope(skill.scope==='workspace'?'workspace':'project');setIsCreating(true);
+                      }}><Pencil size={15}/></button>}
                       {isCustom && onDeleteSkill && (
                         <button
                           onClick={() => {
@@ -299,3 +307,5 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({
     </div>
   );
 };
+
+

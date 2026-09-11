@@ -564,6 +564,21 @@ export default function App() {
         onClose={() => setIsSkillsOpen(false)}
         skills={skills}
         onToggleSkill={handleToggleSkill}
+        onCreateSkill={async data => {
+          const res=await fetch('/api/skills',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+          const result=await res.json();if(!res.ok)throw new Error(result.error);
+          await loadSkills();return true;
+        }}
+        onUpdateSkill={async (id,data) => {
+          const res=await fetch(`/api/skills/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+          const result=await res.json();if(!res.ok)throw new Error(result.error);
+          await loadSkills();return true;
+        }}
+        onDeleteSkill={async id => {
+          const res=await fetch(`/api/skills/${id}`,{method:'DELETE'});
+          if(!res.ok){setToastMessage({text:'Não foi possível excluir a skill.',type:'error'});return false;}
+          await loadSkills();return true;
+        }}
       />
 
       <CheckpointsModal
@@ -640,4 +655,5 @@ export default function App() {
     </div>
   );
 }
+
 
