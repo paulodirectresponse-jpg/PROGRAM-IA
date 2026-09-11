@@ -221,4 +221,33 @@ export class WorkspaceManager {
       now
     );
   }
+
+  static deleteProject(projectId: string): void {
+    const dir = path.join(DATA_DIR, projectId);
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  static duplicateProject(sourceProjectId: string, targetProjectId: string, _newName?: string): boolean {
+    try {
+      const sourceFiles = this.getAllFilesContent(sourceProjectId);
+      for (const [filePath, content] of Object.entries(sourceFiles)) {
+        this.writeFile(targetProjectId, filePath, content);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  static async generateZip(projectId: string): Promise<Buffer> {
+    const JSZip = (await import('jszip')).default;
+    const zip = new JSZip();
+    const files = this.getAllFilesContent(projectId);
+    for (const [relPath, content] of Object.entries(files)) {
+      zip.file(relPath, content);
+    }
+    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  }
 }

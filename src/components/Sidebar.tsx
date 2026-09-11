@@ -12,6 +12,9 @@ import {
   ExternalLink,
   History,
   Terminal,
+  Copy,
+  Trash2,
+  Download,
 } from 'lucide-react';
 import { Project, Provider, GitHubStatus } from '../types';
 
@@ -24,6 +27,9 @@ interface SidebarProps {
   onOpenProviders: () => void;
   onOpenIntegrations: () => void;
   onOpenCheckpoints: () => void;
+  onDuplicateProject?: (id: string) => void;
+  onDeleteProject?: (id: string) => void;
+  onExportZip?: (id: string) => void;
   activeProvider: Provider | null;
   githubStatus: GitHubStatus | null;
 }
@@ -37,6 +43,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenProviders,
   onOpenIntegrations,
   onOpenCheckpoints,
+  onDuplicateProject,
+  onDeleteProject,
+  onExportZip,
   activeProvider,
   githubStatus,
 }) => {
@@ -81,22 +90,75 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {projects.map((proj) => {
               const isSelected = activeProject?.id === proj.id;
               return (
-                <button
+                <div
                   key={proj.id}
                   id={`project-item-${proj.id}`}
-                  onClick={() => onSelectProject(proj)}
-                  className={`w-full text-left px-2.5 py-1.5 rounded-md text-xs flex items-center justify-between transition cursor-pointer ${
+                  className={`group w-full px-2.5 py-1.5 rounded-md text-xs flex items-center justify-between transition ${
                     isSelected
                       ? 'bg-slate-800/90 text-cyan-300 font-medium border border-slate-700/60'
                       : 'text-slate-300 hover:bg-slate-900 hover:text-slate-200'
                   }`}
                 >
-                  <span className="truncate flex items-center gap-2">
-                    <FolderGit2 size={13} className={isSelected ? 'text-cyan-400' : 'text-slate-400'} />
-                    {proj.name}
-                  </span>
-                  <span className="text-[10px] text-slate-400 font-mono">{proj.branch}</span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => onSelectProject(proj)}
+                    className="truncate flex items-center gap-2 flex-1 text-left cursor-pointer"
+                  >
+                    <FolderGit2 size={13} className={isSelected ? 'text-cyan-400 shrink-0' : 'text-slate-400 shrink-0'} />
+                    <span className="truncate">{proj.name}</span>
+                  </button>
+
+                  <div className="flex items-center gap-1 shrink-0 ml-1">
+                    {/* Action buttons on hover or when selected */}
+                    <div className="hidden group-hover:flex items-center gap-0.5">
+                      {onExportZip && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onExportZip(proj.id);
+                          }}
+                          title="Baixar ZIP do projeto"
+                          className="p-1 rounded text-slate-400 hover:text-cyan-300 hover:bg-slate-700/60 cursor-pointer"
+                        >
+                          <Download size={11} />
+                        </button>
+                      )}
+                      {onDuplicateProject && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDuplicateProject(proj.id);
+                          }}
+                          title="Duplicar projeto"
+                          className="p-1 rounded text-slate-400 hover:text-cyan-300 hover:bg-slate-700/60 cursor-pointer"
+                        >
+                          <Copy size={11} />
+                        </button>
+                      )}
+                      {onDeleteProject && projects.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm(`Deseja realmente excluir o projeto "${proj.name}"? Esta ação não pode ser desfeita.`)) {
+                              onDeleteProject(proj.id);
+                            }
+                          }}
+                          title="Excluir projeto"
+                          className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-700/60 cursor-pointer"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      )}
+                    </div>
+
+                    <span className="text-[10px] text-slate-400 font-mono group-hover:hidden">
+                      {proj.branch}
+                    </span>
+                  </div>
+                </div>
               );
             })}
           </div>

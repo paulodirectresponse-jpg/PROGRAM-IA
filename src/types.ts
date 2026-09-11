@@ -1,4 +1,20 @@
-export type AgentMode = 'plan' | 'build' | 'review' | 'publish';
+export type AgentMode = 'auto' | 'plan' | 'build' | 'review' | 'publish';
+
+export interface FileChangeProposal {
+  path: string;
+  action: 'create' | 'modify' | 'delete';
+  content: string;
+  diff?: string;
+}
+
+export interface ChangeProposal {
+  id: string;
+  summary: string;
+  diffSummary?: string;
+  requiresConfirmation: boolean;
+  files: FileChangeProposal[];
+  status: 'pending' | 'applied' | 'rejected';
+}
 
 export interface Project {
   id: string;
@@ -42,6 +58,10 @@ export interface Message {
     checkpointId?: string;
     filesAffected?: string[];
     isWelcome?: boolean;
+    proposal?: ChangeProposal;
+    decisionType?: 'explanation' | 'plan' | 'change' | 'review' | 'publish';
+    diffSummary?: string;
+    hasErrors?: boolean;
   };
 }
 

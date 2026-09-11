@@ -19,6 +19,7 @@ import {
   GitHubStatus,
   AgentMode,
   Plan,
+  ChangeProposal,
 } from './types';
 
 export default function App() {
@@ -26,7 +27,7 @@ export default function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [activePlan, setActivePlan] = useState<Plan | null>(null);
-  const [activeMode, setActiveMode] = useState<AgentMode>('plan');
+  const [activeMode, setActiveMode] = useState<AgentMode>('auto');
   const [files, setFiles] = useState<ProjectFileItem[]>([]);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [verifications, setVerifications] = useState<Verification[]>([]);
@@ -136,6 +137,7 @@ export default function App() {
     description: string;
     origin: 'novo' | 'local' | 'github';
     repo_url?: string;
+    initialFiles?: Record<string, string>;
   }) => {
     try {
       const res = await fetch('/api/projects', {
@@ -247,6 +249,31 @@ export default function App() {
     }
   };
 
+  // Handle applying a code change proposal (approved by user)
+  const handleApplyProposal = async (proposal: ChangeProposal) => {
+    if (!activeProject) return;
+    setIsLoading(true);
+    try {
+      const res = await fetch(`/api/conversations/${activeProject.id}/apply-proposal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: proposal.files,
+          summary: proposal.summary,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        await loadProjectDetails(activeProject.id);
+        setPreviewNonce(Date.now());
+      }
+    } catch (err) {
+      console.error('Falha ao aplicar proposta:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Abort execution
   const handleAbort = () => {
     if (abortControllerRef.current) {
@@ -301,6 +328,46 @@ export default function App() {
     }
   };
 
+  // Duplicate project
+  const handleDuplicateProject = async (projectId: string) => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/duplicate`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success && data.projectId) {
+        await loadProjects();
+        const pRes = await fetch(`/api/projects/${data.projectId}`);
+        const pData = await pRes.json();
+        if (pData.project) {
+          setActiveProject(pData.project);
+        }
+      }
+    } catch (err) {
+      console.error('Falha ao duplicar projeto:', err);
+    }
+  };
+
+  // Delete project
+  const handleDeleteProject = async (projectId: string) => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        const remaining = projects.filter((p) => p.id !== projectId);
+        setProjects(remaining);
+        if (activeProject?.id === projectId && remaining.length > 0) {
+          setActiveProject(remaining[0]);
+        }
+      }
+    } catch (err) {
+      console.error('Falha ao excluir projeto:', err);
+    }
+  };
+
+  // Export project as ZIP
+  const handleExportZip = (projectId: string) => {
+    window.location.href = `/api/projects/${projectId}/export/zip`;
+  };
+
   const activeProvider = providers.find((p) => p.is_configured) || providers[0] || null;
 
   return (
@@ -315,6 +382,9 @@ export default function App() {
         onOpenProviders={() => setIsProvidersOpen(true)}
         onOpenIntegrations={() => setIsIntegrationsOpen(true)}
         onOpenCheckpoints={() => setIsCheckpointsOpen(true)}
+        onDuplicateProject={handleDuplicateProject}
+        onDeleteProject={handleDeleteProject}
+        onExportZip={handleExportZip}
         activeProvider={activeProvider}
         githubStatus={githubStatus}
       />
@@ -326,6 +396,7 @@ export default function App() {
         onChangeMode={(m) => setActiveMode(m)}
         onSendMessage={handleSendMessage}
         onApprovePlan={handleApprovePlan}
+        onApplyProposal={handleApplyProposal}
         activePlan={activePlan}
         isLoading={isLoading}
         onAbort={handleAbort}

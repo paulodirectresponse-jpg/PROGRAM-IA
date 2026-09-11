@@ -131,7 +131,7 @@ export function initializeDatabase() {
       provider_key: 'gemini',
       name: 'Google Gemini',
       base_url: 'https://generativelanguage.googleapis.com',
-      model_id: 'gemini-2.5-flash',
+      model_id: 'gemini-3.5-flash-lite',
       is_configured: Boolean(process.env.GEMINI_API_KEY) ? 1 : 0,
       connection_status: Boolean(process.env.GEMINI_API_KEY) ? 'connected' : 'not_configured',
       context_limit: 1000000,
@@ -168,6 +168,11 @@ export function initializeDatabase() {
       );
     }
   }
+
+  // Ensure Gemini provider uses gemini-3.5-flash-lite
+  try {
+    db.prepare("UPDATE providers SET model_id = 'gemini-3.5-flash-lite' WHERE provider_key = 'gemini' AND (model_id LIKE '%2.5%' OR model_id = '')").run();
+  } catch {}
 
   // Seed default integrations (GitHub, UseOneAI, Gemini)
   const defaultIntegrations = [

@@ -76,4 +76,35 @@ describe('Forge Agent Core Engine Tests', () => {
       assert.ok(status.missingConfig.includes('GITHUB_TOKEN'));
     }
   });
+
+  test('Project lifecycle: Duplicate and ZIP export', async () => {
+    const sourceId = 'proj-dup-test-' + Date.now();
+    WorkspaceManager.writeFile(sourceId, 'App.tsx', 'export const App = () => <h1>Original</h1>;');
+    WorkspaceManager.writeFile(sourceId, 'package.json', '{"name": "original"}');
+
+    // Duplicate project
+    const targetId = 'proj-dup-target-' + Date.now();
+    const dupSuccess = WorkspaceManager.duplicateProject(sourceId, targetId, 'Cópia Teste');
+    assert.equal(dupSuccess, true);
+
+    const dupAppContent = WorkspaceManager.readFile(targetId, 'App.tsx');
+    assert.equal(dupAppContent, 'export const App = () => <h1>Original</h1>;');
+
+    // ZIP export
+    const zipBuffer = await WorkspaceManager.generateZip(targetId);
+    assert.ok(Buffer.isBuffer(zipBuffer));
+    assert.ok(zipBuffer.length > 0);
+
+    // Clean up
+    WorkspaceManager.deleteProject(sourceId);
+    WorkspaceManager.deleteProject(targetId);
+  });
+
+  test('Auto mode intent classification', () => {
+    assert.equal(LLMAdapterService.classifyIntent('Como funciona o useEffect?'), 'explanation');
+    assert.equal(LLMAdapterService.classifyIntent('Planeje a arquitetura do banco de dados'), 'plan');
+    assert.equal(LLMAdapterService.classifyIntent('Crie um componente de botão azul e adicione no App.tsx'), 'build');
+    assert.equal(LLMAdapterService.classifyIntent('Revise este código procurando por bugs'), 'review');
+    assert.equal(LLMAdapterService.classifyIntent('Faça deploy ou commit para o GitHub'), 'publish');
+  });
 });
