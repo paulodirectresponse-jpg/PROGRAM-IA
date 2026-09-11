@@ -2,34 +2,71 @@
 
 This is a working revision, not an official production release.
 
-## Corrected in this revision
+## Current development rule
+
+The current agent/reviewer implementation is intentionally frozen at commit `486ce9a87e6548591ff57158f5957d80118e5a8d`.
+
+Product-completion work continues on branch `codex/product-completion` and must not change the programmer/reviewer loop until the rest of the product is complete.
+
+The ordered completion plan is documented in `PRODUCT_COMPLETION_PLAN.md`.
+
+## Corrected and verified so far
 
 - Removed automatic authentication as `user-default`.
-- Firebase login passes an ID token; backend retrieves the identity from Firebase Auth. Client email and uid are not trusted.
-- Removed local password-login fallback from public routes.
+- Firebase login passes an ID token; backend retrieves identity from Firebase Auth. Browser-supplied email and uid are not trusted.
+- Removed local password-login fallback from public backend routes.
 - Enforced project ownership and CSRF checks; added client CSRF header transport.
-- Scoped provider configuration, skills, and secrets to the authenticated user; migrated legacy global provider/skill uniqueness.
+- Scoped provider configuration, skills, projects and secrets to the authenticated user.
 - Removed host credential fallback for logged-in users.
 - Consolidated integration settings with service-specific fields and actual read-access tests.
+- AI provider API keys belong to Modelos de IA; external-service credentials belong to Integrações.
 - Removed fake Firebase/custom-key success responses and false build/preview pass results.
 - Added named pre-change checkpoints and path validation before application.
+- Checkpoint restoration now preserves binary files and removes files created after the selected version.
+- Restoration creates a preservation checkpoint before changing the workspace.
 - Preserved URLs and source text when parsing structured JSON model responses.
 - Excluded runtime database and encryption material from source distribution.
+- Added a bounded programmer/reviewer correction loop with cancellation and malformed-verdict rejection.
 
 ## Verification
 
-Local syntax and import resolution passed for 31 TypeScript entry points using the available bundler. Nine foundation tests passed (SQLite migration/user data, session revocation, secret isolation, credential retention, Firebase identity rejection, mocked external failures).
+GitHub Actions run 34623662590 passed successfully on commit `486ce9a`.
 
-Full dependency installation is blocked in the current local execution environment; offline cache lacks the required packages. Full typecheck, original test suite, production build, and browser verification must pass in CI before merging the application changes.
+The successful CI run executed:
+- dependency installation;
+- TypeScript typecheck;
+- foundation tests;
+- HTTP authentication/isolation tests;
+- reviewer-loop tests;
+- original test suite;
+- production build;
+- Chromium installation;
+- Playwright browser test;
+- browser artifact upload.
 
-## Still required for the requested complete product
+## Product work still required while the agent stays frozen
 
-- Isolated execution worker for generated projects, actual build/test/browser evidence, and stop/cost/time limits.
-- Programmer/reviewer iterations connected to those real gates. No infinite success loop or fabricated approval.
-- Full deployment actions and domain management for Cloudflare, DB/storage actions for Supabase, and project setup actions for Firebase. Current new integration tests verify read access only.
-- Validate ZIP/binary/checkpoint recovery, conflicting remote Git changes, and persisted proposals end-to-end.
-- Test Firebase account signup and Google login against the configured product project; enable providers and authorized domains there.
-- Production hosting and a desktop packaging/update pipeline for this web codebase; the old Forge-Agent installer is a separate application.
-- Rotate any real credentials that were stored in the previously committed database. Removing files from the latest commit does not erase Git history.
+1. Clean and consolidate Settings/Auth UI and remove legacy credential/login paths.
+2. Complete checkpoint/version restore behavior and GitHub-safe synchronization.
+3. Complete project create/import ZIP/import GitHub/duplicate/delete/export flows.
+4. Finish GitHub end-to-end synchronization, binary push and conflict handling.
+5. Add real Cloudflare deployment/domain actions.
+6. Add supported Supabase database/storage actions.
+7. Complete Firebase project integration and real product-auth verification.
+8. Complete Skills CRUD/scopes without changing agent orchestration.
+9. Perform security/audit/data hardening and credential-history remediation.
+10. Finish UX/error states and broad Playwright coverage.
+11. Merge a fully verified product-completion branch into main and publish an official release.
 
-Sources used for protocols: https://firebase.google.com/docs/reference/rest/auth and https://supabase.com/docs/reference/api/v1-list-all-projects .
+## Explicitly postponed
+
+The following agent-specific work is paused until the product-completion plan is finished:
+- isolated execution worker for generated projects;
+- build/test/browser evidence fed back into the agent loop;
+- redesign of programmer/reviewer architecture;
+- multi-agent orchestration;
+- cost/time/token control for autonomous loops.
+
+## Security note
+
+A runtime database and master key existed in older public commits. Removing them from the current tree does not erase Git history. Any real credentials that may have been stored there must be rotated, and repository-history remediation must be completed before production release.
