@@ -55,6 +55,7 @@ export interface LLMExecutionResult {
   errorMessage?: string;
   invalidResponse?: boolean;
   errorReason?: string;
+  usage?: {inputTokens:number;outputTokens:number;billedCostUsd:number};
 }
 
 export interface ProviderConnectionTestResult {
@@ -802,7 +803,9 @@ Responda sempre em português claro, elegante e profissional.`;
     const rawContent = data.choices?.[0]?.message?.content;
     const textContent = this.extractContentText(rawContent);
 
-    return this.parseLLMResponse(textContent, context.mode, config.name, config.modelId, context.existingFiles);
+    const parsed=this.parseLLMResponse(textContent, context.mode, config.name, config.modelId, context.existingFiles);
+    parsed.usage={inputTokens:Number(data.usage?.prompt_tokens||0),outputTokens:Number(data.usage?.completion_tokens||0),billedCostUsd:Number(data.cheaper_inference?.billed_cost_usd||0)};
+    return parsed;
   }
 
   private static async callGemini(
@@ -1097,4 +1100,5 @@ Para gerar e aplicar este código no workspace, configure uma chave de API nas *
     };
   }
 }
+
 

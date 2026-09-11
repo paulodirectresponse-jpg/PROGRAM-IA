@@ -58,6 +58,15 @@ export function initializeDatabase() {
   ensureColumn('attachments', 'user_id', "TEXT DEFAULT 'user-default'");
   ensureColumn('logs', 'user_id', "TEXT DEFAULT 'user-default'");
   ensureColumn('skills', 'is_custom', "INTEGER DEFAULT 0");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS model_profiles (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,profile_key TEXT NOT NULL,level INTEGER NOT NULL,max_attempts INTEGER NOT NULL DEFAULT 1,max_cost_usd REAL NOT NULL DEFAULT 0,enabled INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(user_id,profile_key));
+    CREATE TABLE IF NOT EXISTS model_candidates (id TEXT PRIMARY KEY,profile_id TEXT NOT NULL,provider_key TEXT NOT NULL,model_id TEXT NOT NULL,priority INTEGER NOT NULL DEFAULT 0,enabled INTEGER NOT NULL DEFAULT 1,health_state TEXT NOT NULL DEFAULT 'healthy',consecutive_failures INTEGER NOT NULL DEFAULT 0,circuit_open_until TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(profile_id,provider_key,model_id));
+    CREATE TABLE IF NOT EXISTS model_invocations (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,project_id TEXT,run_id TEXT,step_id TEXT,agent_key TEXT,profile_key TEXT,provider_key TEXT NOT NULL,model_id TEXT NOT NULL,input_tokens INTEGER DEFAULT 0,output_tokens INTEGER DEFAULT 0,cost_usd REAL DEFAULT 0,latency_ms INTEGER NOT NULL,status TEXT NOT NULL,error_code TEXT,retry_index INTEGER DEFAULT 0,created_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS model_invocations_user_created ON model_invocations(user_id,created_at);
+    CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,project_id TEXT NOT NULL,conversation_id TEXT NOT NULL,mode TEXT NOT NULL,status TEXT NOT NULL,budget_usd REAL NOT NULL DEFAULT .5,spent_usd REAL NOT NULL DEFAULT 0,created_at TEXT NOT NULL,finished_at TEXT);
+    CREATE TABLE IF NOT EXISTS agent_steps (id TEXT PRIMARY KEY,run_id TEXT NOT NULL,agent_key TEXT NOT NULL,title TEXT NOT NULL,status TEXT NOT NULL,order_index INTEGER NOT NULL,scope_level TEXT NOT NULL DEFAULT 'task',attempt_count INTEGER NOT NULL DEFAULT 0,parent_step_id TEXT,acceptance_json TEXT NOT NULL DEFAULT '[]',context_json TEXT,created_at TEXT NOT NULL,finished_at TEXT);
+    CREATE TABLE IF NOT EXISTS tool_executions (id TEXT PRIMARY KEY,run_id TEXT,step_id TEXT,tool_key TEXT NOT NULL,status TEXT NOT NULL,duration_ms INTEGER NOT NULL,summary_json TEXT NOT NULL,created_at TEXT NOT NULL);
+  `);
 
   // Replace legacy global uniqueness with per-user uniqueness, preserving records.
   for (const [table, key] of [['providers', 'provider_key'], ['skills', 'slug']]) {
@@ -544,4 +553,5 @@ function createInitialProject() {
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run('ver-3', projectId, cpId, 'preview', 'pass', JSON.stringify({ message: 'Preview pronto para renderização' }), now);
 }
+
 

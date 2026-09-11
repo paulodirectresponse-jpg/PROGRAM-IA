@@ -8,6 +8,11 @@ import { AuthService, AuthUser } from './services/authService.js';
 import { SecretService } from './services/secretService.js';
 import { WorkspaceManager } from './services/workspaceManager.js';
 import { LLMAdapterService, AgentMode } from './services/llmAdapter.js';
+import { ModelRouter, type ProfileKey } from './services/modelRouter.js';
+import { RunService } from './services/runService.js';
+import { ValidatorEngine } from './services/validatorEngine.js';
+import { AgentEngine } from './agent-engine/agentEngine.js';
+import { AGENTS } from './agent-engine/agentRegistry.js';
 import { GitHubService } from './services/githubService.js';
 import { DesktopService } from './services/desktopService.js';
 
@@ -170,6 +175,13 @@ router.post('/providers/test', requireAuth, async (req, res) => {
     res.json(result);
   } catch { res.status(400).json({success:false,message:'Falha ao testar o provedor.'}); }
 });
+router.get('/model-profiles',requireAuth,(req,res)=>res.json({profiles:ModelRouter.listProfiles(req.user!.id)}));
+router.put('/model-profiles/:profileKey/candidates',requireAuth,(req,res)=>{try{res.json({profiles:ModelRouter.saveCandidate(req.user!.id,req.params.profileKey as ProfileKey,req.body)});}catch(e:any){res.status(400).json({error:e.message});}});
+router.patch('/model-candidates/:id',requireAuth,(req,res)=>{try{res.json({profiles:ModelRouter.updateCandidate(req.user!.id,req.params.id,req.body)});}catch(e:any){res.status(400).json({error:e.message});}});
+router.delete('/model-candidates/:id',requireAuth,(req,res)=>{try{res.json({profiles:ModelRouter.deleteCandidate(req.user!.id,req.params.id)});}catch(e:any){res.status(400).json({error:e.message});}});
+router.get('/telemetry/summary',requireAuth,(req,res)=>{const since=String(req.query.since||new Date(Date.now()-2592000000).toISOString());const rows=db.prepare(`SELECT profile_key,provider_key,model_id,COUNT(*) calls,COALESCE(SUM(cost_usd),0) cost_usd,ROUND(AVG(latency_ms)) avg_latency_ms,SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) successes FROM model_invocations WHERE user_id=? AND created_at>=? GROUP BY profile_key,provider_key,model_id`).all(req.user!.id,since);res.json({since,rows});});
+router.get('/agents',requireAuth,(req,res)=>{const metrics=db.prepare(`SELECT agent_key,COUNT(*) calls,COALESCE(SUM(cost_usd),0) cost_usd,SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) successes FROM model_invocations WHERE user_id=? GROUP BY agent_key`).all(req.user!.id) as any[];res.json({agents:Object.entries(AGENTS).map(([key,value])=>({key,label:value.role,profile:value.defaultProfile,tools:value.tools,metrics:metrics.find(m=>m.agent_key===key)||{calls:0,cost_usd:0,successes:0}}))});});
+router.get('/agent-runs',requireAuth,(req,res)=>{const projectId=String(req.query.projectId||'');const runs=projectId?db.prepare('SELECT * FROM agent_runs WHERE user_id=? AND project_id=? ORDER BY created_at DESC LIMIT 30').all(req.user!.id,projectId):db.prepare('SELECT * FROM agent_runs WHERE user_id=? ORDER BY created_at DESC LIMIT 30').all(req.user!.id);res.json({runs});});
 
 router.get('/secrets', requireAuth, (req: Request, res: Response) => {
   try {
@@ -691,6 +703,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
   if (activeProjects.has(req.params.projectId)) return res.status(409).json({error:'Já há uma execução neste projeto. Aguarde ou cancele antes de enviar outro pedido.'});
   activeProjects.add(req.params.projectId);
   const controller = new AbortController();
+  let execution: {runId:string;stepId:string}|null=null;
   res.on('close', () => { if (!res.writableEnded) controller.abort(); });
   try {
     const { content, mode = 'auto', appliedSkills = [] } = req.body;
@@ -716,6 +729,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     } else {
       db.prepare('UPDATE conversations SET mode = ?, updated_at = ? WHERE id = ?').run(mode, now, conv.id);
     }
+    execution=RunService.start(req.user!.id,projectId,conv.id,mode,.5);
 
     // Save user message
     const userMsgId = 'msg-user-' + Date.now();
@@ -733,7 +747,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const modelId = providerRow ? project?.model_id : undefined;
 
     // Call LLM Adapter with authenticated userId
-    let result = await LLMAdapterService.executePrompt({
+    let result = process.env.AGENT_ENGINE_ENABLED==='false' ? await LLMAdapterService.executePrompt({
       prompt: content,
       mode: mode as AgentMode,
       projectId,
@@ -744,13 +758,15 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       conversationHistory: history,
       userId: req.user!.id,
       signal: controller.signal,
-    });
+    }) : await AgentEngine.execute({prompt:content,mode:mode as AgentMode,projectId,existingFiles,appliedSkills,conversationHistory:history,userId:req.user!.id,runId:execution.runId,stepId:execution.stepId,signal:controller.signal});
     controller.signal.throwIfAborted();
     if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
       return res.status(409).json({error:'Os arquivos mudaram durante a revisão. Envie novamente para usar a versão atual.'});
     }
 
     let checkpointCreatedId: string | null = null;
+    let rollbackCheckpointId: string | null = null;
+    let validation: Awaited<ReturnType<typeof ValidatorEngine.validate>>|null=null;
 
     // STRICT SAFETY CHECK:
     // Fallback mode or invalid responses NEVER apply code or create checkpoints!
@@ -762,7 +778,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
 
     if (canApplyFiles && result.build?.files?.length && (mode === 'build' || mode === 'auto') && !result.proposal?.requiresConfirmation) {
       for (const file of result.build.files) WorkspaceManager.resolveSafePath(projectId, file.path);
-      WorkspaceManager.createCheckpoint(projectId, `Antes: ${content.slice(0, 60)}`, 'Ponto de restauração antes da alteração.');
+      rollbackCheckpointId=WorkspaceManager.createCheckpoint(projectId, `Antes: ${content.slice(0, 60)}`, 'Ponto de restauração antes da alteração.');
     }
     if (canApplyFiles) {
       if (mode === 'build' && !result.proposal?.requiresConfirmation && result.build?.files && result.build.files.length > 0) {
@@ -791,6 +807,15 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
           `Auto: ${content.slice(0, 30)}...`,
           result.build.summary || 'Alterações aplicadas automaticamente'
         );
+      }
+    }
+    if(checkpointCreatedId){
+      validation=await ValidatorEngine.validate({projectId,runId:execution.runId,stepId:execution.stepId,signal:controller.signal});
+      if(!validation.passed&&rollbackCheckpointId){
+        WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);
+        result.hasErrors=true;
+        result.errorMessage='A alteração foi revertida automaticamente porque uma verificação real falhou.';
+        checkpointCreatedId=null;
       }
     }
 
@@ -833,6 +858,10 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       hasErrors: result.hasErrors,
       invalidResponse: result.invalidResponse,
       errorMessage: result.errorMessage || result.errorReason,
+      runId: execution.runId,
+      agentKey: (result as any).agentKey || 'PROGRAM',
+      profileKey: (result as any).profileKey,
+      validation,
     };
 
     db.prepare(`
@@ -840,6 +869,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       VALUES (?, ?, 'agent', ?, ?, ?)
     `).run(agentMsgId, conv.id, result.replyText, JSON.stringify(metadata), now);
 
+    RunService.finish(execution.runId,execution.stepId,result.hasErrors?'failed':'completed');
     res.json({
       success: !result.hasErrors && !result.invalidResponse,
       agentMessage: {
@@ -856,6 +886,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       invalidResponse: result.invalidResponse,
     });
   } catch (err: any) {
+    if(execution)RunService.finish(execution.runId,execution.stepId,controller.signal.aborted?'aborted':'failed');
     if (!res.destroyed) res.status(500).json({ error: err.message });
   } finally { activeProjects.delete(req.params.projectId); }
 });

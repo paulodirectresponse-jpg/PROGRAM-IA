@@ -179,6 +179,7 @@ export class AuthService {
     }
 
     db.prepare('UPDATE users SET firebase_uid = ? WHERE id = ?').run(uid, user.id);
+    this.seedUserData(user.id);
     const session = this.createSession(user.id, userAgent, ipAddress);
     return { user, session };
   }
@@ -423,6 +424,8 @@ export class AuthService {
       { id: `prov-${userId}-useoneai`, key: 'useoneai', name: 'UseOneAI (OpenAI-Compatible)', url: 'https://api.useoneai.app/v1', model: 'chatgpt-5.5' },
       { id: `prov-${userId}-gemini`, key: 'gemini', name: 'Google Gemini', url: 'https://generativelanguage.googleapis.com', model: 'gemini-3.5-flash-lite' },
       { id: `prov-${userId}-openai`, key: 'openai', name: 'OpenAI Oficial', url: 'https://api.openai.com/v1', model: 'gpt-4o' },
+      { id: `prov-${userId}-omniroute`, key: 'omniroute', name: 'OmniRoute (Free Pool)', url: 'http://127.0.0.1:20128/v1', model: 'auto' },
+      { id: `prov-${userId}-cheaper-inference`, key: 'cheaper_inference', name: 'Cheaper Inference (Paid Pool)', url: 'https://api.cheaperinference.com/v1', model: 'auto' },
     ];
 
     for (const p of defaultProviders) {
@@ -431,6 +434,16 @@ export class AuthService {
         VALUES (?, ?, ?, ?, ?, ?, 0, 'not_configured', 128000, ?)
       `).run(p.id, userId, p.key, p.name, p.url, p.model, now);
     }
+    for (const profile of [{key:'BASE_FREE',level:0,attempts:2,cost:0,enabled:1},{key:'EXPERT_PAID',level:1,attempts:2,cost:.25,enabled:1},{key:'PREMIUM_OVERRIDE',level:2,attempts:1,cost:.25,enabled:0}])
+      db.prepare(`INSERT OR IGNORE INTO model_profiles(id,user_id,profile_key,level,max_attempts,max_cost_usd,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run(`profile-${userId}-${profile.key}`,userId,profile.key,profile.level,profile.attempts,profile.cost,profile.enabled,now,now);
+    const defaults=[
+      {profile:'BASE_FREE',provider:'omniroute',model:'auto',priority:0},
+      {profile:'EXPERT_PAID',provider:'cheaper_inference',model:'auto',priority:0},
+      {profile:'PREMIUM_OVERRIDE',provider:'cheaper_inference',model:'auto',priority:0},
+    ];
+    for(const c of defaults){const profileId=`profile-${userId}-${c.profile}`;db.prepare(`INSERT OR IGNORE INTO model_candidates(id,profile_id,provider_key,model_id,priority,enabled,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)`).run(`candidate-${userId}-${c.profile}-default`,profileId,c.provider,c.model,c.priority,now,now);}
   }
 }
+
 
