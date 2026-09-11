@@ -6,6 +6,7 @@ import {SecretService} from '../server/services/secretService.js';
 import {IntegrationService} from '../server/services/integrationService.js';
 import {verifyFirebaseIdentity} from '../server/services/firebaseIdentity.js';
 import {WorkspaceManager} from '../server/services/workspaceManager.js';
+import {ModelRouter} from '../server/services/modelRouter.js';
 
 const suffix = `${Date.now()}`;
 let a: string, b: string;
@@ -17,10 +18,14 @@ before(()=>{
 after(()=>db.close());
 test('each new Firebase user receives independent providers and skills',()=>{
   for(const id of [a,b]) {
-    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM providers WHERE user_id=?').get(id) as any).n,3);
+    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM providers WHERE user_id=?').get(id) as any).n,5);
     assert.equal((db.prepare('SELECT COUNT(*) AS n FROM skills WHERE user_id=?').get(id) as any).n,12);
   }
 });
+test('model profiles and candidates are isolated and configurable',()=>{const pa=ModelRouter.listProfiles(a),pb=ModelRouter.listProfiles(b);assert.equal(pa.length,3);assert.equal(pb.length,3);assert.equal(pa[0].candidates[0].provider_key,'omniroute');ModelRouter.saveCandidate(a,'BASE_FREE',{providerKey:'omniroute',modelId:'second-free',priority:2});assert.equal(ModelRouter.listProfiles(b)[0].candidates.length,1);});
+test('candidate order, pause and removal remain isolated',()=>{let c=ModelRouter.listProfiles(a)[0].candidates.find((x:any)=>x.model_id==='second-free');assert.ok(c);ModelRouter.updateCandidate(a,c.id,{priority:-1,enabled:false});c=ModelRouter.listProfiles(a)[0].candidates.find((x:any)=>x.id===c.id);assert.equal(c.enabled,0);ModelRouter.deleteCandidate(a,c.id);assert.equal(ModelRouter.listProfiles(a)[0].candidates.some((x:any)=>x.id===c.id),false);assert.throws(()=>ModelRouter.updateCandidate(b,c.id,{enabled:true}));});
+test('operational failures open and recover a candidate circuit',()=>{const c=ModelRouter.listProfiles(a)[0].candidates[0];ModelRouter.recordCandidateResult(c.id,false,'operational');ModelRouter.recordCandidateResult(c.id,false,'operational');assert.equal(ModelRouter.listProfiles(a)[0].candidates[0].health_state,'open');ModelRouter.recordCandidateResult(c.id,true);assert.equal(ModelRouter.listProfiles(a)[0].candidates[0].health_state,'healthy');});
+test('budget governor blocks calls before overspending',()=>{assert.throws(()=>ModelRouter.assertBudget(a,4),/diário/);ModelRouter.assertBudget(a,0);});
 test('Firebase identity stays bound to uid; email cannot take over an existing account',()=>{
   assert.throws(()=>AuthService.firebaseLogin(`a-${suffix}@example.test`,'Other','unrelated-uid'), /migração/);
   assert.equal(AuthService.firebaseLogin(`a-${suffix}@example.test`,'A',`fb-a-${suffix}`).user.id,a);
@@ -78,3 +83,4 @@ test('checkpoint restores text and binary assets and removes subsequent files',(
   assert.deepEqual(WorkspaceManager.readBinaryFile(id,'logo.png'),Buffer.from([0,1,2,255]));
   assert.equal(WorkspaceManager.readFile(id,'extra.txt'),null);
 });
+

@@ -205,6 +205,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                 {meta.providerUsed && (
                   <span className="text-slate-600">• {meta.providerUsed}</span>
                 )}
+                {meta.agentKey && <span className="text-cyan-500">• {meta.agentKey}</span>}
               </div>
 
               <div
@@ -239,6 +240,13 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                 )}
 
                 <div>{msg.content}</div>
+
+                {meta.validation && (
+                  <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/70 p-2 space-y-1">
+                    <div className={`text-[10px] font-semibold ${meta.validation.passed?'text-emerald-400':'text-rose-400'}`}>{meta.validation.passed?'Quality gates aprovados':'Quality gates falharam; alteração restaurada'}</div>
+                    {meta.validation.results.map((item:any)=><div key={item.tool} className="flex justify-between text-[10px] text-slate-400"><span>{item.tool}</span><span>{item.status}</span></div>)}
+                  </div>
+                )}
 
                 {/* Change Proposal Interactive Card */}
                 {hasProposal && proposal && (
@@ -473,3 +481,4 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
     </div>
   );
 };
+

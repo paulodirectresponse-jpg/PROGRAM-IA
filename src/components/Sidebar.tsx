@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Cpu,
+  Bot,
 } from 'lucide-react';
 import { Project, Provider, GitHubStatus, AuthUser } from '../types';
 import { SettingsTab } from './SettingsProfileModal';
@@ -29,6 +30,7 @@ interface SidebarProps {
   onOpenIntegrations: () => void;
   onOpenCredentials: () => void;
   onOpenCheckpoints: () => void;
+  onOpenAgents: () => void;
   onDuplicateProject?: (id: string) => void;
   onDeleteProject?: (project: Project) => void;
   onExportZip?: (id: string) => void;
@@ -45,6 +47,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenNewProject,
   onOpenSkills,
   onOpenCheckpoints,
+  onOpenAgents,
   onDuplicateProject,
   onDeleteProject,
   onExportZip,
@@ -210,6 +213,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               Configurações
             </span>
           </button>
+          <button onClick={onOpenAgents} className="w-full text-left px-2.5 py-1.5 rounded-md text-xs flex items-center gap-2 text-slate-300 hover:bg-slate-900 hover:text-slate-100"><Bot size={14} className="text-violet-400"/>Agentes & Métricas</button>
         </div>
       </div>
 
@@ -270,4 +274,5 @@ export const Sidebar: React.FC<SidebarProps> = ({
     </aside>
   );
 };
+
 

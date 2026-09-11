@@ -35,7 +35,7 @@ test('project owner has access; second user does not',async()=>{
 });
 test('provider list only contains this user’s rows',async()=>{
   const r=await fetch(`${base}/providers`,{headers:{Authorization:`Bearer ${tokenA}`}});assert.equal(r.status,200);
-  const {providers}=await r.json();assert.equal(providers.length,3);assert.ok(providers.every((p:any)=>p.id.includes(userA)));
+  const {providers}=await r.json();assert.equal(providers.length,5);assert.ok(providers.every((p:any)=>p.id.includes(userA)));
 });
 test('cookie mutations require a CSRF header',async()=>{
   const r=await fetch(`${base}/providers/update`,{method:'POST',headers:{Cookie:`forge_session=${tokenA}; forge_csrf=expected`,'Content-Type':'application/json'},body:JSON.stringify({providerKey:'useoneai',modelId:'test'})});
@@ -46,3 +46,4 @@ test('changing model configuration does not mutate another user',async()=>{
   assert.equal(r.status,200);
   assert.equal((db.prepare("SELECT model_id FROM providers WHERE user_id=? AND provider_key='useoneai'").get(userB) as any).model_id,'chatgpt-5.5');
 });
+

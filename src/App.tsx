@@ -5,6 +5,7 @@ import { WorkspaceArea } from './components/WorkspaceArea';
 import { NewProjectModal } from './components/NewProjectModal';
 import { ProvidersModal } from './components/ProvidersModal';
 import { SkillsModal } from './components/SkillsModal';
+import { AgentsModal } from './components/AgentsModal';
 import { CheckpointsModal } from './components/CheckpointsModal';
 import { IntegrationsModal } from './components/IntegrationsModal';
 import { AuthModal } from './components/AuthModal';
@@ -51,6 +52,7 @@ export default function App() {
   const [isNewProjectOpen, setIsNewProjectOpen] = useState(false);
   const [isProvidersOpen, setIsProvidersOpen] = useState(false);
   const [isSkillsOpen, setIsSkillsOpen] = useState(false);
+  const [isAgentsOpen,setIsAgentsOpen]=useState(false);
   const [isCheckpointsOpen, setIsCheckpointsOpen] = useState(false);
   const [isIntegrationsOpen, setIsIntegrationsOpen] = useState(false);
   const [isSettingsProfileOpen, setIsSettingsProfileOpen] = useState(false);
@@ -490,6 +492,7 @@ export default function App() {
           setIsSettingsProfileOpen(true);
         }}
         onOpenCheckpoints={() => setIsCheckpointsOpen(true)}
+        onOpenAgents={() => setIsAgentsOpen(true)}
         onDuplicateProject={handleDuplicateProject}
         onDeleteProject={handleRequestDeleteProject}
         onExportZip={handleExportZip}
@@ -580,6 +583,7 @@ export default function App() {
           await loadSkills();return true;
         }}
       />
+      <AgentsModal isOpen={isAgentsOpen} onClose={()=>setIsAgentsOpen(false)}/>
 
       <CheckpointsModal
         isOpen={isCheckpointsOpen}

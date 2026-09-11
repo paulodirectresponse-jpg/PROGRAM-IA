@@ -89,6 +89,11 @@ export interface Message {
     decisionType?: 'explanation' | 'plan' | 'change' | 'review' | 'publish';
     diffSummary?: string;
     hasErrors?: boolean;
+    errorMessage?: string;
+    runId?: string;
+    agentKey?: string;
+    profileKey?: string;
+    validation?: {passed:boolean;results:Array<{tool:string;status:string;summary?:string}>}|null;
   };
 }
 
@@ -177,3 +182,4 @@ export interface Integration {
   status: 'connected' | 'pending_credentials' | 'error';
   last_verified_at: string;
 }
+
