@@ -65,10 +65,7 @@ export default function App() {
   // Initial load
   useEffect(() => {
     checkCurrentUser();
-    loadSkills();
-    loadProviders();
-    loadGitHubStatus();
-    testFirestoreConnection().catch((err) => console.warn('Firebase probe:', err));
+
   }, []);
 
   const checkCurrentUser = async () => {
@@ -77,13 +74,12 @@ export default function App() {
       const data = await res.json();
       if (data.authenticated && data.user) {
         setCurrentUser(data.user);
+        loadProjects(); loadSkills(); loadProviders(); loadGitHubStatus();
       } else {
         setCurrentUser(null);
       }
     } catch {
       setCurrentUser(null);
-    } finally {
-      loadProjects();
     }
   };
 
@@ -101,7 +97,7 @@ export default function App() {
     setActiveProject(null);
     setMessages([]);
     setFiles([]);
-    loadProjects();
+    setSkills([]); setProviders([]); setGithubStatus(null);
   };
 
   const loadProjects = async () => {
@@ -489,7 +485,7 @@ export default function App() {
           setIsSettingsProfileOpen(true);
         }}
         onOpenCredentials={() => {
-          setSettingsProfileTab('credentials');
+          setSettingsProfileTab('integrations');
           setIsSettingsProfileOpen(true);
         }}
         onOpenCheckpoints={() => setIsCheckpointsOpen(true)}
@@ -532,7 +528,8 @@ export default function App() {
 
       {/* Modals */}
       <AuthModal
-        isOpen={isAuthOpen}
+        isOpen={isAuthOpen || !currentUser}
+        isMandatory={!currentUser}
         onClose={() => setIsAuthOpen(false)}
         currentUser={currentUser}
         onLoginSuccess={handleLoginSuccess}
@@ -642,3 +639,4 @@ export default function App() {
     </div>
   );
 }
+

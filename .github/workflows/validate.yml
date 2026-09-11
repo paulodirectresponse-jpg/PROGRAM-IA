@@ -1,0 +1,23 @@
+name: Validate Forge application
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      FORGE_DATA_DIR: ${{ runner.temp }}/forge-validation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm install --no-audit --no-fund
+      - run: npm run lint
+      - run: npx tsx --test tests/foundation.test.ts
+      - run: npm test
+      - run: npm run build

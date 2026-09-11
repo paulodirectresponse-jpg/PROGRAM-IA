@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { db } from '../db/index.js';
 
-const DATA_DIR = path.resolve(process.cwd(), '.data', 'projects');
+const DATA_DIR = path.resolve(process.env.FORGE_DATA_DIR || path.join(process.cwd(), '.data'), 'projects');
 
 export interface ProjectFile {
   name: string;
@@ -27,7 +27,8 @@ export class WorkspaceManager {
   }
 
   static getProjectDir(projectId: string): string {
-    const safeProjectId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (!/^[a-zA-Z0-9_-]+$/.test(projectId)) throw new Error('Identificador de projeto inválido.');
+    const safeProjectId = projectId;
     const dir = path.join(DATA_DIR, safeProjectId);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -61,6 +62,11 @@ export class WorkspaceManager {
     if (!resolved.startsWith(projectDir + path.sep) && resolved !== projectDir) {
       throw new Error(`Path traversal detectado: caminho fora do diretório do projeto (${relativePath})`);
     }
+    let cursor = resolved;
+    while (cursor !== projectDir) {
+      if (fs.existsSync(cursor) && fs.lstatSync(cursor).isSymbolicLink()) throw new Error('Link simbólico fora do escopo permitido.');
+      cursor = path.dirname(cursor);
+    }
     return resolved;
   }
 
@@ -72,6 +78,7 @@ export class WorkspaceManager {
       if (!fs.existsSync(dir)) return;
       const items = fs.readdirSync(dir, { withFileTypes: true });
       for (const item of items) {
+        if (item.isSymbolicLink()) continue;
         if (item.name === '.git' || item.name === 'node_modules' || item.name === '.DS_Store') {
           continue;
         }
@@ -211,7 +218,7 @@ export class WorkspaceManager {
     // 1. Secret Leak Detection
     let hasLeakedKey = false;
     let leakedInfo = '';
-    const secretPattern = /(AIza[0-9A-Za-z-_]{35}|sk-[a-zA-Z0-9]{32,}|ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{60,})/g;
+    const secretPattern = /(AIza[0-9A-Za-z-_]{35}|sk-[a-zA-Z0-9]{32,}|ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{60,})/;
 
     for (const [fileName, content] of Object.entries(files)) {
       if (secretPattern.test(content)) {
@@ -245,10 +252,10 @@ export class WorkspaceManager {
       'ver-bld-' + Date.now(),
       projectId,
       checkpointId,
-      hasHtmlEntry ? 'pass' : 'warn',
+      'warn',
       JSON.stringify({
         rule: 'Ponto de entrada da aplicação',
-        message: hasHtmlEntry ? 'Ponto de entrada (index.html ou React root) detectado com sucesso.' : 'Aviso: index.html não localizado.',
+        message: hasHtmlEntry ? 'Ponto de entrada detectado. Build ainda não executado.' : 'Aviso: index.html não localizado.',
       }),
       now
     );
@@ -272,10 +279,10 @@ export class WorkspaceManager {
       'ver-typ-' + Date.now(),
       projectId,
       checkpointId,
-      syntaxPass ? 'pass' : 'fail',
+      syntaxPass ? 'warn' : 'fail',
       JSON.stringify({
         rule: 'Integridade de Sintaxe & Schemas',
-        message: syntaxPass ? 'Sintaxe e arquivos de configuração válidos.' : 'Falha: arquivos de configuração JSON inválidos.',
+        message: syntaxPass ? 'JSON válido. Compilação e checagem de tipos ainda não executadas.' : 'Falha: arquivos de configuração JSON inválidos.',
       }),
       now
     );
@@ -309,21 +316,21 @@ export class WorkspaceManager {
     // 5. Preview Sandbox readiness
     db.prepare(`
       INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
-      VALUES (?, ?, ?, 'preview', 'pass', ?, ?)
+      VALUES (?, ?, ?, 'preview', 'warn', ?, ?)
     `).run(
       'ver-prv-' + Date.now(),
       projectId,
       checkpointId,
       JSON.stringify({
         rule: 'Live Preview Sandbox',
-        message: 'Ambiente de visualização ativo na rota de sandbox.',
+        message: 'Verificação visual ainda não executada em navegador.',
       }),
       now
     );
   }
 
   static deleteProject(projectId: string): void {
-    const dir = path.join(DATA_DIR, projectId);
+    const dir = this.getProjectDir(projectId);
     if (fs.existsSync(dir)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -427,3 +434,4 @@ export class WorkspaceManager {
     return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
   }
 }
+

@@ -42,40 +42,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsLoading(true);
 
     try {
-      let fbUser: any = null;
-      // 1. Authenticate with Firebase Auth first
-      try {
-        if (tab === 'login') {
-          fbUser = await loginWithFirebaseEmail(email, password);
-        } else {
-          fbUser = await registerWithFirebaseEmail(email, password);
-        }
-      } catch (fbErr: any) {
-        console.warn('Firebase direct auth notice:', fbErr?.message);
-        // We will continue and attempt sync with server
-      }
-
-      // 2. Synchronize with backend session
-      let res: Response;
-      if (fbUser) {
-        res = await fetch('/api/auth/firebase-login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            uid: fbUser.uid,
-            email: fbUser.email,
-            displayName: fbUser.displayName || name || email.split('@')[0],
-          }),
-        });
-      } else {
-        const endpoint = tab === 'login' ? '/api/auth/login' : '/api/auth/register';
-        const body = tab === 'login' ? { email, password } : { email, password, name };
-        res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-      }
+      const fbUser = tab === 'login'
+        ? await loginWithFirebaseEmail(email, password)
+        : await registerWithFirebaseEmail(email, password);
+      const res = await fetch('/api/auth/firebase-login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: await fbUser.getIdToken() }),
+      });
 
       const data = await res.json();
 
@@ -108,9 +81,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          uid: fbUser.uid,
-          email: fbUser.email,
-          displayName: fbUser.displayName || fbUser.email?.split('@')[0],
+          idToken: await fbUser.getIdToken(),
         }),
       });
 
@@ -355,3 +326,4 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     </div>
   );
 };
+

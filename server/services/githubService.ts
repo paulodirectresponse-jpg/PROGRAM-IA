@@ -41,6 +41,7 @@ export class GitHubService {
         return userSecret.trim();
       }
     }
+    if (userId) return null;
     const token = process.env.GITHUB_TOKEN;
     if (!token || token.trim().length === 0 || token.includes('MY_GITHUB_TOKEN')) {
       return null;
@@ -637,3 +638,4 @@ export class GitHubService {
     }
   }
 }
+

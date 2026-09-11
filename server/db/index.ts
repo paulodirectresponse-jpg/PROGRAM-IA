@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 // Store the SQLite database in a persistent directory
-const DATA_DIR = path.resolve(process.cwd(), '.data');
+const DATA_DIR = path.resolve(process.env.FORGE_DATA_DIR || path.join(process.cwd(), '.data'));
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
@@ -45,6 +45,8 @@ export function initializeDatabase() {
 
   // Migration 002: Multi-tenant user accounts, sessions, encrypted secrets
   ensureColumn('users', 'password_hash', "TEXT");
+  ensureColumn('users', 'firebase_uid', 'TEXT');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_firebase_uid ON users(firebase_uid)');
   ensureColumn('users', 'avatar_url', "TEXT");
   ensureColumn('users', 'updated_at', "TEXT");
 
@@ -56,6 +58,25 @@ export function initializeDatabase() {
   ensureColumn('attachments', 'user_id', "TEXT DEFAULT 'user-default'");
   ensureColumn('logs', 'user_id', "TEXT DEFAULT 'user-default'");
   ensureColumn('skills', 'is_custom', "INTEGER DEFAULT 0");
+
+  // Replace legacy global uniqueness with per-user uniqueness, preserving records.
+  for (const [table, key] of [['providers', 'provider_key'], ['skills', 'slug']]) {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table) as {sql:string};
+    if (row.sql.includes(`${key} TEXT UNIQUE`)) {
+      const replacement = row.sql.replace(`CREATE TABLE ${table}`, `CREATE TABLE ${table}_migrating`)
+        .replace(`CREATE TABLE IF NOT EXISTS ${table}`, `CREATE TABLE ${table}_migrating`)
+        .replace(`${key} TEXT UNIQUE`, `${key} TEXT`);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.exec(replacement);
+        db.exec(`INSERT INTO ${table}_migrating SELECT * FROM ${table}`);
+        db.exec(`DROP TABLE ${table}`);
+        db.exec(`ALTER TABLE ${table}_migrating RENAME TO ${table}`);
+        db.exec(`CREATE UNIQUE INDEX ${table}_user_key ON ${table}(user_id, ${key})`);
+        db.exec('COMMIT');
+      } catch (err) { db.exec('ROLLBACK'); throw err; }
+    }
+  }
 
   // Create sessions table
   db.exec(`
@@ -523,3 +544,4 @@ function createInitialProject() {
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run('ver-3', projectId, cpId, 'preview', 'pass', JSON.stringify({ message: 'Preview pronto para renderização' }), now);
 }
+

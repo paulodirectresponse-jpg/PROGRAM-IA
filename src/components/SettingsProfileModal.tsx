@@ -1,3 +1,4 @@
+import { IntegrationSettings } from './IntegrationSettings';
 import React, { useState, useEffect } from 'react';
 import {
   X,
@@ -32,7 +33,7 @@ import {
   ConnectionTestResult,
 } from '../types';
 
-export type SettingsTab = 'profile' | 'credentials' | 'providers' | 'integrations' | 'security';
+export type SettingsTab = 'profile' | 'providers' | 'integrations' | 'security';
 
 interface SettingsProfileModalProps {
   isOpen: boolean;
@@ -332,6 +333,7 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
           providerKey: activeProv?.provider_key || selectedProviderKey,
           baseUrl: provBaseUrl,
           modelId: provModelId,
+          apiKey: provApiKey || undefined,
         }),
       });
       const data = await res.json();
@@ -381,23 +383,6 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
           >
             <User size={14} />
             Perfil
-          </button>
-
-          <button
-            onClick={() => setActiveTab('credentials')}
-            className={`py-2.5 px-3 text-xs font-medium flex items-center gap-1.5 border-b-2 transition cursor-pointer ${
-              activeTab === 'credentials'
-                ? 'border-cyan-400 text-cyan-300 font-semibold bg-slate-900/40'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Key size={14} />
-            Credenciais & Chaves
-            {secrets.length > 0 && (
-              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-800 text-cyan-300 font-mono">
-                {secrets.length}
-              </span>
-            )}
           </button>
 
           <button
@@ -597,127 +582,6 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
           )}
 
           {/* TAB: CREDENTIALS (NON-AI: GITHUB, FIREBASE, CLOUDFLARE, SUPABASE) */}
-          {activeTab === 'credentials' && (
-            <div className="space-y-4">
-              <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Lock size={15} className="text-cyan-400 shrink-0" />
-                  <span>Cofre de credenciais para integrações externas (Git, Firebase, Cloudflare, Supabase). Chaves de modelos de IA são configuradas diretamente na aba <strong>Modelos de IA</strong>.</span>
-                </div>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800/60 shrink-0">
-                  AES-256-GCM
-                </span>
-              </div>
-
-              <div className="space-y-3">
-                {SUPPORTED_CREDENTIALS.map((serv) => {
-                  const stored = secrets.find((s) => s.service_key === serv.key);
-                  const isConfigured = Boolean(stored);
-                  const inputVal = inputValues[serv.key] || '';
-                  const isVisible = Boolean(showPlain[serv.key]);
-                  const isSaving = savingKey === serv.key;
-                  const isTesting = testingKey === serv.key;
-                  const testRes = testResults[serv.key];
-
-                  return (
-                    <div
-                      key={serv.key}
-                      className="p-3.5 rounded-xl border border-slate-800 bg-slate-950/60 space-y-2.5 transition"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="text-xs font-semibold text-slate-200 flex items-center gap-2">
-                            {serv.name}
-                            {isConfigured ? (
-                              <span className="text-[10px] px-2 py-0.2 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800/60 font-mono">
-                                Armazenada ({stored?.masked_hint})
-                              </span>
-                            ) : (
-                              <span className="text-[10px] px-2 py-0.2 rounded-full bg-slate-800 text-slate-400 font-mono">
-                                Não configurada
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-[11px] text-slate-400 mt-0.5">{serv.desc}</p>
-                        </div>
-
-                        {isConfigured && (
-                          <div className="flex items-center gap-1 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => handleTestSecret(serv.key)}
-                              disabled={isTesting}
-                              title="Validar conectividade"
-                              className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] flex items-center gap-1 transition cursor-pointer"
-                            >
-                              {isTesting ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
-                              Testar
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteSecret(serv.key)}
-                              title="Remover chave"
-                              className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
-                            >
-                              <Trash2 size={13} />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      {testRes && (
-                        <div
-                          className={`p-2 rounded-lg text-xs flex items-center gap-2 ${
-                            testRes.success
-                              ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/50'
-                              : 'bg-rose-950/60 text-rose-300 border border-rose-800/50'
-                          }`}
-                        >
-                          {testRes.success ? <CheckCircle2 size={13} /> : <AlertCircle size={13} />}
-                          <span>{testRes.message}</span>
-                        </div>
-                      )}
-
-                      <div className="flex items-center gap-2">
-                        <div className="relative flex-1">
-                          <input
-                            type={isVisible ? 'text' : 'password'}
-                            value={inputVal}
-                            onChange={(e) =>
-                              setInputValues((prev) => ({ ...prev, [serv.key]: e.target.value }))
-                            }
-                            placeholder={isConfigured ? 'Atualizar chave...' : serv.placeholder}
-                            className="w-full pl-3 pr-8 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-600 font-mono"
-                          />
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setShowPlain((prev) => ({ ...prev, [serv.key]: !prev[serv.key] }))
-                            }
-                            className="absolute right-2 top-2 text-slate-400 hover:text-slate-200 cursor-pointer"
-                          >
-                            {isVisible ? <EyeOff size={13} /> : <Eye size={13} />}
-                          </button>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => handleSaveSecret(serv.key)}
-                          disabled={!inputVal.trim() || isSaving}
-                          className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-30 disabled:pointer-events-none text-slate-950 font-bold text-xs flex items-center gap-1.5 transition cursor-pointer"
-                        >
-                          {isSaving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-                          Salvar
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* TAB: AI MODELS (WITH DIRECT API KEY & MODEL CONFIG) */}
           {activeTab === 'providers' && (
             <div className="space-y-4">
               <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 flex items-center gap-2">
@@ -932,224 +796,15 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
           )}
 
           {/* TAB: INTEGRATIONS (CLOUDFLARE, SUPABASE, GITHUB, FIREBASE) */}
-          {activeTab === 'integrations' && (
-            <div className="space-y-4">
-              {/* Cloudflare Card */}
-              <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-600/40 flex items-center justify-center font-bold">
-                      <Layers size={16} />
-                    </div>
-                    <div>
-                      <div className="text-xs font-bold text-slate-200">Cloudflare Edge & Workers</div>
-                      <div className="text-[11px] text-slate-400">Deploy na borda global, DNS e proteção de CDN</div>
-                    </div>
-                  </div>
-
-                  {secrets.some((s) => s.service_key === 'cloudflare') ? (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800/60 font-mono flex items-center gap-1">
-                      <CheckCircle2 size={11} /> Token Configurado
-                    </span>
-                  ) : (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-mono">
-                      Não configurado
-                    </span>
-                  )}
-                </div>
-
-                <div className="text-xs text-slate-300 space-y-2">
-                  <p>
-                    Integração para deploy de Workers e Pages com roteamento instantâneo. Configure o token de API na aba <strong>Credenciais & Chaves</strong> para habilitar publicação distribuída.
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleTestSecret('cloudflare')}
-                      disabled={testingKey === 'cloudflare'}
-                      className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] flex items-center gap-1 transition cursor-pointer"
-                    >
-                      {testingKey === 'cloudflare' ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
-                      Testar Token Cloudflare
-                    </button>
-                    {testResults['cloudflare'] && (
-                      <span className={`text-[11px] font-mono ${testResults['cloudflare'].success ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {testResults['cloudflare'].message}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Supabase Card */}
-              <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-600/40 flex items-center justify-center font-bold">
-                      <Database size={16} />
-                    </div>
-                    <div>
-                      <div className="text-xs font-bold text-slate-200">Supabase (PostgreSQL & Storage)</div>
-                      <div className="text-[11px] text-slate-400">Banco de dados relacional e backend autogerenciado</div>
-                    </div>
-                  </div>
-
-                  {secrets.some((s) => s.service_key === 'supabase') ? (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800/60 font-mono flex items-center gap-1">
-                      <CheckCircle2 size={11} /> Conectado
-                    </span>
-                  ) : (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-mono">
-                      Não configurado
-                    </span>
-                  )}
-                </div>
-
-                <div className="text-xs text-slate-300 space-y-2">
-                  <p>
-                    Conecte instâncias Supabase para queries SQL, autenticação de usuários e subscriptions em tempo real. Configure a Service Key na aba <strong>Credenciais & Chaves</strong>.
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleTestSecret('supabase')}
-                      disabled={testingKey === 'supabase'}
-                      className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] flex items-center gap-1 transition cursor-pointer"
-                    >
-                      {testingKey === 'supabase' ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
-                      Testar Chave Supabase
-                    </button>
-                    {testResults['supabase'] && (
-                      <span className={`text-[11px] font-mono ${testResults['supabase'].success ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {testResults['supabase'].message}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* GitHub Card */}
-              <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-slate-100 font-bold">
-                      <GitBranch size={16} />
-                    </div>
-                    <div>
-                      <div className="text-xs font-bold text-slate-200">GitHub Version Control</div>
-                      <div className="text-[11px] text-slate-400">Sincronização remota de código, branches e Pull Requests</div>
-                    </div>
-                  </div>
-
-                  {githubStatus?.isConnected ? (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800/60 font-mono">
-                      Conectado ({githubStatus.username || 'Autenticado'})
-                    </span>
-                  ) : (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-950 text-amber-300 border border-amber-800/60 font-mono">
-                      Pendente de Chave
-                    </span>
-                  )}
-                </div>
-
-                <div className="text-xs text-slate-300">
-                  {githubStatus?.isConnected ? (
-                    <div className="space-y-1">
-                      <p>Conta autenticada com sucesso no GitHub. Você pode criar branches, sincronizar arquivos (Pull/Push) e abrir Pull Requests diretamente pelo painel de Deploy.</p>
-                      <p className="text-slate-400 text-[11px]">Repositório ativo: <code className="text-cyan-300 font-mono">{activeProject?.repo_url || 'Nenhum repo configurado'}</code></p>
-                    </div>
-                  ) : (
-                    <p>Adicione um Personal Access Token (PAT) na aba <strong>Credenciais & Chaves</strong> para habilitar commits, push e branches automáticos.</p>
-                  )}
-                </div>
-              </div>
-
-              {/* Firebase Card */}
-              <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-amber-950/50 text-amber-400 border border-amber-800/60 flex items-center justify-center font-bold">
-                      <Flame size={16} />
-                    </div>
-                    <div>
-                      <div className="text-xs font-bold text-slate-200">Firebase & Google Cloud</div>
-                      <div className="text-[11px] text-slate-400">Banco Firestore e autenticação em nuvem</div>
-                    </div>
-                  </div>
-
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800/60 font-mono">
-                    Conectado ao Projeto
-                  </span>
-                </div>
-
-                <div className="text-xs text-slate-300 space-y-2">
-                  <p>
-                    O Forge Agent suporta conexão de banco de dados Firestore para projetos multiusuário e persistência duradoura. Para provisionar via Google Cloud, configure o Project ID e API Key no cofre de credenciais.
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleTestSecret('firebase')}
-                      disabled={testingKey === 'firebase'}
-                      className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] flex items-center gap-1 transition cursor-pointer"
-                    >
-                      {testingKey === 'firebase' ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
-                      Testar Conexão Firebase
-                    </button>
-                    {testResults['firebase'] && (
-                      <span className={`text-[11px] font-mono ${testResults['firebase'].success ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {testResults['firebase'].message}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
+          {activeTab === 'integrations' && <IntegrationSettings />}
 
           {/* TAB: SECURITY & AUDITING */}
-          {activeTab === 'security' && (
-            <div className="space-y-3">
-              <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1.5">
-                <div className="text-xs font-semibold text-slate-200 flex items-center gap-2">
-                  <ShieldCheck size={15} className="text-emerald-400" />
-                  Path Traversal Guard
-                  <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/60">
-                    Ativo
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400">
-                  Todas as leituras e gravações do agente são canonicamente isoladas na pasta do workspace do projeto. Tentativas de travessia (ex: <code className="text-slate-300 font-mono">../</code>, caminhos absolutos ou bytes nulos) são bloqueadas com exceção imediata.
-                </p>
-              </div>
+          {activeTab === 'security' && <div className="text-sm text-slate-300 space-y-3">
+            <p>O login é obrigatório. Projetos, modelos e credenciais são vinculados à conta autenticada.</p>
+            <p>As credenciais são criptografadas no servidor. Os testes de conexão mostram a resposta efetiva do serviço.</p>
+            <p>Resultados de compilação e verificação visual só devem ser considerados aprovados quando houver execução e evidência correspondentes.</p>
+          </div>}
 
-              <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1.5">
-                <div className="text-xs font-semibold text-slate-200 flex items-center gap-2">
-                  <Lock size={15} className="text-cyan-400" />
-                  Quality Gate de Vazamento de Chaves
-                  <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-800/60">
-                    Verificado
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400">
-                  Antes de cada deploy ou commit, o código é submetido à auditoria regex para impedir inclusão acidental de chaves privadas (ex: <code className="text-slate-300 font-mono">BEGIN PRIVATE KEY</code>, tokens de acesso ou secrets).
-                </p>
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1.5">
-                <div className="text-xs font-semibold text-slate-200 flex items-center gap-2">
-                  <Database size={15} className="text-blue-400" />
-                  Isolamento Multiusuário no Banco de Dados
-                  <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-blue-950 text-blue-300 border border-blue-800/60">
-                    SQLite WAL
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400">
-                  Cada usuário autenticado possui escopo estrito de banco de dados (`WHERE user_id = ?`). Nenhuma requisição consegue consultar ou alterar dados de outros usuários.
-                </p>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Footer */}
@@ -1168,3 +823,4 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
     </div>
   );
 };
+

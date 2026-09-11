@@ -202,12 +202,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
           <button
             id="btn-nav-settings"
-            onClick={() => onOpenProfileSettings('credentials')}
+            onClick={() => onOpenProfileSettings('integrations')}
             className="w-full text-left px-2.5 py-1.5 rounded-md text-xs flex items-center justify-between text-slate-300 hover:bg-slate-900 hover:text-slate-100 transition cursor-pointer"
           >
             <span className="flex items-center gap-2">
               <Sliders size={14} className="text-cyan-400" />
-              Configurações & Chaves
+              Configurações
             </span>
           </button>
         </div>
@@ -270,3 +270,4 @@ export const Sidebar: React.FC<SidebarProps> = ({
     </aside>
   );
 };
+
