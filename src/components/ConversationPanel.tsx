@@ -189,9 +189,12 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
           if (msg.metadata_json) {
             try { parsedMetadata = JSON.parse(msg.metadata_json); } catch { parsedMetadata = {}; }
           }
-          const meta = msg.metadata || parsedMetadata;
-          const proposal = meta.proposal as ChangeProposal | undefined;
-          const hasProposal = Boolean(proposal && proposal.files && proposal.files.length > 0);
+          const rawMeta = msg.metadata && typeof msg.metadata === 'object' ? msg.metadata : parsedMetadata;
+          const meta = rawMeta && typeof rawMeta === 'object' ? rawMeta : {};
+          const rawProposal = meta.proposal && typeof meta.proposal === 'object' ? meta.proposal as ChangeProposal : undefined;
+          const proposal = rawProposal && Array.isArray(rawProposal.files) ? rawProposal : undefined;
+          const hasProposal = Boolean(proposal && proposal.files.length > 0);
+          const filesAffected = Array.isArray(meta.filesAffected) ? meta.filesAffected.filter((f: unknown): f is string => typeof f === 'string') : [];
           const isDiffOpen = expandedDiffs[msg.id] ?? false;
 
           return (
@@ -202,7 +205,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
             >
               <div className="flex items-center gap-1.5 mb-1 text-[10px] text-slate-500 font-mono">
                 <span>{isUser ? 'Você' : 'Forge Agent'}</span>
-                {meta.mode && (
+                {typeof meta.mode === 'string' && (
                   <span className="text-slate-600">• [{meta.mode.toUpperCase()}]</span>
                 )}
                 {meta.decisionType && (
@@ -323,9 +326,9 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                 )}
 
                 {/* Chips of affected files */}
-                {meta.filesAffected && meta.filesAffected.length > 0 && !hasProposal && (
+                {filesAffected.length > 0 && !hasProposal && (
                   <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex flex-wrap gap-1">
-                    {meta.filesAffected.map((f: string) => (
+                    {filesAffected.map((f: string) => (
                       <span
                         key={f}
                         className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-[10px] text-cyan-400 font-mono"

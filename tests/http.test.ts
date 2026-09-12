@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import {router} from '../server/routes.js';
 import {db,initializeDatabase} from '../server/db/index.js';
 import {AuthService} from '../server/services/authService.js';
+import {LLMAdapterService} from '../server/services/llmAdapter.js';
 import type {Server} from 'node:http';
 
 let server:Server, base:string, tokenA:string, tokenB:string, userA:string, userB:string;
@@ -50,7 +51,17 @@ test('changing model configuration does not mutate another user',async()=>{
 test('saving a provider makes that exact model the active account model',async()=>{
   const r=await fetch(`${base}/providers/save-with-key`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({providerKey:'cheaper_inference',baseUrl:'https://example.test/v1',modelId:'gpt-test',apiKey:'private-test-key'})});
   assert.equal(r.status,200);
-  const row=db.prepare('SELECT model_id, connection_status FROM providers WHERE user_id=? AND provider_key=?').get(userA,'cheaper_inference') as any;
-  assert.equal(row.model_id,'gpt-test');assert.equal(row.connection_status,'active');
+  const row=db.prepare('SELECT model_id, is_active FROM providers WHERE user_id=? AND provider_key=?').get(userA,'cheaper_inference') as any;
+  assert.equal(row.model_id,'gpt-test');assert.equal(row.is_active,1);
+});
+test('testing a provider never changes the active provider',async()=>{
+  const original=LLMAdapterService.testConnection;
+  LLMAdapterService.testConnection=async()=>({success:true,status:'connected',message:'OK',latencyMs:1,provider:'cheaper_inference',model:'gpt-test'} as any);
+  try {
+    const r=await fetch(`${base}/providers/test`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({providerKey:'cheaper_inference'})});
+    assert.equal(r.status,200);
+    const row=db.prepare('SELECT is_active,connection_status FROM providers WHERE user_id=? AND provider_key=?').get(userA,'cheaper_inference') as any;
+    assert.equal(row.is_active,1);assert.equal(row.connection_status,'connected');
+  } finally { LLMAdapterService.testConnection=original; }
 });
 

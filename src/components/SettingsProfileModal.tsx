@@ -43,7 +43,6 @@ interface SettingsProfileModalProps {
   onLogout: () => void;
   defaultTab?: SettingsTab;
   providers: Provider[];
-  onUpdateProvider: (providerKey: string, baseUrl: string, modelId: string) => Promise<void>;
   githubStatus: GitHubStatus | null;
   onRefreshGitHub: () => void;
   activeProject: Project | null;
@@ -102,7 +101,6 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
   onLogout,
   defaultTab = 'profile',
   providers,
-  onUpdateProvider,
   githubStatus,
   onRefreshGitHub,
   activeProject,
@@ -131,8 +129,7 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
   // Providers / AI Models State
   const [selectedProviderKey, setSelectedProviderKey] = useState<string>('');
   const activeProv = providers.find((p) => p.provider_key === selectedProviderKey)
-    || providers.find((p) => p.connection_status === 'active')
-    || providers.find((p) => p.is_configured)
+    || providers.find((p) => Boolean(p.is_active))
     || providers[0];
   const [provBaseUrl, setProvBaseUrl] = useState(activeProv?.base_url || '');
   const [provModelId, setProvModelId] = useState(activeProv?.model_id || '');
@@ -147,7 +144,7 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
     if (isOpen) {
       setActiveTab(defaultTab);
       loadSecrets();
-      const preferred = providers.find((p) => p.connection_status === 'active') || providers.find((p) => p.is_configured) || providers[0];
+      const preferred = providers.find((p) => Boolean(p.is_active)) || providers[0];
       if (preferred && !providers.some((p) => p.provider_key === selectedProviderKey)) setSelectedProviderKey(preferred.provider_key);
     }
   }, [isOpen, defaultTab, providers]);
@@ -315,7 +312,6 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Falha ao salvar provedor e chave de API.');
 
-      await onUpdateProvider(activeProv.provider_key, provBaseUrl, provModelId);
       setProvApiKey('');
       await loadSecrets();
       onCredentialsUpdated?.();

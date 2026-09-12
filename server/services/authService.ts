@@ -455,7 +455,7 @@ export class AuthService {
       { id: `prov-${userId}-gemini`, key: 'gemini', name: 'Google Gemini', url: 'https://generativelanguage.googleapis.com', model: 'gemini-3.5-flash-lite' },
       { id: `prov-${userId}-openai`, key: 'openai', name: 'OpenAI Oficial', url: 'https://api.openai.com/v1', model: 'gpt-4o' },
       { id: `prov-${userId}-omniroute`, key: 'omniroute', name: 'OmniRoute (Free Pool)', url: 'http://127.0.0.1:20128/v1', model: 'auto' },
-      { id: `prov-${userId}-cheaper-inference`, key: 'cheaper_inference', name: 'Cheaper Inference (Paid Pool)', url: 'https://api.cheaperinference.com/v1', model: 'auto' },
+      { id: `prov-${userId}-cheaper-inference`, key: 'cheaper_inference', name: 'Cheaper Inference (Paid Pool)', url: 'https://api.cheaperinference.com/v1', model: 'gpt-5.6-luna' },
     ];
 
     for (const p of defaultProviders) {
@@ -469,8 +469,8 @@ export class AuthService {
         .run(`profile-${userId}-${profile.key}`,userId,profile.key,profile.level,profile.attempts,profile.cost,profile.enabled,now,now);
     const defaults=[
       {profile:'BASE_FREE',provider:'omniroute',model:'auto',priority:0},
-      {profile:'EXPERT_PAID',provider:'cheaper_inference',model:'auto',priority:0},
-      {profile:'PREMIUM_OVERRIDE',provider:'cheaper_inference',model:'auto',priority:0},
+      {profile:'EXPERT_PAID',provider:'cheaper_inference',model:'gpt-5.6-luna',priority:0},
+      {profile:'PREMIUM_OVERRIDE',provider:'cheaper_inference',model:'gpt-5.6-luna',priority:0},
     ];
     for(const c of defaults){const profileId=`profile-${userId}-${c.profile}`;db.prepare(`INSERT OR IGNORE INTO model_candidates(id,profile_id,provider_key,model_id,priority,enabled,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)`).run(`candidate-${userId}-${c.profile}-default`,profileId,c.provider,c.model,c.priority,now,now);}
   }

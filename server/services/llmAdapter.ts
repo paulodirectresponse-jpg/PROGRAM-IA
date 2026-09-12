@@ -166,17 +166,11 @@ export class LLMAdapterService {
    * Determine available active configured provider
    */
   static getActiveProviderConfig(userId?: string) {
-    const useoneConfig = this.getProviderConfig('useoneai', userId);
-    if (useoneConfig.isConfigured) {
-      return useoneConfig;
-    }
-
-    const geminiConfig = this.getProviderConfig('gemini', userId);
-    if (geminiConfig.isConfigured) {
-      return geminiConfig;
-    }
-
-    return null;
+    if (!userId) return null;
+    const row = db.prepare('SELECT provider_key FROM providers WHERE user_id = ? AND is_active = 1 AND is_configured = 1 LIMIT 1').get(userId) as any;
+    if (!row) return null;
+    const config = this.getProviderConfig(row.provider_key, userId);
+    return config.isConfigured ? config : null;
   }
 
   /**

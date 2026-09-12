@@ -288,7 +288,7 @@ export class SecretService {
     if (serviceKey === 'gemini' || serviceKey === 'useoneai' || serviceKey === 'openai') {
       db.prepare(`
         UPDATE providers
-        SET is_configured = 0, connection_status = 'not_configured'
+        SET is_configured = 0, is_active = 0, connection_status = 'not_configured'
         WHERE user_id = ? AND provider_key = ?
       `).run(userId, serviceKey);
     } else if (serviceKey === 'github') {
@@ -664,4 +664,5 @@ export class SecretService {
     return result;
   }
 }
+
 

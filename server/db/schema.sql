@@ -158,6 +158,7 @@ CREATE TABLE IF NOT EXISTS providers (
   json_supported INTEGER DEFAULT 1,
   context_limit INTEGER DEFAULT 128000,
   is_configured INTEGER DEFAULT 0,
+  is_active INTEGER DEFAULT 0,
   connection_status TEXT DEFAULT 'not_configured', -- 'connected', 'not_configured', 'error'
   last_error TEXT,
   created_at TEXT NOT NULL
@@ -280,4 +281,5 @@ CREATE TABLE IF NOT EXISTS user_secrets (
   updated_at TEXT NOT NULL,
   UNIQUE(user_id, service_key)
 );
+
 

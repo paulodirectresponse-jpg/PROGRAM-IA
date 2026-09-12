@@ -133,7 +133,8 @@ export interface Provider {
   base_url: string;
   model_id: string;
   is_configured: number | boolean;
-    connection_status: 'active' | 'connected' | 'configured' | 'not_configured' | 'error';
+  is_active: number | boolean;
+  connection_status: 'untested' | 'connected' | 'not_configured' | 'error';
   context_limit: number;
   masked_hint?: string;
   created_at: string;
