@@ -87,7 +87,7 @@ test('two independent runtimes restore atomically and reject a different master 
   const run=(name:string,mode:string,master:string)=>spawnSync(process.execPath,['--import','tsx',fixture,mode,snapshot],{encoding:'utf8',env:{...process.env,FORGE_DATA_DIR:path.join(root,name),SUPABASE_URL:'https://sync.example.test',SUPABASE_SECRET_KEY:'test-service-role',SECRETS_MASTER_KEY:master}});
   const a=run('runtime-a','create','same-stable-master-key-across-runtimes');assert.equal(a.status,0,a.stderr);
   const b=run('runtime-b','restore','same-stable-master-key-across-runtimes');assert.equal(b.status,0,b.stderr);const restored=JSON.parse(b.stdout);assert.deepEqual(restored,{status:'synced',projects:1,active:'cheaper_inference',secret:'secret-survives-runtime',conversations:1});
-  const bad=run('runtime-b-wrong-key','restore','different-master-key-for-this-runtime');assert.equal(bad.status,1);assert.match(bad.stderr,/cannot be descriptografadas|Unsupported state|authenticate data/i);
+  const bad=run('runtime-b-wrong-key','restore','different-master-key-for-this-runtime');assert.equal(bad.status,0,bad.stderr);const rejected=JSON.parse(bad.stdout);assert.equal(rejected.status,'error');assert.equal(rejected.projects,0);assert.equal(rejected.secret,null);assert.equal(rejected.conversations,0);
 });
 test('sessions are revoked and never reconstructed from user-default',()=>{
   const session=AuthService.createSession(a);
