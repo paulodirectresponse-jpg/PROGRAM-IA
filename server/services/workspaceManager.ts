@@ -21,6 +21,24 @@ const BINARY_EXTENSIONS = new Set([
 ]);
 
 export class WorkspaceManager {
+  static normalizeImportedFiles<T>(files: Record<string, T>): Record<string, T> {
+    const entries = Object.entries(files).filter(([name]) => name && !name.endsWith('/'));
+    if (!entries.length) return {};
+    const normalized = entries.map(([name, value]) => [name.replace(/\\/g, '/').replace(/^\.\//, ''), value] as const);
+    const roots = new Set(normalized.map(([name]) => name.split('/')[0]));
+    const hasRootEntry = normalized.some(([name]) => !name.includes('/') || /^(src|public|dist|build)\//.test(name));
+    const stripRoot = roots.size === 1 && !hasRootEntry && normalized.every(([name]) => name.includes('/'));
+    return Object.fromEntries(normalized.map(([name, value]) => [stripRoot ? name.slice(name.indexOf('/') + 1) : name, value]));
+  }
+
+  static getPreviewInfo(projectId: string): { status: 'running' | 'error'; entryPath?: string; root?: string; message: string } {
+    const files = this.getFiles(projectId).map(file => file.path.replace(/\\/g, '/'));
+    const candidates = ['index.html', 'dist/index.html', 'build/index.html', 'public/index.html'];
+    const entryPath = candidates.find(candidate => files.includes(candidate)) || files.find(file => file.endsWith('/index.html'));
+    if (entryPath) return { status: 'running', entryPath, root: path.posix.dirname(entryPath) === '.' ? '' : path.posix.dirname(entryPath), message: 'Preview pronto.' };
+    if (files.includes('package.json')) return { status: 'error', message: 'O projeto precisa ser instalado e compilado antes do preview. Execute o build no ambiente do projeto e tente novamente.' };
+    return { status: 'error', message: 'Nenhum arquivo index.html foi encontrado neste projeto.' };
+  }
   static isBinaryPath(filePath: string): boolean {
     const ext = path.extname(filePath).toLowerCase();
     return BINARY_EXTENSIONS.has(ext);
@@ -445,4 +463,5 @@ export class WorkspaceManager {
     return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
   }
 }
+
 

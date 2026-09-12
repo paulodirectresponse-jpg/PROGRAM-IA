@@ -40,7 +40,7 @@ export interface ChangeProposal {
   diffSummary?: string;
   requiresConfirmation: boolean;
   files: FileChangeProposal[];
-  status: 'pending' | 'applied' | 'rejected';
+  status: 'pending' | 'previewing' | 'applied' | 'rejected' | 'failed_validation' | 'superseded';
 }
 
 export interface Project {

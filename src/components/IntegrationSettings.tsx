@@ -1,11 +1,12 @@
 import React, {useEffect, useState} from 'react';
-import {CheckCircle2, Settings2, Loader2, X} from 'lucide-react';
+import {CheckCircle2, Settings2, Loader2, X, Github, Cloud, Database, Flame} from 'lucide-react';
 const definitions = [
   {key:'github',name:'GitHub',description:'Repositórios, commits, branches e pull requests.',fields:[['token','Token de acesso (Contents e Pull requests)']]},
   {key:'cloudflare',name:'Cloudflare',description:'Configuração da conta para Pages e domínios.',fields:[['token','API Token (Account Pages e Zone DNS)'],['accountId','Account ID'],['zoneId','Zone ID (opcional, para domínios)']]},
   {key:'supabase',name:'Supabase',description:'Vincule o projeto de banco de dados e armazenamento.',fields:[['token','Personal Access Token de gerenciamento'],['projectRef','Project Ref']]},
   {key:'firebase',name:'Firebase',description:'Projeto Firebase do site que você está construindo. Independente do login no Forge.',fields:[['serviceAccount','JSON da conta de serviço do seu projeto']]},
 ];
+const icons:Record<string,React.ReactNode>={github:<Github size={20}/>,cloudflare:<Cloud size={20}/>,supabase:<Database size={20}/>,firebase:<Flame size={20}/>};
 export function IntegrationSettings() {
   const [selected,setSelected]=useState<string|null>(null);
   const [values,setValues]=useState<Record<string,string>>({});
@@ -27,10 +28,10 @@ export function IntegrationSettings() {
     }catch(e:any){setNotice({success:false,message:e.message});}finally{setBusy(false);}
   };
   return <div className="space-y-3">
-    {definitions.map(d=><div key={d.key} className="rounded-xl border border-slate-700/60 bg-slate-950/60 p-4 flex justify-between gap-4">
-      <div><h3 className="font-semibold text-slate-100">{d.name}</h3><p className="text-xs text-slate-400 mt-1">{d.description}</p><p className="text-xs text-slate-500 mt-2">{summaries.find(s=>s.service===d.key)?.configured?'Configuração salva':'Não configurado'}</p></div>
+    {definitions.map(d=>{const summary=summaries.find(s=>s.service===d.key);const tested=summary?.status==='connected'||summary?.last_test_success===1;return <div key={d.key} className="rounded-xl border border-slate-700/60 bg-slate-950/60 p-4 flex justify-between gap-4">
+      <div className="flex gap-3"><span className="mt-0.5 text-cyan-400">{icons[d.key]}</span><div><h3 className="font-semibold text-slate-100">{d.name}</h3><p className="text-xs text-slate-400 mt-1">{d.description}</p><p className={`text-xs mt-2 ${tested?'text-emerald-400':summary?.configured?'text-amber-400':'text-slate-500'}`}>{tested?'Conectado e testado':summary?.configured?'Salvo, teste pendente':'Não configurado'}</p></div></div>
       <button className="text-cyan-300 flex items-center gap-2 text-xs" onClick={()=>{setSelected(d.key);setValues(summaries.find(s=>s.service===d.key)?.fields||{});setNotice(null);}}><Settings2 size={15}/>Configurar</button>
-    </div>)}
+    </div>})}
     {definition&&<div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6"><section role="dialog" aria-modal="true" aria-label={`Configurar ${definition.name}`} className="w-full max-w-lg rounded-2xl border border-slate-600 bg-slate-900 shadow-2xl p-6 space-y-4">
       <div className="flex justify-between"><h2 className="text-lg font-semibold">Configurar {definition.name}</h2><button disabled={busy} aria-label="Fechar" onClick={()=>{setValues({});setSelected(null);}}><X size={18}/></button></div>
       <p className="text-xs text-slate-400">As credenciais ficam criptografadas no servidor e vinculadas à sua conta. Deixe um segredo vazio para manter o salvo.</p>
@@ -40,3 +41,4 @@ export function IntegrationSettings() {
     </section></div>}
   </div>;
 }
+

@@ -38,7 +38,7 @@ export interface ChangeProposal {
   diffSummary?: string;
   requiresConfirmation: boolean;
   files: FileChangeProposal[];
-  status: 'pending' | 'applied' | 'rejected';
+  status: 'pending' | 'previewing' | 'applied' | 'rejected' | 'failed_validation' | 'superseded';
 }
 
 export interface LLMExecutionResult {
@@ -329,7 +329,7 @@ export class LLMAdapterService {
           success: true,
           status: 'success',
           statusCode,
-          message: `Conexão aprovada! O modelo "${modelId}" respondeu perfeitamente via UseOneAI.`,
+          message: `Conexão aprovada! O modelo "${modelId}" respondeu pelo provedor ${config.name}.`,
         };
       }
 

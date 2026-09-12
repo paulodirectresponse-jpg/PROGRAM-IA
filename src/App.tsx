@@ -321,17 +321,20 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          proposalId: proposal.id,
           files: proposal.files,
           summary: proposal.summary,
         }),
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'A proposta não pôde ser aplicada.');
       if (data.success) {
         await loadProjectDetails(activeProject.id);
         setPreviewNonce(Date.now());
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Falha ao aplicar proposta:', err);
+      await loadProjectDetails(activeProject.id);
     } finally {
       setIsLoading(false);
     }

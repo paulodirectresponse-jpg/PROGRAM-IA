@@ -76,6 +76,7 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
   const [isSavingFile, setIsSavingFile] = useState<boolean>(false);
   const [saveSuccessNotice, setSaveSuccessNotice] = useState<boolean>(false);
   const [previewKey, setPreviewKey] = useState<number>(Date.now());
+  const [previewInfo, setPreviewInfo] = useState<{status:'loading'|'running'|'error';entryPath?:string;message:string}>({status:'loading',message:'Preparando preview…'});
   const [newFileName, setNewFileName] = useState<string>('');
   const [showNewFileInput, setShowNewFileInput] = useState<boolean>(false);
 
@@ -95,6 +96,8 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
   const [isCreatingPR, setIsCreatingPR] = useState<boolean>(false);
   const [prResult, setPrResult] = useState<{ success: boolean; url?: string; error?: string } | null>(null);
   const [connectRepoUrl, setConnectRepoUrl] = useState<string>('');
+  const [newRepoName, setNewRepoName] = useState<string>('');
+  const [newRepoPrivate, setNewRepoPrivate] = useState<boolean>(true);
   const [isConnectingRepo, setIsConnectingRepo] = useState<boolean>(false);
   const [syncStatus, setSyncStatus] = useState<{ aheadBy?: number; behindBy?: number; status?: string; message?: string } | null>(null);
 
@@ -198,10 +201,38 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
     }
   };
 
-  // Reload preview whenever previewNonce changes
+  const handleCreateRepo = async () => {
+    if (!project || !newRepoName.trim()) return;
+    setIsConnectingRepo(true);setGitActionNotice(null);
+    try {
+      const created=await fetch('/api/github/create-repo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:newRepoName.trim(),description:project.description,isPrivate:newRepoPrivate})});
+      const result=await created.json();if(!created.ok||!result.success)throw new Error(result.error||'Não foi possível criar o repositório.');
+      const repoUrl=result.repo?.htmlUrl||result.repo?.fullName;
+      if(!repoUrl)throw new Error('O GitHub não retornou o endereço do repositório criado.');
+      const connected=await fetch(`/api/projects/${project.id}/github/connect-repo`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repoUrl})});
+      const linked=await connected.json();if(!connected.ok||!linked.success)throw new Error(linked.error||'O repositório foi criado, mas não pôde ser vinculado.');
+      setGitActionNotice({type:'success',text:`Repositório ${newRepoName.trim()} criado e vinculado.`});setNewRepoName('');onRefreshFiles();
+    }catch(error:any){setGitActionNotice({type:'error',text:error.message});}finally{setIsConnectingRepo(false);}
+  };
+
+  const loadPreviewInfo = async () => {
+    if (!project) return;
+    setPreviewInfo({status:'loading',message:'Verificando os arquivos do projeto…'});
+    try {
+      const response = await fetch(`/api/projects/${project.id}/preview/status`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Não foi possível preparar o preview.');
+      setPreviewInfo(data);
+      if (data.status === 'running') setPreviewKey(Date.now());
+    } catch (error: any) {
+      setPreviewInfo({status:'error',message:error.message});
+    }
+  };
+
+  // Reevaluate and reload preview whenever the project changes
   useEffect(() => {
-    setPreviewKey(Date.now());
-  }, [previewNonce]);
+    loadPreviewInfo();
+  }, [project?.id, previewNonce]);
 
   // Load content of selected file
   useEffect(() => {
@@ -395,7 +426,7 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
     );
   }
 
-  const previewUrl = `/api/preview/${project.id}/index.html?t=${previewKey}`;
+  const previewUrl = `/api/preview/${project.id}/${previewInfo.entryPath || 'index.html'}?t=${previewKey}`;
 
   return (
     <main id="workspace-main" className="flex-1 flex flex-col h-full bg-slate-950 overflow-hidden select-text">
@@ -597,14 +628,14 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
             <div
               className={`h-full transition-all duration-300 rounded-xl overflow-hidden border border-slate-800 shadow-2xl bg-black ${getDeviceWidth()}`}
             >
-              <iframe
+              {previewInfo.status === 'loading' ? <div className="h-full flex flex-col items-center justify-center gap-3 text-slate-400"><Loader2 className="animate-spin text-cyan-400"/><p className="text-sm">{previewInfo.message}</p></div> : previewInfo.status === 'error' ? <div className="h-full flex flex-col items-center justify-center gap-3 px-8 text-center"><XCircle className="text-rose-400"/><p className="text-sm font-semibold text-slate-200">Preview indisponível</p><p className="max-w-lg text-xs text-slate-400">{previewInfo.message}</p><button onClick={loadPreviewInfo} className="rounded-lg bg-cyan-600 px-4 py-2 text-xs font-semibold text-slate-950">Tentar novamente</button></div> : <iframe
                 id="preview-iframe"
                 key={previewKey}
                 src={previewUrl}
                 title="Live Application Preview"
                 className="w-full h-full border-0 bg-slate-950"
                 sandbox="allow-scripts allow-same-origin allow-forms"
-              />
+              />}
             </div>
           </div>
         )}
@@ -1045,6 +1076,11 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
                       Vincular
                     </button>
                   </form>
+                  <div className="flex items-center gap-2 pt-2 border-t border-slate-800/70">
+                    <input type="text" value={newRepoName} onChange={e=>setNewRepoName(e.target.value)} placeholder="Nome do novo repositório" className="flex-1 px-2.5 py-1.5 text-xs rounded-lg bg-slate-950 border border-slate-700 text-slate-200"/>
+                    <label className="flex items-center gap-1.5 text-xs text-slate-400"><input type="checkbox" checked={newRepoPrivate} onChange={e=>setNewRepoPrivate(e.target.checked)}/>Privado</label>
+                    <button type="button" onClick={handleCreateRepo} disabled={isConnectingRepo||!newRepoName.trim()} className="px-3 py-1.5 rounded-lg bg-cyan-600 text-slate-950 font-bold text-xs disabled:opacity-50">Criar e vincular</button>
+                  </div>
                 </div>
               )}
 
@@ -1112,3 +1148,4 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
     </main>
   );
 };
+
