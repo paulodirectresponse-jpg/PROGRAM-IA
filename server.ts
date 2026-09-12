@@ -6,11 +6,13 @@ import cookieParser from 'cookie-parser';
 import { createServer as createViteServer } from 'vite';
 import { initializeDatabase } from './server/db/index.js';
 import { router as apiRouter } from './server/routes.js';
+import { CloudSyncService } from './server/services/cloudSyncService.js';
 
 dotenv.config();
 
 // Initialize SQLite database and run migrations
 initializeDatabase();
+if (process.env.FORGE_REQUIRE_CLOUD_SYNC === 'true') CloudSyncService.assertPersistentConfiguration();
 
 const app = express();
 const PORT = 3000;
@@ -75,3 +77,4 @@ async function startServer() {
 }
 
 startServer();
+

@@ -7,6 +7,7 @@ import {IntegrationService} from '../server/services/integrationService.js';
 import {verifyFirebaseIdentity} from '../server/services/firebaseIdentity.js';
 import {WorkspaceManager} from '../server/services/workspaceManager.js';
 import {ModelRouter} from '../server/services/modelRouter.js';
+import {CloudSyncService} from '../server/services/cloudSyncService.js';
 import crypto from 'node:crypto';
 
 const suffix = `${Date.now()}`;
@@ -28,7 +29,7 @@ test('candidate order, pause and removal remain isolated',()=>{let c=ModelRouter
 test('operational failures open and recover a candidate circuit',()=>{const c=ModelRouter.listProfiles(a)[0].candidates[0];ModelRouter.recordCandidateResult(c.id,false,'operational');ModelRouter.recordCandidateResult(c.id,false,'operational');assert.equal(ModelRouter.listProfiles(a)[0].candidates[0].health_state,'open');ModelRouter.recordCandidateResult(c.id,true);assert.equal(ModelRouter.listProfiles(a)[0].candidates[0].health_state,'healthy');});
 test('budget governor blocks calls before overspending',()=>{assert.throws(()=>ModelRouter.assertBudget(a,4),/diário/);ModelRouter.assertBudget(a,0);});
 test('Firebase identity stays bound to uid; email cannot take over an existing account',()=>{
-  assert.throws(()=>AuthService.firebaseLogin(`a-${suffix}@example.test`,'Other','unrelated-uid'), /migração/);
+  assert.throws(()=>AuthService.firebaseLogin(`a-${suffix}@example.test`,'Other','unrelated-uid'), /outra identidade/);
   assert.equal(AuthService.firebaseLogin(`a-${suffix}@example.test`,'A',`fb-a-${suffix}`).user.id,a);
   assert.equal(a,`usr-firebase-${crypto.createHash('sha256').update(`fb-a-${suffix}`).digest('hex').slice(0,32)}`);
 });
@@ -40,6 +41,33 @@ test('legacy Firebase identity and owned records migrate to the cross-device sta
   assert.match(migrated.id,/^usr-firebase-[a-f0-9]{32}$/);
   assert.equal((db.prepare('SELECT user_id FROM workspaces WHERE id=?').get(`ws-${legacyId}`) as any).user_id,migrated.id);
   assert.equal(db.prepare('SELECT id FROM users WHERE id=?').get(legacyId),undefined);
+});
+test('a clean second runtime restores projects, active provider, secrets and conversations before loading',async(t)=>{
+  const uid=`sync-fb-${suffix}`, email=`sync-${suffix}@example.test`;
+  const {user}=AuthService.firebaseLogin(email,'Sync User',uid);
+  const workspace=(db.prepare('SELECT id FROM workspaces WHERE user_id=? LIMIT 1').get(user.id) as any).id;
+  const now=new Date().toISOString(), projectId=`sync-project-${suffix}`, conversationId=`sync-conversation-${suffix}`;
+  db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'Cloud project','novo',?,?)").run(projectId,user.id,workspace,now,now);
+  db.prepare("UPDATE providers SET is_active=CASE WHEN provider_key='cheaper_inference' THEN 1 ELSE 0 END WHERE user_id=?").run(user.id);
+  SecretService.saveSecret(user.id,'github','github-secret-for-second-runtime');
+  db.prepare("INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,'Cloud conversation',?,?)").run(conversationId,projectId,now,now);
+  const snapshot=CloudSyncService.export(user.id);
+  for(const table of ['conversations','projects'])db.prepare(`DELETE FROM ${table} WHERE ${table==='projects'?'user_id':'project_id'}=?`).run(table==='projects'?user.id:projectId);
+  for(const table of ['providers','user_secrets','workspaces'])db.prepare(`DELETE FROM ${table} WHERE user_id=?`).run(user.id);
+  const previousUrl=process.env.SUPABASE_URL, previousKey=process.env.SUPABASE_SECRET_KEY;
+  process.env.SUPABASE_URL='https://sync.example.test';process.env.SUPABASE_SECRET_KEY='test-service-role';
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify([{user_id:user.id,revision:7,device_id:'other-device',schema_version:1,payload:snapshot,updated_at:now}]),{status:200,headers:{'content-type':'application/json'}}));
+  try{
+    const result=await CloudSyncService.bootstrap(user.id);
+    assert.equal(result.status,'synced');
+    assert.equal((db.prepare('SELECT name FROM projects WHERE id=?').get(projectId) as any).name,'Cloud project');
+    assert.equal((db.prepare("SELECT is_active FROM providers WHERE user_id=? AND provider_key='cheaper_inference'").get(user.id) as any).is_active,1);
+    assert.equal(SecretService.getDecryptedSecret(user.id,'github'),'github-secret-for-second-runtime');
+    assert.equal((db.prepare('SELECT title FROM conversations WHERE id=?').get(conversationId) as any).title,'Cloud conversation');
+  }finally{
+    if(previousUrl===undefined)delete process.env.SUPABASE_URL;else process.env.SUPABASE_URL=previousUrl;
+    if(previousKey===undefined)delete process.env.SUPABASE_SECRET_KEY;else process.env.SUPABASE_SECRET_KEY=previousKey;
+  }
 });
 test('sessions are revoked and never reconstructed from user-default',()=>{
   const session=AuthService.createSession(a);

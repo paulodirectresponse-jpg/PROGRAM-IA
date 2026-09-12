@@ -128,7 +128,7 @@ router.post('/auth/firebase-login', async (req: Request, res: Response) => {
     const limit = AuthService.checkRateLimit(req.ip || 'unknown');
     if (!limit.allowed) return res.status(429).json({ error: 'Muitas tentativas. Aguarde um minuto.' });
     const identity = await verifyFirebaseIdentity(req.body.idToken);
-    const { user, session } = AuthService.firebaseLogin(identity.email, identity.name, identity.uid, req.headers['user-agent'], req.ip);
+    const { user, session, legacyUserIds } = AuthService.firebaseLogin(identity.email, identity.name, identity.uid, req.headers['user-agent'], req.ip);
 
     res.cookie('forge_session', session.token, {
       httpOnly: true,
@@ -138,18 +138,19 @@ router.post('/auth/firebase-login', async (req: Request, res: Response) => {
       path: '/',
     });
 
-    const sync = await CloudSyncService.bootstrap(user.id);
+    const sync = await CloudSyncService.bootstrap(user.id, legacyUserIds);
     res.json({ success: true, user, sync });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
 });
 
-router.get('/auth/me', (req: Request, res: Response) => {
+router.get('/auth/me', async (req: Request, res: Response) => {
   if (!req.user) {
     return res.json({ authenticated: false, user: null });
   }
-  res.json({ authenticated: true, user: req.user });
+  const sync = await CloudSyncService.bootstrap(req.user.id);
+  res.json({ authenticated: true, user: req.user, sync });
 });
 
 router.post('/auth/logout', (req: Request, res: Response) => {
@@ -161,7 +162,7 @@ router.post('/auth/logout', (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-router.get('/sync/status',requireAuth,async(req,res)=>{try{const remote=await CloudSyncService.remote(req.user!.id);res.json({configured:CloudSyncService.configured(),status:remote?'synced':'local_only',revision:remote?.revision||0,updatedAt:remote?.updated_at||null,deviceId:remote?.device_id||null});}catch(e:any){res.status(502).json({configured:true,status:'error',error:e.message});}});
+router.get('/sync/status',requireAuth,async(req,res)=>{try{if(!CloudSyncService.configured())return res.json({configured:false,status:'not_configured',revision:0});const remote=await CloudSyncService.remote(req.user!.id);res.json({configured:true,status:remote?'synced':'local_only',revision:remote?.revision||0,updatedAt:remote?.updated_at||null,deviceId:remote?.device_id||null});}catch(e:any){res.status(502).json({configured:true,status:'error',error:e.message});}});
 router.post('/sync/push',requireAuth,async(req,res)=>{try{res.json(await CloudSyncService.push(req.user!.id));}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
 router.post('/sync/pull',requireAuth,async(req,res)=>{try{res.json(await CloudSyncService.pull(req.user!.id));}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
 
