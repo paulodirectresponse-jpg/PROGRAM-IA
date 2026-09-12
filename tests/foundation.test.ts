@@ -29,7 +29,7 @@ test('candidate order, pause and removal remain isolated',()=>{let c=ModelRouter
 test('operational failures open and recover a candidate circuit',()=>{const c=ModelRouter.listProfiles(a)[0].candidates[0];ModelRouter.recordCandidateResult(c.id,false,'operational');ModelRouter.recordCandidateResult(c.id,false,'operational');assert.equal(ModelRouter.listProfiles(a)[0].candidates[0].health_state,'open');ModelRouter.recordCandidateResult(c.id,true);assert.equal(ModelRouter.listProfiles(a)[0].candidates[0].health_state,'healthy');});
 test('budget governor blocks calls before overspending',()=>{assert.throws(()=>ModelRouter.assertBudget(a,4),/diário/);ModelRouter.assertBudget(a,0);});
 test('Firebase identity stays bound to uid; email cannot take over an existing account',()=>{
-  assert.throws(()=>AuthService.firebaseLogin(`a-${suffix}@example.test`,'Other','unrelated-uid'), /migração/);
+  assert.throws(()=>AuthService.firebaseLogin(`a-${suffix}@example.test`,'Other','unrelated-uid'), /outra identidade/);
   assert.equal(AuthService.firebaseLogin(`a-${suffix}@example.test`,'A',`fb-a-${suffix}`).user.id,a);
   assert.equal(a,`usr-firebase-${crypto.createHash('sha256').update(`fb-a-${suffix}`).digest('hex').slice(0,32)}`);
 });
