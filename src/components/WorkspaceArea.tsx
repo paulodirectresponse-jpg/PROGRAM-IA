@@ -45,6 +45,7 @@ interface WorkspaceAreaProps {
   onOpenCheckpoints?: () => void;
   githubStatus: GitHubStatus | null;
   previewNonce: number;
+  previewProposalId?: string;
   onDeleteProject?: (project: Project) => void;
   onDuplicateProject?: (projectId: string) => void;
   onExportZip?: (projectId: string) => void;
@@ -64,6 +65,7 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
   onOpenCheckpoints,
   githubStatus,
   previewNonce,
+  previewProposalId,
   onDeleteProject,
   onDuplicateProject,
   onExportZip,
@@ -219,7 +221,7 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
     if (!project) return;
     setPreviewInfo({status:'loading',message:'Verificando os arquivos do projeto…'});
     try {
-      const response = await fetch(`/api/projects/${project.id}/preview/status`);
+      const response = await fetch(previewProposalId?`/api/projects/${project.id}/proposals/${previewProposalId}/preview/status`:`/api/projects/${project.id}/preview/status`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Não foi possível preparar o preview.');
       setPreviewInfo(data);
@@ -232,7 +234,7 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
   // Reevaluate and reload preview whenever the project changes
   useEffect(() => {
     loadPreviewInfo();
-  }, [project?.id, previewNonce]);
+  }, [project?.id, previewNonce, previewProposalId]);
 
   // Load content of selected file
   useEffect(() => {
@@ -426,7 +428,7 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
     );
   }
 
-  const previewUrl = `/api/preview/${project.id}/${previewInfo.entryPath || 'index.html'}?t=${previewKey}`;
+  const previewUrl = previewProposalId?`/api/preview-proposal/${project.id}/${previewProposalId}/${previewInfo.entryPath || 'index.html'}?t=${previewKey}`:`/api/preview/${project.id}/${previewInfo.entryPath || 'index.html'}?t=${previewKey}`;
 
   return (
     <main id="workspace-main" className="flex-1 flex flex-col h-full bg-slate-950 overflow-hidden select-text">
