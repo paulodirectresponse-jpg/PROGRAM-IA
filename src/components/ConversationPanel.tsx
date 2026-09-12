@@ -29,6 +29,7 @@ interface ConversationPanelProps {
   isLoading: boolean;
   onAbort: () => void;
   availableSkills: Skill[];
+  canSend: boolean;
 }
 
 export const ConversationPanel: React.FC<ConversationPanelProps> = ({
@@ -42,6 +43,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   isLoading,
   onAbort,
   availableSkills,
+  canSend,
 }) => {
   const [inputText, setInputText] = useState('');
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
@@ -56,7 +58,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputText.trim() || isLoading) return;
+    if (!inputText.trim() || isLoading || !canSend) return;
 
     // Detect @skill mentions in message
     const mentionedSkills: string[] = [...selectedSkills];
@@ -183,7 +185,11 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
       <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar text-xs">
         {messages.map((msg) => {
           const isUser = msg.sender === 'user';
-          const meta = msg.metadata || (msg.metadata_json ? JSON.parse(msg.metadata_json) : {});
+          let parsedMetadata: Record<string, any> = {};
+          if (msg.metadata_json) {
+            try { parsedMetadata = JSON.parse(msg.metadata_json); } catch { parsedMetadata = {}; }
+          }
+          const meta = msg.metadata || parsedMetadata;
           const proposal = meta.proposal as ChangeProposal | undefined;
           const hasProposal = Boolean(proposal && proposal.files && proposal.files.length > 0);
           const isDiffOpen = expandedDiffs[msg.id] ?? false;
@@ -244,7 +250,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                 {meta.validation && (
                   <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/70 p-2 space-y-1">
                     <div className={`text-[10px] font-semibold ${meta.validation.passed?'text-emerald-400':'text-rose-400'}`}>{meta.validation.passed?'Quality gates aprovados':'Quality gates falharam; alteração restaurada'}</div>
-                    {meta.validation.results.map((item:any)=><div key={item.tool} className="flex justify-between text-[10px] text-slate-400"><span>{item.tool}</span><span>{item.status}</span></div>)}
+                    {Array.isArray(meta.validation.results) && meta.validation.results.map((item:any)=><div key={item.tool} className="flex justify-between text-[10px] text-slate-400"><span>{item.tool}</span><span>{item.status}</span></div>)}
                   </div>
                 )}
 
@@ -452,7 +458,8 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                 handleSubmit(e);
               }
             }}
-            placeholder="Digite seu pedido... (Ex: crie uma tela de login, explique a arquitetura)"
+            disabled={!canSend}
+            placeholder={canSend ? 'Digite seu pedido... (Ex: crie uma tela de login, explique a arquitetura)' : 'Crie ou selecione um projeto para iniciar a conversa'}
             rows={2}
             className="w-full pl-3 pr-20 py-2 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-600 resize-none"
           />
@@ -470,7 +477,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
             <button
               type="submit"
               id="btn-send-message"
-              disabled={!inputText.trim() || isLoading}
+              disabled={!inputText.trim() || isLoading || !canSend}
               className="p-1.5 rounded bg-cyan-600 hover:bg-cyan-500 disabled:opacity-30 disabled:pointer-events-none text-slate-950 font-bold transition cursor-pointer"
             >
               <Send size={13} />

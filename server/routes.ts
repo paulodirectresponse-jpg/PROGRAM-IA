@@ -750,12 +750,13 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    const providerRow = db.prepare('SELECT provider_key FROM providers WHERE id = ? AND user_id = ?').get(project?.provider_id || '', req.user!.id) as any;
+    const providerRow = db.prepare("SELECT provider_key, model_id FROM providers WHERE user_id = ? AND connection_status = 'active' ORDER BY created_at DESC LIMIT 1").get(req.user!.id) as any
+      || db.prepare('SELECT provider_key, model_id FROM providers WHERE id = ? AND user_id = ?').get(project?.provider_id || '', req.user!.id) as any;
     const providerKey = providerRow?.provider_key || 'useoneai';
-    const modelId = providerRow ? project?.model_id : undefined;
+    const modelId = providerRow?.model_id || project?.model_id || undefined;
 
     // Call LLM Adapter with authenticated userId
-    let result = process.env.AGENT_ENGINE_ENABLED==='false' ? await LLMAdapterService.executePrompt({
+    let result = process.env.AGENT_ENGINE_ENABLED!=='true' ? await LLMAdapterService.executePrompt({
       prompt: content,
       mode: mode as AgentMode,
       projectId,
@@ -1319,6 +1320,7 @@ router.post('/providers/save-with-key', requireAuth, async (req: Request, res: R
       }
     }
 
+    db.prepare("UPDATE providers SET connection_status = CASE WHEN is_configured = 1 THEN 'configured' ELSE connection_status END WHERE user_id = ? AND connection_status = 'active'").run(req.user!.id);
     db.prepare(`
       UPDATE providers
       SET base_url = COALESCE(?, base_url),
@@ -1330,7 +1332,7 @@ router.post('/providers/save-with-key', requireAuth, async (req: Request, res: R
       baseUrl || null,
       modelId || null,
       hasKey ? 1 : 0,
-      hasKey ? 'configured' : 'not_configured',
+      hasKey ? 'active' : 'not_configured',
       providerKey, req.user!.id
     );
 

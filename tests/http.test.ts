@@ -47,4 +47,10 @@ test('changing model configuration does not mutate another user',async()=>{
   assert.equal(r.status,200);
   assert.equal((db.prepare("SELECT model_id FROM providers WHERE user_id=? AND provider_key='useoneai'").get(userB) as any).model_id,'chatgpt-5.5');
 });
+test('saving a provider makes that exact model the active account model',async()=>{
+  const r=await fetch(`${base}/providers/save-with-key`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({providerKey:'cheaper_inference',baseUrl:'https://example.test/v1',modelId:'gpt-test',apiKey:'private-test-key'})});
+  assert.equal(r.status,200);
+  const row=db.prepare('SELECT model_id, connection_status FROM providers WHERE user_id=? AND provider_key=?').get(userA,'cheaper_inference') as any;
+  assert.equal(row.model_id,'gpt-test');assert.equal(row.connection_status,'active');
+});
 

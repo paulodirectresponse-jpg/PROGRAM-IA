@@ -464,7 +464,7 @@ export default function App() {
     window.location.href = `/api/projects/${projectId}/export/zip`;
   };
 
-  const activeProvider = providers.find((p) => p.is_configured) || providers[0] || null;
+  const activeProvider = providers.find((p) => p.connection_status === 'active') || providers.find((p) => p.is_configured) || providers[0] || null;
 
   return (
     <div id="forge-agent-root" className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans select-none">
@@ -518,6 +518,7 @@ export default function App() {
         isLoading={isLoading}
         onAbort={handleAbort}
         availableSkills={skills}
+        canSend={Boolean(activeProject)}
       />
 
       {/* 3. Main Workspace Area */}
