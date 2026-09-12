@@ -9,6 +9,9 @@ import {WorkspaceManager} from '../server/services/workspaceManager.js';
 import {ModelRouter} from '../server/services/modelRouter.js';
 import {CloudSyncService} from '../server/services/cloudSyncService.js';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import {spawnSync} from 'node:child_process';
 
 const suffix = `${Date.now()}`;
 let a: string, b: string;
@@ -54,8 +57,8 @@ test('a clean second runtime restores projects, active provider, secrets and con
   const snapshot=CloudSyncService.export(user.id);
   for(const table of ['conversations','projects'])db.prepare(`DELETE FROM ${table} WHERE ${table==='projects'?'user_id':'project_id'}=?`).run(table==='projects'?user.id:projectId);
   for(const table of ['providers','user_secrets','workspaces'])db.prepare(`DELETE FROM ${table} WHERE user_id=?`).run(user.id);
-  const previousUrl=process.env.SUPABASE_URL, previousKey=process.env.SUPABASE_SECRET_KEY;
-  process.env.SUPABASE_URL='https://sync.example.test';process.env.SUPABASE_SECRET_KEY='test-service-role';
+  const previousUrl=process.env.SUPABASE_URL, previousKey=process.env.SUPABASE_SECRET_KEY, previousMaster=process.env.SECRETS_MASTER_KEY;
+  process.env.SUPABASE_URL='https://sync.example.test';process.env.SUPABASE_SECRET_KEY='test-service-role';process.env.SECRETS_MASTER_KEY='stable-master-key-for-both-test-runtimes';
   t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify([{user_id:user.id,revision:7,device_id:'other-device',schema_version:1,payload:snapshot,updated_at:now}]),{status:200,headers:{'content-type':'application/json'}}));
   try{
     const result=await CloudSyncService.bootstrap(user.id);
@@ -64,10 +67,27 @@ test('a clean second runtime restores projects, active provider, secrets and con
     assert.equal((db.prepare("SELECT is_active FROM providers WHERE user_id=? AND provider_key='cheaper_inference'").get(user.id) as any).is_active,1);
     assert.equal(SecretService.getDecryptedSecret(user.id,'github'),'github-secret-for-second-runtime');
     assert.equal((db.prepare('SELECT title FROM conversations WHERE id=?').get(conversationId) as any).title,'Cloud conversation');
+    db.prepare('DELETE FROM conversations WHERE project_id=?').run(projectId);db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
+    const protectedPush=await CloudSyncService.push(user.id);
+    assert.equal(protectedPush.protectedFromEmptyOverwrite,true);
+    assert.ok(db.prepare('SELECT id FROM projects WHERE id=?').get(projectId));
   }finally{
     if(previousUrl===undefined)delete process.env.SUPABASE_URL;else process.env.SUPABASE_URL=previousUrl;
     if(previousKey===undefined)delete process.env.SUPABASE_SECRET_KEY;else process.env.SUPABASE_SECRET_KEY=previousKey;
+    if(previousMaster===undefined)delete process.env.SECRETS_MASTER_KEY;else process.env.SECRETS_MASTER_KEY=previousMaster;
   }
+});
+test('required cloud configuration reports only safe presence flags and fails closed',()=>{
+  const saved={url:process.env.SUPABASE_URL,key:process.env.SUPABASE_SECRET_KEY,master:process.env.SECRETS_MASTER_KEY,required:process.env.FORGE_REQUIRE_CLOUD_SYNC};
+  process.env.FORGE_REQUIRE_CLOUD_SYNC='true';delete process.env.SUPABASE_URL;delete process.env.SUPABASE_SECRET_KEY;delete process.env.SECRETS_MASTER_KEY;
+  try{const status=CloudSyncService.configurationStatus();assert.deepEqual(status,{configured:false,hasSupabaseUrl:false,hasSupabaseKey:false,hasMasterKey:false,required:true});assert.throws(()=>CloudSyncService.assertPersistentConfiguration(),/Cloud sync obrigatório/);}finally{for(const [key,value] of Object.entries(saved)){const envName={url:'SUPABASE_URL',key:'SUPABASE_SECRET_KEY',master:'SECRETS_MASTER_KEY',required:'FORGE_REQUIRE_CLOUD_SYNC'}[key]!;if(value===undefined)delete process.env[envName];else process.env[envName]=value;}}
+});
+test('two independent runtimes restore atomically and reject a different master key',()=>{
+  const root=path.resolve(process.env.FORGE_DATA_DIR||'.data','two-runtime-'+suffix),snapshot=path.join(root,'snapshot.json'),fixture=path.resolve('tests/fixtures/cloudRuntime.ts');fs.mkdirSync(root,{recursive:true});
+  const run=(name:string,mode:string,master:string)=>spawnSync(process.execPath,['--import','tsx',fixture,mode,snapshot],{encoding:'utf8',env:{...process.env,FORGE_DATA_DIR:path.join(root,name),SUPABASE_URL:'https://sync.example.test',SUPABASE_SECRET_KEY:'test-service-role',SECRETS_MASTER_KEY:master}});
+  const a=run('runtime-a','create','same-stable-master-key-across-runtimes');assert.equal(a.status,0,a.stderr);
+  const b=run('runtime-b','restore','same-stable-master-key-across-runtimes');assert.equal(b.status,0,b.stderr);const restored=JSON.parse(b.stdout);assert.deepEqual(restored,{status:'synced',projects:1,active:'cheaper_inference',secret:'secret-survives-runtime',conversations:1});
+  const bad=run('runtime-b-wrong-key','restore','different-master-key-for-this-runtime');assert.equal(bad.status,0,bad.stderr);const rejected=JSON.parse(bad.stdout);assert.equal(rejected.status,'error');assert.equal(rejected.projects,0);assert.equal(rejected.secret,null);assert.equal(rejected.conversations,0);
 });
 test('sessions are revoked and never reconstructed from user-default',()=>{
   const session=AuthService.createSession(a);
