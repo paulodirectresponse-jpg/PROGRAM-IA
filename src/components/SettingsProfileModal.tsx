@@ -43,7 +43,7 @@ interface SettingsProfileModalProps {
   onLogout: () => void;
   defaultTab?: SettingsTab;
   providers: Provider[];
-  onUpdateProvider: (providerKey: string, baseUrl: string, modelId: string) => void;
+  onUpdateProvider: (providerKey: string, baseUrl: string, modelId: string) => Promise<void>;
   githubStatus: GitHubStatus | null;
   onRefreshGitHub: () => void;
   activeProject: Project | null;
@@ -129,8 +129,11 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
   const [testResults, setTestResults] = useState<Record<string, ConnectionTestResult>>({});
 
   // Providers / AI Models State
-  const [selectedProviderKey, setSelectedProviderKey] = useState<string>('gemini');
-  const activeProv = providers.find((p) => p.provider_key === selectedProviderKey) || providers[0];
+  const [selectedProviderKey, setSelectedProviderKey] = useState<string>('');
+  const activeProv = providers.find((p) => p.provider_key === selectedProviderKey)
+    || providers.find((p) => p.connection_status === 'active')
+    || providers.find((p) => p.is_configured)
+    || providers[0];
   const [provBaseUrl, setProvBaseUrl] = useState(activeProv?.base_url || '');
   const [provModelId, setProvModelId] = useState(activeProv?.model_id || '');
   const [provApiKey, setProvApiKey] = useState('');
@@ -144,8 +147,10 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
     if (isOpen) {
       setActiveTab(defaultTab);
       loadSecrets();
+      const preferred = providers.find((p) => p.connection_status === 'active') || providers.find((p) => p.is_configured) || providers[0];
+      if (preferred && !providers.some((p) => p.provider_key === selectedProviderKey)) setSelectedProviderKey(preferred.provider_key);
     }
-  }, [isOpen, defaultTab]);
+  }, [isOpen, defaultTab, providers]);
 
   useEffect(() => {
     if (activeProv) {
@@ -310,7 +315,7 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Falha ao salvar provedor e chave de API.');
 
-      onUpdateProvider(activeProv.provider_key, provBaseUrl, provModelId);
+      await onUpdateProvider(activeProv.provider_key, provBaseUrl, provModelId);
       setProvApiKey('');
       await loadSecrets();
       onCredentialsUpdated?.();
@@ -823,4 +828,5 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
     </div>
   );
 };
+
 
