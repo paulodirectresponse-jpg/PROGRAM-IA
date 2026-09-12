@@ -37,6 +37,10 @@ export class SecretService {
       return this.masterKey;
     }
 
+    if (process.env.SUPABASE_URL || process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.FORGE_REQUIRE_CLOUD_SYNC === 'true') {
+      throw new Error('SECRETS_MASTER_KEY ausente: a sincronização remota exige uma chave mestra estável entre todos os runtimes.');
+    }
+
     // Persist a machine master key in .data directory if not in env
     const keyPath = path.resolve(process.env.FORGE_DATA_DIR || path.join(process.cwd(), '.data'), '.master_key');
     if (fs.existsSync(keyPath)) {
@@ -134,6 +138,19 @@ export class SecretService {
     let decrypted = decipher.update(ciphertext, 'hex', 'utf8');
     decrypted += decipher.final('utf8');
     return decrypted;
+  }
+
+  static validateEncryptedRows(rows: any[]): { valid: boolean; count: number; failures: string[] } {
+    const active = (rows || []).filter(row => row && row.is_active !== 0);
+    const failures: string[] = [];
+    for (const row of active) {
+      try {
+        this.decrypt(row.encrypted_value, row.iv, row.tag);
+      } catch {
+        failures.push(String(row.service_key || row.id || 'credencial desconhecida'));
+      }
+    }
+    return { valid: failures.length === 0, count: active.length, failures };
   }
 
   /**
