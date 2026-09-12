@@ -5,6 +5,7 @@ import {
   loginWithFirebaseEmail,
   registerWithFirebaseEmail,
   loginWithFirebaseGoogle,
+  requestFirebasePasswordReset,
   logoutFirebase
 } from '../lib/firebase';
 
@@ -110,6 +111,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         setSuccessMsg(null);
       }, 600);
     } catch (err: any) {
+      setError(friendlyAuthError(err));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handlePasswordReset = async () => {
+    setError(null);
+    setSuccessMsg(null);
+    if (!email.trim()) {
+      setError('Digite seu e-mail para receber o link de redefinição.');
+      return;
+    }
+    setIsLoading(true);
+    try {
+      await requestFirebasePasswordReset(email);
+      setSuccessMsg('Se existir uma conta com esse e-mail, o Firebase enviará o link para redefinir a senha.');
+    } catch (err) {
       setError(friendlyAuthError(err));
     } finally {
       setIsLoading(false);
@@ -307,6 +326,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   placeholder="seu.email@exemplo.com"
                   className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-100 text-xs placeholder:text-slate-600 focus:outline-hidden focus:border-cyan-500"
                 />
+                {tab === 'login' && (
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={handlePasswordReset}
+                      disabled={isLoading}
+                      className="text-[11px] font-medium text-cyan-400 hover:text-cyan-300 transition disabled:opacity-50"
+                    >
+                      Esqueci minha senha
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="space-y-1.5">

@@ -21,6 +21,33 @@ const MAX_ATTEMPTS = 6;
 const WINDOW_MS = 60 * 1000; // 1 minute window
 
 export class AuthService {
+  private static firebaseUserId(uid: string): string {
+    return `usr-firebase-${crypto.createHash('sha256').update(uid).digest('hex').slice(0, 32)}`;
+  }
+
+  private static migrateFirebaseUserId(user: AuthUser, stableId: string): AuthUser {
+    if (user.id === stableId) return user;
+    if (db.prepare('SELECT id FROM users WHERE id = ?').get(stableId)) {
+      throw new Error('Conflito ao migrar a identidade Firebase.');
+    }
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as Array<{name:string}>;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const {name} of tables) {
+        const columns = db.prepare(`PRAGMA table_info(${name})`).all() as Array<{name:string}>;
+        if (columns.some(column => column.name === 'user_id')) {
+          db.prepare(`UPDATE ${name} SET user_id = ? WHERE user_id = ?`).run(stableId, user.id);
+        }
+      }
+      db.prepare('UPDATE users SET id = ?, updated_at = ? WHERE id = ?').run(stableId, new Date().toISOString(), user.id);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    return {...user, id: stableId};
+  }
+
   /**
    * Hash a password securely with salt using scrypt (Argon2-comparable memory-hard hashing)
    */
@@ -146,13 +173,16 @@ export class AuthService {
     ipAddress: string = ''
   ): { user: AuthUser; session: SessionInfo } {
     const normalizedEmail = email.trim().toLowerCase();
+    const stableUserId = this.firebaseUserId(uid);
     let user = db.prepare('SELECT id, email, name, role, created_at FROM users WHERE firebase_uid = ?').get(uid) as unknown as AuthUser | undefined;
     const emailOwner = this.getUserByEmail(normalizedEmail);
     if (!user && emailOwner) throw new Error('Esta conta exige migração de identidade pelo administrador.');
 
+    if (user) user = this.migrateFirebaseUserId(user, stableUserId);
+
     if (!user) {
       const cleanName = name.trim() || normalizedEmail.split('@')[0];
-      const userId = 'usr-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex');
+      const userId = stableUserId;
       const now = new Date().toISOString();
       const fakePassHash = this.hashPassword(crypto.randomBytes(48).toString('hex'));
 

@@ -6,6 +6,7 @@ import {
   createUserWithEmailAndPassword,
   signInWithPopup,
   GoogleAuthProvider,
+  sendPasswordResetEmail,
   signOut as fbSignOut,
   onAuthStateChanged,
   type User as FirebaseUser
@@ -36,6 +37,10 @@ export async function loginWithFirebaseEmail(email: string, password: string): P
 export async function registerWithFirebaseEmail(email: string, password: string): Promise<FirebaseUser> {
   const userCredential = await createUserWithEmailAndPassword(auth, email, password);
   return userCredential.user;
+}
+
+export async function requestFirebasePasswordReset(email: string): Promise<void> {
+  await sendPasswordResetEmail(auth, email.trim());
 }
 
 export async function loginWithFirebaseGoogle(): Promise<FirebaseUser> {
@@ -73,3 +78,4 @@ export async function deleteFirestoreProjectDoc(projectId: string): Promise<void
     console.debug('Firestore project delete notice:', error?.message);
   }
 }
+
