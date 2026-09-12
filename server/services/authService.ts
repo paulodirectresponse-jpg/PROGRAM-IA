@@ -171,14 +171,22 @@ export class AuthService {
     uid: string,
     userAgent: string = '',
     ipAddress: string = ''
-  ): { user: AuthUser; session: SessionInfo } {
+  ): { user: AuthUser; session: SessionInfo; legacyUserIds: string[] } {
     const normalizedEmail = email.trim().toLowerCase();
     const stableUserId = this.firebaseUserId(uid);
     let user = db.prepare('SELECT id, email, name, role, created_at FROM users WHERE firebase_uid = ?').get(uid) as unknown as AuthUser | undefined;
     const emailOwner = this.getUserByEmail(normalizedEmail);
-    if (!user && emailOwner) throw new Error('Esta conta exige migração de identidade pelo administrador.');
+    const legacyUserIds: string[] = [];
+    if (!user && emailOwner) {
+      const binding = db.prepare('SELECT firebase_uid FROM users WHERE id=?').get(emailOwner.id) as {firebase_uid?:string}|undefined;
+      if (binding?.firebase_uid && binding.firebase_uid !== uid) throw new Error('Esta conta Firebase já está vinculada a outra identidade.');
+      user = emailOwner;
+    }
 
-    if (user) user = this.migrateFirebaseUserId(user, stableUserId);
+    if (user && user.id !== stableUserId) {
+      legacyUserIds.push(user.id);
+      user = this.migrateFirebaseUserId(user, stableUserId);
+    }
 
     if (!user) {
       const cleanName = name.trim() || normalizedEmail.split('@')[0];
@@ -211,7 +219,7 @@ export class AuthService {
     db.prepare('UPDATE users SET firebase_uid = ? WHERE id = ?').run(uid, user.id);
     this.seedUserData(user.id);
     const session = this.createSession(user.id, userAgent, ipAddress);
-    return { user, session };
+    return { user, session, legacyUserIds };
   }
 
   /**
