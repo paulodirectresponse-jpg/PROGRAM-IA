@@ -186,7 +186,7 @@ router.post('/providers/test', requireAuth, async (req, res) => {
     const {providerKey, baseUrl, modelId, apiKey} = req.body;
     const result = await LLMAdapterService.testConnection({providerKey, baseUrl, modelId, apiKey, userId:req.user!.id});
     db.prepare('UPDATE providers SET connection_status = ?, last_error = ? WHERE user_id = ? AND provider_key = ?').run(result.success?'connected':'error', result.success?null:result.message, req.user!.id, providerKey);
-    res.json(result);
+    res.status(result.success ? 200 : 400).json(result);
   } catch (error: any) { res.status(400).json({success:false,status:'request_error',message:String(error?.message||'Falha ao testar o provedor.').slice(0,300)}); }
 });
 router.get('/model-profiles',requireAuth,(req,res)=>res.json({profiles:ModelRouter.listProfiles(req.user!.id)}));
@@ -310,14 +310,14 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 
       // Write text files
       if (importResult.files) {
-        for (const [filePath, content] of Object.entries(importResult.files)) {
+        for (const [filePath, content] of Object.entries(WorkspaceManager.normalizeImportedFiles(importResult.files))) {
           WorkspaceManager.writeFile(projectId, filePath, content);
         }
       }
 
       // Write binary assets (images, fonts)
       if (importResult.binaryFiles) {
-        for (const [filePath, buf] of Object.entries(importResult.binaryFiles)) {
+        for (const [filePath, buf] of Object.entries(WorkspaceManager.normalizeImportedFiles(importResult.binaryFiles))) {
           WorkspaceManager.writeBinaryFile(projectId, filePath, buf);
         }
       }
@@ -356,7 +356,8 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
         ) VALUES (?, ?, 'ws-default', ?, ?, ?, '', 'main', 'active', 'prov-useoneai', 'chatgpt-5.5', ?, ?)
       `).run(projectId, userId, name.trim(), description || 'Importado de arquivo ZIP', origin, now, now);
 
-      for (const [filePath, content] of Object.entries(initialFiles)) {
+      const normalizedInitialFiles = WorkspaceManager.normalizeImportedFiles(initialFiles as Record<string,string>);
+      for (const [filePath, content] of Object.entries(normalizedInitialFiles)) {
         if (typeof content === 'string') {
           WorkspaceManager.writeFile(projectId, filePath, content);
         }
@@ -908,20 +909,29 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
   } finally { activeProjects.delete(req.params.projectId); }
 });
 
-router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
-    const { files, summary = 'Alterações aprovadas pelo usuário' } = req.body;
+    const { proposalId, files, summary = 'Alterações aprovadas pelo usuário' } = req.body;
     const projectId = req.params.projectId;
 
     if (!Array.isArray(files) || files.length === 0) {
       return res.status(400).json({ error: 'Lista de arquivos proposta inválida ou vazia.' });
     }
+    if (!proposalId) return res.status(400).json({error:'Identificador da proposta é obrigatório.'});
+    const conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+    const rows=conversation?db.prepare("SELECT id,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[]:[];
+    const proposalMessage=rows.find((row:any)=>{try{return JSON.parse(row.metadata_json||'{}')?.proposal?.id===proposalId;}catch{return false;}});
+    if(!proposalMessage)return res.status(404).json({error:'Proposta não encontrada nesta conversa.'});
+    const metadata=JSON.parse(proposalMessage.metadata_json||'{}');
+    if(metadata.proposal?.status!=='pending')return res.status(409).json({error:`Esta proposta não está mais disponível (${metadata.proposal?.status||'estado inválido'}).`});
+    metadata.proposal.status='previewing';
+    db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
 
     for (const file of files) {
       WorkspaceManager.resolveSafePath(projectId, file.path);
       if (!['create', 'update', 'delete', 'modify'].includes(file.action) || (file.action !== 'delete' && typeof file.content !== 'string')) return res.status(400).json({error:'Arquivo proposto inválido.'});
     }
-    WorkspaceManager.createCheckpoint(projectId, `Antes: ${summary.slice(0, 60)}`);
+    const rollbackCheckpointId=WorkspaceManager.createCheckpoint(projectId, `Antes: ${summary.slice(0, 60)}`);
     for (const file of files) {
       if (file.action === 'delete') {
         WorkspaceManager.deleteFile(projectId, file.path);
@@ -931,7 +941,10 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
     }
 
     const checkpointId = WorkspaceManager.createCheckpoint(projectId, summary.slice(0, 100), summary);
-    res.json({ success: true, checkpointId, message: 'Alterações aplicadas com sucesso ao workspace.' });
+    const validation=await ValidatorEngine.validate({projectId});
+    if(!validation.passed){WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);metadata.proposal.status='failed_validation';metadata.validation=validation;metadata.hasErrors=true;metadata.errorMessage=validation.status==='skipped'?'Nenhuma verificação real pôde ser executada; a alteração foi revertida.':'Uma verificação falhou; a alteração foi revertida.';db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);return res.status(422).json({error:metadata.errorMessage,validation});}
+    metadata.proposal.status='applied';metadata.validation=validation;metadata.checkpointId=checkpointId;db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
+    res.json({ success: true, checkpointId, validation, message: 'Alterações aplicadas e verificadas com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -968,7 +981,7 @@ router.post('/github/create-repo', requireAuth, async (req: Request, res: Respon
       description,
       isPrivate: Boolean(isPrivate),
     });
-    res.json(result);
+    res.status(result.success ? 200 : 400).json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1401,16 +1414,27 @@ router.post('/desktop/command', requireAuth, (_req, res) => {
 // 9. LIVE PREVIEW SANDBOX (PUBLIC SERVING FOR IFRAME)
 // ==========================================
 
+router.get('/projects/:projectId/preview/status', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  res.json(WorkspaceManager.getPreviewInfo(req.params.projectId));
+});
+
+router.post('/projects/:projectId/preview/rebuild', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  const info = WorkspaceManager.getPreviewInfo(req.params.projectId);
+  res.status(info.status === 'running' ? 200 : 422).json(info);
+});
+
 router.get('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const projectId = req.params.projectId;
   const projectDir = WorkspaceManager.getProjectDir(projectId);
 
-  const requestedFile = req.params[0] || 'index.html';
+  const preview = WorkspaceManager.getPreviewInfo(projectId);
+  if (preview.status !== 'running' || !preview.entryPath) return res.status(404).send(preview.message);
+  const requestedFile = req.params[0] || preview.entryPath;
   const safeRel = path.normalize(requestedFile).replace(/^(\.\.[\/\\])+/, '');
-  let filePath = path.join(projectDir, safeRel);
+  let filePath = path.join(projectDir, safeRel === 'index.html' || safeRel.replace(/\\/g,'/') === preview.entryPath ? preview.entryPath : path.join(preview.root || '', safeRel));
 
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-    filePath = path.join(projectDir, 'index.html');
+    filePath = path.join(projectDir, preview.entryPath);
   }
 
   if (!fs.existsSync(filePath)) {
