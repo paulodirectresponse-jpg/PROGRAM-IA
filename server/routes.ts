@@ -163,6 +163,7 @@ router.post('/auth/logout', (req: Request, res: Response) => {
 });
 
 router.get('/sync/status',requireAuth,async(req,res)=>{try{if(!CloudSyncService.configured())return res.json({configured:false,status:'not_configured',revision:0});const remote=await CloudSyncService.remote(req.user!.id);res.json({configured:true,status:remote?'synced':'local_only',revision:remote?.revision||0,updatedAt:remote?.updated_at||null,deviceId:remote?.device_id||null});}catch(e:any){res.status(502).json({configured:true,status:'error',error:e.message});}});
+router.get('/sync/configuration',(_req,res)=>res.json(CloudSyncService.configurationStatus()));
 router.post('/sync/push',requireAuth,async(req,res)=>{try{res.json(await CloudSyncService.push(req.user!.id));}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
 router.post('/sync/pull',requireAuth,async(req,res)=>{try{res.json(await CloudSyncService.pull(req.user!.id));}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
 
