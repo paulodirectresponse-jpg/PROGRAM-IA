@@ -58,6 +58,7 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [syncStatus,setSyncStatus]=useState<SyncStatus>('checking');
   const [isAccountHydrating,setIsAccountHydrating]=useState(true);
+  const [localContinuationApproved,setLocalContinuationApproved]=useState(false);
   const [buildInfo,setBuildInfo]=useState<{version:string;sha:string}|null>(null);
 
   // Abort controller ref
@@ -72,6 +73,7 @@ export default function App() {
 
   const checkCurrentUser = async () => {
     setIsAccountHydrating(true);
+    setLocalContinuationApproved(false);
     setSyncStatus('restoring');
     try {
       const res = await fetch('/api/auth/me');
@@ -79,7 +81,7 @@ export default function App() {
       if (data.authenticated && data.user) {
         setCurrentUser(data.user);
         setSyncStatus(normalizeSyncStatus(data.sync?.status));
-        await Promise.all([loadProjects(), loadSkills(), loadProviders(), loadGitHubStatus()]);
+        if(data.sync?.status!=='error'&&data.sync?.status!=='conflict')await Promise.all([loadProjects(), loadSkills(), loadProviders(), loadGitHubStatus()]);
       } else {
         setCurrentUser(null);
         setSyncStatus('not_configured');
@@ -476,7 +478,8 @@ export default function App() {
 
   return (
     <div id="forge-agent-root" className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans select-none">
-      {isAccountHydrating&&<div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950"><div className="rounded-xl border border-cyan-900/60 bg-slate-900 px-6 py-4 text-sm text-cyan-200 shadow-2xl">Restaurando sua conta antes de carregar o workspace…</div></div>}
+      {isAccountHydrating&&<div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950"><div className="rounded-xl border border-cyan-900/60 bg-slate-900 px-6 py-4 text-sm text-cyan-200 shadow-2xl">Restaurando sua conta...</div></div>}
+      {!isAccountHydrating&&!localContinuationApproved&&(syncStatus==='error'||syncStatus==='conflict')&&<div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950 p-4"><div className="w-full max-w-md rounded-2xl border border-rose-900/60 bg-slate-900 p-6 shadow-2xl"><h2 className="text-base font-bold text-slate-100">{syncStatus==='conflict'?'Conflito de sincronização':'Não foi possível restaurar sua conta da nuvem.'}</h2><p className="mt-2 text-sm text-slate-400">Se continuar localmente, os dados deste dispositivo podem estar incompletos.</p><div className="mt-5 flex gap-3"><button onClick={()=>void checkCurrentUser()} className="rounded-lg bg-cyan-600 px-4 py-2 text-xs font-semibold text-slate-950">Tentar novamente</button>{syncStatus==='error'&&<button onClick={async()=>{setLocalContinuationApproved(true);setSyncStatus('local_only');await Promise.all([loadProjects(),loadSkills(),loadProviders(),loadGitHubStatus()])}} className="rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300">Continuar somente localmente</button>}</div></div></div>}
       {currentUser&&<button onClick={async()=>{setSyncStatus('checking');try{const r=await fetch('/api/sync/push',{method:'POST'});const d=await r.json();setSyncStatus(r.ok?normalizeSyncStatus(d.status):'error')}catch{setSyncStatus('error')}}} className="fixed right-4 bottom-4 z-40 rounded-full border border-slate-700 bg-slate-900/90 px-3 py-1.5 text-[10px] text-slate-300 shadow-xl" title="Clique para sincronizar agora">{syncLabel[syncStatus]}</button>}
       {buildInfo&&<span className="fixed right-4 bottom-12 z-40 rounded border border-slate-800 bg-slate-950/80 px-2 py-1 text-[9px] font-mono text-slate-500">v{buildInfo.version} · {buildInfo.sha.slice(0,8)}</span>}
       {/* 1. Sidebar */}
