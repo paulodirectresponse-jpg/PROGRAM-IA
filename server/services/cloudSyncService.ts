@@ -12,7 +12,7 @@ export class CloudSyncService{
   private static timer=new Map<string,NodeJS.Timeout>();
   private static key(){return process.env.SUPABASE_SECRET_KEY||process.env.SUPABASE_SERVICE_ROLE_KEY||'';}
   static configured(){return Boolean(process.env.SUPABASE_URL&&this.key());}
-  private static headers(extra:Record<string,string>={}){const key=this.key();const authorization=key.startsWith('sb_secret_')?{}:{Authorization:`Bearer ${key}`};return{apikey:key,...authorization,'Content-Type':'application/json',...extra};}
+  private static headers(extra:Record<string,string>={}):Record<string,string>{const key=this.key();const headers:Record<string,string>={apikey:key,'Content-Type':'application/json',...extra};if(!key.startsWith('sb_secret_'))headers.Authorization=`Bearer ${key}`;return headers;}
   static export(userId:string):Snapshot{
     const tables:Record<string,any[]>={};
     for(const name of OWNED)tables[name]=db.prepare(`SELECT * FROM ${name} WHERE user_id=?`).all(userId);
