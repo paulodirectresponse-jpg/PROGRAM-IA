@@ -758,6 +758,17 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
+    const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oó]rio|remoto)\b|\b(github|reposit[oó]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(content);
+    if(requestsGitHubPublish){
+      if(!project?.repo_url)return res.status(409).json({error:'Vincule ou crie um repositório na aba Publicar antes de enviar o projeto ao GitHub.'});
+      const parsed=GitHubService.parseRepoUrl(project.repo_url);if(!parsed)return res.status(400).json({error:'A URL do repositório vinculado é inválida.'});
+      const pushed=await GitHubService.pushFilesToRepo({userId:req.user!.id,owner:parsed.owner,repo:parsed.repo,branch:project.branch||'main',commitMessage:`Forge Agent: ${content.trim().slice(0,72)}`,files:existingFiles});
+      if(!pushed.success)return res.status(400).json({error:pushed.error||'O GitHub recusou a publicação.'});
+      const agentMsgId='msg-agent-'+Date.now();const commitUrl=`https://github.com/${parsed.owner}/${parsed.repo}/commit/${pushed.commitSha}`;
+      const replyText=`Publicação concluída no GitHub.\n\nCommit: ${pushed.commitSha}\n${commitUrl}`;const metadata={mode,decisionType:'publish',providerUsed:'GitHub',modelUsed:'ferramenta-direta',filesAffected:Object.keys(existingFiles),github:{owner:parsed.owner,repo:parsed.repo,branch:project.branch||'main',commitSha:pushed.commitSha,commitUrl}};
+      db.prepare("INSERT INTO messages (id,conversation_id,sender,content,metadata_json,created_at) VALUES (?,?,'agent',?,?,?)").run(agentMsgId,conv.id,replyText,JSON.stringify(metadata),now);
+      return res.json({success:true,agentMessage:{id:agentMsgId,sender:'agent',content:replyText,metadata,created_at:now},github:metadata.github});
+    }
     const providerConfig = LLMAdapterService.getActiveProviderConfig(req.user!.id);
     if (!providerConfig) return res.status(409).json({error:'Selecione e salve um provedor de IA antes de enviar mensagens.'});
     const providerKey = providerConfig.key;
