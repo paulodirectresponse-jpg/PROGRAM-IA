@@ -252,7 +252,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
 
                 {meta.validation && (
                   <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/70 p-2 space-y-1">
-                    <div className={`text-[10px] font-semibold ${meta.validation.passed?'text-emerald-400':'text-rose-400'}`}>{meta.validation.passed?'Quality gates aprovados':'Quality gates falharam; alteração restaurada'}</div>
+                    <div className={`text-[10px] font-semibold ${meta.validation.status==='passed'?'text-emerald-400':meta.validation.status==='failed'?'text-rose-400':'text-amber-400'}`}>{meta.validation.status==='passed'?'Quality gates aprovados':meta.validation.status==='failed'?'Quality gates falharam; alteração restaurada':'Verificações automáticas não disponíveis'}</div>
                     {Array.isArray(meta.validation.results) && meta.validation.results.map((item:any)=><div key={item.tool} className="flex justify-between text-[10px] text-slate-400"><span>{item.tool}</span><span>{item.status}</span></div>)}
                   </div>
                 )}

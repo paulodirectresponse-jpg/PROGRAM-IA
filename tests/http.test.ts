@@ -6,6 +6,7 @@ import {router} from '../server/routes.js';
 import {db,initializeDatabase} from '../server/db/index.js';
 import {AuthService} from '../server/services/authService.js';
 import {LLMAdapterService} from '../server/services/llmAdapter.js';
+import {WorkspaceManager} from '../server/services/workspaceManager.js';
 import type {Server} from 'node:http';
 
 let server:Server, base:string, tokenA:string, tokenB:string, userA:string, userB:string;
@@ -43,6 +44,7 @@ test('cookie mutations require a CSRF header',async()=>{
   assert.equal(r.status,403);
 });
 test('cloud sync reports not-configured when Supabase is not configured',async()=>{const r=await fetch(`${base}/sync/status`,{headers:{Authorization:`Bearer ${tokenA}`}});assert.equal(r.status,200);const body=await r.json();assert.equal(body.configured,false);assert.equal(body.status,'not_configured');});
+test('proposal preview serves temporary files without changing the workspace',async()=>{const now=new Date().toISOString(),conversation='preview-conversation',proposal='preview-proposal';WorkspaceManager.writeFile(id,'index.html','<html><body>ORIGINAL</body></html>');db.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)').run(conversation,id,'Preview',now,now);db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent','proposal',?,?)").run('preview-message',conversation,JSON.stringify({proposal:{id:proposal,status:'pending',files:[{path:'index.html',action:'modify',content:'<html><body>CALCULADORA</body></html>'}]}}),now);const preview=await fetch(`${base}/preview-proposal/${id}/${proposal}/index.html`,{headers:{Authorization:`Bearer ${tokenA}`}});assert.equal(preview.status,200);assert.match(await preview.text(),/CALCULADORA/);assert.match(WorkspaceManager.readFile(id,'index.html')||'',/ORIGINAL/);});
 test('changing model configuration does not mutate another user',async()=>{
   const r=await fetch(`${base}/providers/update`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({providerKey:'useoneai',modelId:'my-model'})});
   assert.equal(r.status,200);

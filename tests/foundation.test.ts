@@ -8,6 +8,7 @@ import {verifyFirebaseIdentity} from '../server/services/firebaseIdentity.js';
 import {WorkspaceManager} from '../server/services/workspaceManager.js';
 import {ModelRouter} from '../server/services/modelRouter.js';
 import {CloudSyncService} from '../server/services/cloudSyncService.js';
+import {ValidatorEngine} from '../server/services/validatorEngine.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -142,4 +143,6 @@ test('checkpoint restores text and binary assets and removes subsequent files',(
   assert.deepEqual(WorkspaceManager.readBinaryFile(id,'logo.png'),Buffer.from([0,1,2,255]));
   assert.equal(WorkspaceManager.readFile(id,'extra.txt'),null);
 });
+test('plain HTML without a toolchain is unverified rather than failed',async()=>{const id=`html-unverified-${suffix}`,now=new Date().toISOString();db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'HTML','novo',?,?)").run(id,a,`ws-${a}`,now,now);WorkspaceManager.writeFile(id,'index.html','<!doctype html><html><body><script src="app.js"></script></body></html>');WorkspaceManager.writeFile(id,'app.js','document.body.dataset.ready="true";');const result=await ValidatorEngine.validate({projectId:id});assert.equal(result.status,'unverified');assert.equal(result.passed,false);assert.ok(result.results.every(item=>item.status==='skipped'));assert.equal(result.advisory?.status,'pass');});
+test('an executed npm build failure is failed and eligible for rollback',async()=>{const id=`build-failed-${suffix}`,now=new Date().toISOString();db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'Build failure','novo',?,?)").run(id,a,`ws-${a}`,now,now);WorkspaceManager.writeFile(id,'package.json',JSON.stringify({scripts:{build:'node -e "process.exit(1)"'}}));const result=await ValidatorEngine.validate({projectId:id});assert.equal(result.status,'failed');assert.equal(result.results.find(item=>item.tool==='build')?.status,'fail');});
 

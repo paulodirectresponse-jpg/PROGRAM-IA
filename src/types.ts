@@ -93,7 +93,7 @@ export interface Message {
     runId?: string;
     agentKey?: string;
     profileKey?: string;
-    validation?: {passed:boolean;results:Array<{tool:string;status:string;summary?:string}>}|null;
+    validation?: {passed:boolean;status:'passed'|'failed'|'unverified';results:Array<{tool:string;status:string;summary?:string}>;advisory?:{status:string;checks:string[];issues:string[]}}|null;
   };
 }
 

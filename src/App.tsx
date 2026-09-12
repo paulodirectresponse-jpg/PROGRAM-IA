@@ -474,6 +474,7 @@ export default function App() {
   };
 
   const activeProvider = providers.find((p) => Boolean(p.is_active)) || null;
+  const previewProposalId=[...messages].reverse().map(message=>{try{return (message.metadata||JSON.parse(message.metadata_json||'{}'))?.proposal;}catch{return null;}}).find(proposal=>proposal?.status==='pending')?.id;
   const syncLabel:Record<SyncStatus,string>={synced:'● Nuvem sincronizada',not_configured:'○ Nuvem não configurada',local_only:'○ Somente local',restoring:'◌ Restaurando',conflict:'! Conflito de sincronização',error:'× Erro de sincronização',checking:'◌ Sincronizando'};
 
   return (
@@ -544,6 +545,7 @@ export default function App() {
         onRestoreCheckpoint={handleRestoreCheckpoint}
         githubStatus={githubStatus}
         previewNonce={previewNonce}
+        previewProposalId={previewProposalId}
         onDeleteProject={handleRequestDeleteProject}
         onDuplicateProject={handleDuplicateProject}
         onExportZip={handleExportZip}

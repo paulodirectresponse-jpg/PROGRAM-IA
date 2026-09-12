@@ -806,12 +806,12 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       result.decisionType !== 'invalid_response' &&
       result.decisionType !== 'blocked_no_provider';
 
-    if (canApplyFiles && result.build?.files?.length && (mode === 'build' || mode === 'auto') && !result.proposal?.requiresConfirmation) {
+    if (canApplyFiles && result.build?.files?.length && (mode === 'build' || mode === 'auto') && !result.proposal) {
       for (const file of result.build.files) WorkspaceManager.resolveSafePath(projectId, file.path);
       rollbackCheckpointId=WorkspaceManager.createCheckpoint(projectId, `Antes: ${content.slice(0, 60)}`, 'Ponto de restauração antes da alteração.');
     }
     if (canApplyFiles) {
-      if (mode === 'build' && !result.proposal?.requiresConfirmation && result.build?.files && result.build.files.length > 0) {
+      if (mode === 'build' && !result.proposal && result.build?.files && result.build.files.length > 0) {
         for (const file of result.build.files) {
           if (file.action === 'delete') {
             WorkspaceManager.deleteFile(projectId, file.path);
@@ -824,7 +824,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
           `Build: ${content.slice(0, 30)}...`,
           result.build.summary || 'Alterações validadas e aplicadas no workspace'
         );
-      } else if (mode === 'auto' && result.build?.files && !result.proposal?.requiresConfirmation) {
+      } else if (mode === 'auto' && result.build?.files && !result.proposal) {
         for (const file of result.build.files) {
           if (file.action === 'delete') {
             WorkspaceManager.deleteFile(projectId, file.path);
@@ -841,7 +841,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     }
     if(checkpointCreatedId){
       validation=await ValidatorEngine.validate({projectId,runId:execution?.runId,stepId:execution?.stepId,signal:controller.signal});
-      if(!validation.passed&&rollbackCheckpointId){
+      if(validation.status==='failed'&&rollbackCheckpointId){
         WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);
         result.hasErrors=true;
         result.errorMessage='A alteração foi revertida automaticamente porque uma verificação real falhou.';
@@ -955,9 +955,9 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
 
     const checkpointId = WorkspaceManager.createCheckpoint(projectId, summary.slice(0, 100), summary);
     const validation=await ValidatorEngine.validate({projectId});
-    if(!validation.passed){WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);metadata.proposal.status='failed_validation';metadata.validation=validation;metadata.hasErrors=true;metadata.errorMessage=validation.status==='skipped'?'Nenhuma verificação real pôde ser executada; a alteração foi revertida.':'Uma verificação falhou; a alteração foi revertida.';db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);return res.status(422).json({error:metadata.errorMessage,validation});}
+    if(validation.status==='failed'){WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);metadata.proposal.status='failed_validation';metadata.validation=validation;metadata.hasErrors=true;metadata.errorMessage='Uma verificação executada falhou; a alteração foi revertida.';db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);return res.status(422).json({error:metadata.errorMessage,validation});}
     metadata.proposal.status='applied';metadata.validation=validation;metadata.checkpointId=checkpointId;db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
-    res.json({ success: true, checkpointId, validation, message: 'Alterações aplicadas e verificadas com sucesso.' });
+    res.json({ success: true, checkpointId, validation, message: validation.status==='unverified'?'Alterações aplicadas. Validação automática não disponível para este projeto.':'Alterações aplicadas e verificadas com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1435,6 +1435,10 @@ router.post('/projects/:projectId/preview/rebuild', requireAuth, requireProjectO
   const info = WorkspaceManager.getPreviewInfo(req.params.projectId);
   res.status(info.status === 'running' ? 200 : 422).json(info);
 });
+
+function findPendingProposal(projectId:string,proposalId:string){const conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;if(!conversation)return null;const rows=db.prepare("SELECT metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[];for(const row of rows){try{const proposal=JSON.parse(row.metadata_json||'{}')?.proposal;if(proposal?.id===proposalId&&['pending','previewing'].includes(proposal.status))return proposal;}catch{}}return null;}
+router.get('/projects/:projectId/proposals/:proposalId/preview/status',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).json({status:'error',message:'Proposta temporária não encontrada.'});const entry=proposal.files.find((f:any)=>f.action!=='delete'&&/(^|\/)index\.html$/i.test(f.path))?.path||WorkspaceManager.getPreviewInfo(req.params.projectId).entryPath;if(!entry)return res.status(422).json({status:'error',message:'A proposta não possui um arquivo HTML de entrada.'});res.json({status:'running',entryPath:entry,message:'Preview temporário da proposta.'});});
+router.get('/preview-proposal/:projectId/:proposalId/*',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).send('Proposta temporária não encontrada.');const preview=WorkspaceManager.getPreviewInfo(req.params.projectId),requested=path.normalize(req.params[0]||proposal.files.find((f:any)=>/(^|\/)index\.html$/i.test(f.path))?.path||preview.entryPath||'index.html').replace(/^(\.\.[\/\\])+/, '').replace(/\\/g,'/');const proposed=proposal.files.find((f:any)=>f.path.replace(/\\/g,'/')===requested);if(proposed?.action==='delete')return res.status(404).end();res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Content-Security-Policy',"sandbox allow-scripts; default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; connect-src 'none'; form-action 'none'");if(proposed){res.type(path.extname(requested)||'text/plain').send(proposed.content);return;}const fallback=WorkspaceManager.resolveSafePath(req.params.projectId,requested);if(!fs.existsSync(fallback)||fs.statSync(fallback).isDirectory())return res.status(404).end();res.sendFile(fallback);});
 
 router.get('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const projectId = req.params.projectId;
