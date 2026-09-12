@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "outDir": ".test-build",
+    "rootDir": ".",
+    "moduleResolution": "NodeNext",
+    "module": "NodeNext"
+    ,"resolveJsonModule": true
+  },
+  "include": ["server/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", "dist", "src"]
+}

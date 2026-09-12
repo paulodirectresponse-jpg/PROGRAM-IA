@@ -213,7 +213,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               Configurações
             </span>
           </button>
-          <button onClick={onOpenAgents} className="w-full text-left px-2.5 py-1.5 rounded-md text-xs flex items-center gap-2 text-slate-300 hover:bg-slate-900 hover:text-slate-100"><Bot size={14} className="text-violet-400"/>Agentes & Métricas</button>
+          <button disabled title="Módulo pausado para redefinição do produto" className="w-full text-left px-2.5 py-1.5 rounded-md text-xs flex items-center justify-between text-slate-500 cursor-not-allowed"><span className="flex items-center gap-2"><Bot size={14}/>Agentes & Métricas</span><span className="text-[9px] uppercase border border-slate-700 rounded px-1.5">Pausado</span></button>
         </div>
       </div>
 
@@ -258,7 +258,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </span>
           ) : (
             <span className="inline-flex items-center gap-1 text-[10px] text-amber-400 shrink-0">
-              <AlertCircle size={11} /> Fallback
+              <AlertCircle size={11} /> Configurar
             </span>
           )}
         </div>

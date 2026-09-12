@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { X, FolderPlus, GitBranch, Upload, Check, AlertCircle, FileArchive, Loader2 } from 'lucide-react';
-import JSZip from 'jszip';
 
 interface NewProjectModalProps {
   isOpen: boolean;
@@ -10,7 +9,7 @@ interface NewProjectModalProps {
     description: string;
     origin: 'novo' | 'local' | 'github';
     repo_url?: string;
-    initialFiles?: Record<string, string>;
+    zipData?: string;
   }) => void;
 }
 
@@ -19,7 +18,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
   const [description, setDescription] = useState('');
   const [origin, setOrigin] = useState<'novo' | 'local' | 'github'>('novo');
   const [repoUrl, setRepoUrl] = useState('');
-  const [zipFiles, setZipFiles] = useState<Record<string, string>>({});
+  const [zipData, setZipData] = useState<string>('');
   const [zipFileName, setZipFileName] = useState<string>('');
   const [isProcessingZip, setIsProcessingZip] = useState(false);
   const [zipError, setZipError] = useState<string | null>(null);
@@ -36,41 +35,20 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
     setZipFileName(file.name);
 
     try {
-      const zip = new JSZip();
-      const loadedZip = await zip.loadAsync(file);
-      const extracted: Record<string, string> = {};
-
-      const entries = Object.keys(loadedZip.files);
-      for (const relativePath of entries) {
-        const zipEntry = loadedZip.files[relativePath];
-        if (zipEntry.dir) continue;
-
-        // Strip Mac OSX metadata folders
-        if (relativePath.includes('__MACOSX') || relativePath.startsWith('.')) continue;
-
-        // Check text file extensions
-        const isText = /\.(html|css|js|jsx|ts|tsx|json|md|txt|svg)$/i.test(relativePath);
-        if (isText) {
-          const content = await zipEntry.async('text');
-          // Clean root folder prefix if entire zip was in one folder
-          const cleanPath = relativePath.replace(/^[^/]+\//, '');
-          extracted[cleanPath || relativePath] = content;
-        }
+      if (file.size > 25 * 1024 * 1024) throw new Error('O ZIP excede o limite de 25 MB para upload.');
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = '';
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
       }
-
-      if (Object.keys(extracted).length === 0) {
-        setZipError('Nenhum arquivo web ou texto legível (.html, .js, .css, etc.) encontrado no arquivo ZIP.');
-        setZipFiles({});
-      } else {
-        setZipFiles(extracted);
-        if (!name.trim()) {
-          const defaultName = file.name.replace(/\.zip$/i, '').replace(/[-_]/g, ' ');
-          setName(defaultName.charAt(0).toUpperCase() + defaultName.slice(1));
-        }
+      setZipData(btoa(binary));
+      if (!name.trim()) {
+        const defaultName = file.name.replace(/\.zip$/i, '').replace(/[-_]/g, ' ');
+        setName(defaultName.charAt(0).toUpperCase() + defaultName.slice(1));
       }
     } catch (err: any) {
       setZipError(`Falha ao descompactar arquivo ZIP: ${err.message || 'Arquivo corrompido'}`);
-      setZipFiles({});
+      setZipData('');
     } finally {
       setIsProcessingZip(false);
     }
@@ -93,7 +71,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
       return;
     }
 
-    if (origin === 'local' && Object.keys(zipFiles).length === 0) {
+    if (origin === 'local' && !zipData) {
       alert('Por favor, selecione um arquivo ZIP válido contendo os arquivos do projeto.');
       return;
     }
@@ -104,7 +82,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
       description: description.trim(),
       origin,
       repo_url: repoUrl.trim(),
-      initialFiles: origin === 'local' ? zipFiles : undefined,
+      zipData: origin === 'local' ? zipData : undefined,
     });
     setIsSubmitting(false);
     onClose();
@@ -239,9 +217,9 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
             <div className="space-y-2 p-3 rounded-xl bg-slate-950 border border-slate-800 animate-fade-in">
               <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
                 <span>Arquivo ZIP do Projeto *</span>
-                {Object.keys(zipFiles).length > 0 && (
+                {zipData && (
                   <span className="text-[10px] text-emerald-400 flex items-center gap-1 font-mono">
-                    <Check size={11} /> {Object.keys(zipFiles).length} arquivo(s) extraídos
+                    <Check size={11} /> pronto para validação segura
                   </span>
                 )}
               </label>
@@ -297,7 +275,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
                 isSubmitting ||
                 isProcessingZip ||
                 (origin === 'github' && !isGitHubUrlValid(repoUrl)) ||
-                (origin === 'local' && Object.keys(zipFiles).length === 0)
+                (origin === 'local' && !zipData)
               }
               className="px-4 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 disabled:pointer-events-none text-slate-950 font-bold text-xs transition cursor-pointer flex items-center gap-1.5"
             >

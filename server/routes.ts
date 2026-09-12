@@ -3,6 +3,7 @@ import { verifyFirebaseIdentity } from './services/firebaseIdentity.js';
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { db } from './db/index.js';
 import { AuthService, AuthUser } from './services/authService.js';
 import { SecretService } from './services/secretService.js';
@@ -19,6 +20,17 @@ import { CloudSyncService } from './services/cloudSyncService.js';
 
 export const router = express.Router();
 const activeProjects = new Set<string>();
+
+function upsertRepository(projectId: string, remoteUrl: string, branch: string, visibility = 'private') {
+  const existing = db.prepare('SELECT id FROM repositories WHERE project_id = ?').get(projectId) as { id: string } | undefined;
+  if (existing) {
+    db.prepare('UPDATE repositories SET remote_url = ?, default_branch = ?, visibility = ?, is_connected = 1 WHERE id = ?')
+      .run(remoteUrl, branch, visibility, existing.id);
+  } else {
+    db.prepare('INSERT INTO repositories (id, project_id, remote_url, default_branch, visibility, is_connected, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)')
+      .run(`repo-${crypto.randomUUID()}`, projectId, remoteUrl, branch, visibility, new Date().toISOString());
+  }
+}
 
 router.get('/version', (_req, res) => res.json({
   version: process.env.npm_package_version || 'dev',
@@ -162,10 +174,10 @@ router.post('/auth/logout', (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-router.get('/sync/status',requireAuth,async(req,res)=>{try{if(!CloudSyncService.configured())return res.json({configured:false,status:'not_configured',revision:0});const remote=await CloudSyncService.remote(req.user!.id);res.json({configured:true,status:remote?'synced':'local_only',revision:remote?.revision||0,updatedAt:remote?.updated_at||null,deviceId:remote?.device_id||null});}catch(e:any){res.status(502).json({configured:true,status:'error',error:e.message});}});
+router.get('/sync/status',requireAuth,async(req,res)=>{try{if(!CloudSyncService.configured())return res.json({configured:false,status:'not_configured',revision:0});const direct=await CloudSyncService.pullDirect(req.user!.id);res.json({configured:true,status:direct.status,source:direct.status==='synced'?'direct':undefined});}catch(e:any){res.status(502).json({configured:true,status:'error',error:e.message});}});
 router.get('/sync/configuration',(_req,res)=>res.json(CloudSyncService.configurationStatus()));
-router.post('/sync/push',requireAuth,async(req,res)=>{try{res.json(await CloudSyncService.push(req.user!.id));}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
-router.post('/sync/pull',requireAuth,async(req,res)=>{try{res.json(await CloudSyncService.pull(req.user!.id));}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
+router.post('/sync/push',requireAuth,async(req,res)=>{try{res.json(await CloudSyncService.syncAll(req.user!.id));}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
+router.post('/sync/pull',requireAuth,async(req,res)=>{try{const direct=await CloudSyncService.pullDirect(req.user!.id);res.json(direct.status==='local_only'?await CloudSyncService.pull(req.user!.id):direct);}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
 
 // ==========================================
 // 2. SECRETS & CREDENTIALS API (PER-USER)
@@ -271,7 +283,7 @@ router.get('/projects', requireAuth, (req: Request, res: Response) => {
 
 router.post('/projects', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { name, description, origin = 'novo', repo_url = '', branch = 'main', initialFiles = {} } = req.body;
+    const { name, description, origin = 'novo', repo_url = '', branch = 'main', initialFiles = {}, zipData = '' } = req.body;
     if (!name || name.trim().length === 0) {
       return res.status(400).json({ error: 'O nome do projeto é obrigatório.' });
     }
@@ -328,6 +340,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
         INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
         VALUES (?, ?, ?, 1, 'head-import', ?)
       `).run('br-' + Date.now(), projectId, effectiveBranch, now);
+      upsertRepository(projectId, repo_url.trim(), effectiveBranch);
 
       const convId = 'conv-' + Date.now();
       db.prepare(`
@@ -351,18 +364,24 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
     }
 
     // 2. LOCAL / ZIP FILE IMPORT
-    if (origin === 'local' && initialFiles && Object.keys(initialFiles).length > 0) {
+    if (origin === 'local' && (zipData || (initialFiles && Object.keys(initialFiles).length > 0))) {
       db.prepare(`
         INSERT INTO projects (
           id, user_id, workspace_id, name, description, origin, repo_url, branch, status, provider_id, model_id, created_at, updated_at
         ) VALUES (?, ?, 'ws-default', ?, ?, ?, '', 'main', 'active', 'prov-useoneai', 'chatgpt-5.5', ?, ?)
       `).run(projectId, userId, name.trim(), description || 'Importado de arquivo ZIP', origin, now, now);
 
-      const normalizedInitialFiles = WorkspaceManager.normalizeImportedFiles(initialFiles as Record<string,string>);
-      for (const [filePath, content] of Object.entries(normalizedInitialFiles)) {
-        if (typeof content === 'string') {
-          WorkspaceManager.writeFile(projectId, filePath, content);
+      let importedCount = 0;
+      if (zipData) {
+        const encoded = String(zipData);
+        if (!/^[A-Za-z0-9+/=]+$/.test(encoded) || encoded.length > 36_000_000) throw new Error('Arquivo ZIP inválido ou acima do limite permitido.');
+        importedCount = (await WorkspaceManager.importZip(projectId, Buffer.from(encoded, 'base64'))).fileCount;
+      } else {
+        const normalizedInitialFiles = WorkspaceManager.normalizeImportedFiles(initialFiles as Record<string,string>);
+        for (const [filePath, content] of Object.entries(normalizedInitialFiles)) {
+          if (typeof content === 'string') WorkspaceManager.writeFile(projectId, filePath, content);
         }
+        importedCount = Object.keys(normalizedInitialFiles).length;
       }
 
       db.prepare(`
@@ -382,12 +401,12 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       `).run(
         'msg-' + Date.now(),
         convId,
-        `Arquivo **${name}** extraído com sucesso!\n\nForam criados **${Object.keys(initialFiles).length} arquivos** no workspace.`,
+        `Arquivo **${name}** extraído com sucesso!\n\nForam criados **${importedCount} arquivos** no workspace.`,
         JSON.stringify({ isWelcome: true, mode: 'auto' }),
         now
       );
 
-      WorkspaceManager.createCheckpoint(projectId, 'Importação de Arquivo ZIP', `Extração de ${Object.keys(initialFiles).length} arquivos`);
+      if (!zipData) WorkspaceManager.createCheckpoint(projectId, 'Importação de Arquivo ZIP', `Extração de ${importedCount} arquivos`);
       return res.json({ success: true, projectId });
     }
 
@@ -798,6 +817,18 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     let rollbackCheckpointId: string | null = null;
     let validation: Awaited<ReturnType<typeof ValidatorEngine.validate>>|null=null;
 
+    // Every code change is a server-owned proposal. The browser receives a copy for review,
+    // but approval later resolves the immutable files stored with this message.
+    if (result.build?.files?.length && !result.proposal && !result.isDemonstrativeFallback && !result.hasErrors) {
+      result.proposal = {
+        id: `proposal-${crypto.randomUUID()}`,
+        summary: result.build.summary || content.slice(0, 100),
+        requiresConfirmation: true,
+        files: result.build.files,
+        status: 'pending',
+      };
+    }
+
     // STRICT SAFETY CHECK:
     // Fallback mode or invalid responses NEVER apply code or create checkpoints!
     const canApplyFiles =
@@ -924,12 +955,9 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
 
 router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
-    const { proposalId, files, summary = 'Alterações aprovadas pelo usuário' } = req.body;
+    const { proposalId, summary = 'Alterações aprovadas pelo usuário' } = req.body;
     const projectId = req.params.projectId;
 
-    if (!Array.isArray(files) || files.length === 0) {
-      return res.status(400).json({ error: 'Lista de arquivos proposta inválida ou vazia.' });
-    }
     if (!proposalId) return res.status(400).json({error:'Identificador da proposta é obrigatório.'});
     const conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
     const rows=conversation?db.prepare("SELECT id,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[]:[];
@@ -937,6 +965,8 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
     if(!proposalMessage)return res.status(404).json({error:'Proposta não encontrada nesta conversa.'});
     const metadata=JSON.parse(proposalMessage.metadata_json||'{}');
     if(metadata.proposal?.status!=='pending')return res.status(409).json({error:`Esta proposta não está mais disponível (${metadata.proposal?.status||'estado inválido'}).`});
+    const files = metadata.proposal.files;
+    if (!Array.isArray(files) || files.length === 0) return res.status(409).json({error:'A proposta armazenada está vazia ou corrompida.'});
     metadata.proposal.status='previewing';
     db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
 
@@ -1212,6 +1242,12 @@ router.post('/projects/:id/github/connect-repo', requireAuth, requireProjectOwne
       now,
       req.params.id
     );
+    db.prepare('UPDATE branches SET is_current = 0 WHERE project_id = ?').run(req.params.id);
+    const knownBranch = db.prepare('SELECT id FROM branches WHERE project_id = ? AND name = ?').get(req.params.id, branch.trim()) as { id: string } | undefined;
+    if (knownBranch) db.prepare('UPDATE branches SET is_current = 1 WHERE id = ?').run(knownBranch.id);
+    else db.prepare('INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at) VALUES (?, ?, ?, 1, NULL, ?)')
+      .run(`br-${crypto.randomUUID()}`, req.params.id, branch.trim(), now);
+    upsertRepository(req.params.id, repoUrl.trim(), branch.trim());
 
     res.json({ success: true, repoUrl: repoUrl.trim(), branch: branch.trim() });
   } catch (err: any) {
@@ -1431,6 +1467,31 @@ router.get('/projects/:projectId/preview/status', requireAuth, requireProjectOwn
   res.json(WorkspaceManager.getPreviewInfo(req.params.projectId));
 });
 
+router.post('/projects/:id/deploy/cloudflare', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  try {
+    const project = db.prepare('SELECT branch FROM projects WHERE id=?').get(req.params.id) as {branch?:string}|undefined;
+    const result = await IntegrationService.deployCloudflarePages(req.user!.id, project?.branch || 'main');
+    const now = new Date().toISOString();
+    db.prepare('INSERT INTO deployments(id,project_id,target,status,url,error_message,created_at) VALUES(?,?,?,?,?,NULL,?)')
+      .run(`deploy-${crypto.randomUUID()}`, req.params.id, 'cloudflare_pages', result.status, result.url || null, now);
+    res.json(result);
+  } catch (error:any) { res.status(400).json({success:false,error:error.message}); }
+});
+
+router.post('/conversations/:projectId/reject-proposal', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  const proposalId = String(req.body?.proposalId || '');
+  if (!proposalId) return res.status(400).json({ error: 'Identificador da proposta é obrigatório.' });
+  const conversation = db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(req.params.projectId) as any;
+  const rows = conversation ? db.prepare("SELECT id,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[] : [];
+  const row = rows.find(item => { try { return JSON.parse(item.metadata_json || '{}')?.proposal?.id === proposalId; } catch { return false; } });
+  if (!row) return res.status(404).json({ error: 'Proposta não encontrada.' });
+  const metadata = JSON.parse(row.metadata_json || '{}');
+  if (metadata.proposal.status !== 'pending') return res.status(409).json({ error: 'Esta proposta já foi encerrada.' });
+  metadata.proposal.status = 'rejected';
+  db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), row.id);
+  res.json({ success: true });
+});
+
 router.post('/projects/:projectId/preview/rebuild', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const info = WorkspaceManager.getPreviewInfo(req.params.projectId);
   res.status(info.status === 'running' ? 200 : 422).json(info);
@@ -1463,5 +1524,4 @@ router.get('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Requ
   res.setHeader('Content-Security-Policy', "sandbox allow-scripts; default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; connect-src 'none'; form-action 'none'");
   res.sendFile(filePath);
 });
-
 

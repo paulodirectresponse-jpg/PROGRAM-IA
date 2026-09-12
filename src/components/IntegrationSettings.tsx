@@ -2,7 +2,7 @@ import React, {useEffect, useState} from 'react';
 import {CheckCircle2, Settings2, Loader2, X, Github, Cloud, Database, Flame} from 'lucide-react';
 const definitions = [
   {key:'github',name:'GitHub',description:'Repositórios, commits, branches e pull requests.',fields:[['token','Token de acesso (Contents e Pull requests)']]},
-  {key:'cloudflare',name:'Cloudflare',description:'Configuração da conta para Pages e domínios.',fields:[['token','API Token (Account Pages e Zone DNS)'],['accountId','Account ID'],['zoneId','Zone ID (opcional, para domínios)']]},
+  {key:'cloudflare',name:'Cloudflare',description:'Configuração da conta para Pages e domínios.',fields:[['token','API Token (Account Pages e Zone DNS)'],['accountId','Account ID'],['projectName','Nome do projeto Cloudflare Pages'],['zoneId','Zone ID (opcional, para domínios)']]},
   {key:'supabase',name:'Supabase',description:'Vincule o projeto de banco de dados e armazenamento.',fields:[['token','Personal Access Token de gerenciamento'],['projectRef','Project Ref']]},
   {key:'firebase',name:'Firebase',description:'Projeto Firebase do site que você está construindo. Independente do login no Forge.',fields:[['serviceAccount','JSON da conta de serviço do seu projeto']]},
 ];
@@ -28,7 +28,7 @@ export function IntegrationSettings() {
     }catch(e:any){setNotice({success:false,message:e.message});}finally{setBusy(false);}
   };
   return <div className="space-y-3">
-    {definitions.map(d=>{const summary=summaries.find(s=>s.service===d.key);const tested=summary?.status==='connected'||summary?.last_test_success===1;return <div key={d.key} className="rounded-xl border border-slate-700/60 bg-slate-950/60 p-4 flex justify-between gap-4">
+    {definitions.map(d=>{const summary=summaries.find(s=>s.service===d.key);const tested=summary?.status==='connected';return <div key={d.key} className="rounded-xl border border-slate-700/60 bg-slate-950/60 p-4 flex justify-between gap-4">
       <div className="flex gap-3"><span className="mt-0.5 text-cyan-400">{icons[d.key]}</span><div><h3 className="font-semibold text-slate-100">{d.name}</h3><p className="text-xs text-slate-400 mt-1">{d.description}</p><p className={`text-xs mt-2 ${tested?'text-emerald-400':summary?.configured?'text-amber-400':'text-slate-500'}`}>{tested?'Conectado e testado':summary?.configured?'Salvo, teste pendente':'Não configurado'}</p></div></div>
       <button className="text-cyan-300 flex items-center gap-2 text-xs" onClick={()=>{setSelected(d.key);setValues(summaries.find(s=>s.service===d.key)?.fields||{});setNotice(null);}}><Settings2 size={15}/>Configurar</button>
     </div>})}

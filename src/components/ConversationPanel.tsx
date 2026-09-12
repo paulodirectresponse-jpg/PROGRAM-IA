@@ -25,6 +25,7 @@ interface ConversationPanelProps {
   onSendMessage: (text: string, skills: string[]) => void;
   onApprovePlan: (planId: string) => void;
   onApplyProposal?: (proposal: ChangeProposal) => void;
+  onRejectProposal?: (proposal: ChangeProposal) => void;
   activePlan: Plan | null;
   isLoading: boolean;
   onAbort: () => void;
@@ -39,6 +40,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onSendMessage,
   onApprovePlan,
   onApplyProposal,
+  onRejectProposal,
   activePlan,
   isLoading,
   onAbort,
@@ -320,6 +322,14 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                           <Check size={14} />
                           Aplicar Alterações Propostas
                         </button>
+                        {onRejectProposal && <button
+                          type="button"
+                          onClick={() => onRejectProposal(proposal)}
+                          disabled={isLoading}
+                          className="py-1.5 px-3 rounded-md border border-slate-700 hover:border-rose-500 text-slate-300 hover:text-rose-300 font-semibold text-xs transition"
+                        >
+                          <X size={14} /> Rejeitar
+                        </button>}
                       </div>
                     )}
                   </div>

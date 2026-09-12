@@ -736,10 +736,10 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
                           <span className="text-slate-600">|</span>
                           <button
                             type="button"
-                            onClick={() => setProvModelId('claude-3.7-sonnet')}
+                            onClick={() => setProvModelId('claude-sonnet-5')}
                             className="text-[10px] text-cyan-400 hover:underline cursor-pointer"
                           >
-                            claude-3.7
+                            claude-sonnet-5
                           </button>
                         </div>
                       )}

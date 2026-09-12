@@ -1,9 +1,10 @@
 import crypto from 'node:crypto';
 import { SecretService } from './secretService.js';
+import { db } from '../db/index.js';
 
 export const integrationFields = {
   github: ['token'],
-  cloudflare: ['token', 'accountId', 'zoneId'],
+  cloudflare: ['token', 'accountId', 'zoneId', 'projectName'],
   supabase: ['token', 'projectRef'],
   firebase: ['serviceAccount'],
 } as const;
@@ -17,7 +18,8 @@ export class IntegrationService {
   static summary(userId: string, service: string) {
     const config = this.read(userId, service);
     const fields = Object.fromEntries(Object.entries(config).filter(([key]) => !['token', 'serviceAccount'].includes(key)));
-    return { service, fields, configured: !!(config.token || config.serviceAccount) };
+    const state = db.prepare('SELECT status,last_verified_at FROM integrations WHERE user_id=? AND service_name=? ORDER BY created_at DESC LIMIT 1').get(userId, service) as any;
+    return { service, fields, configured: !!(config.token || config.serviceAccount), status: state?.status || 'pending_credentials', last_verified_at: state?.last_verified_at || null };
   }
   static save(userId: string, service: string, values: Config) {
     const old = this.read(userId, service);
@@ -34,6 +36,11 @@ export class IntegrationService {
     }
     SecretService.saveSecret(userId, `integration:${service}`, JSON.stringify(old));
     if (service === 'github' && old.token) SecretService.saveSecret(userId, 'github', old.token);
+    const now = new Date().toISOString();
+    const existing = db.prepare('SELECT id FROM integrations WHERE user_id=? AND service_name=? ORDER BY created_at DESC LIMIT 1').get(userId, service) as {id:string}|undefined;
+    if (existing) db.prepare("UPDATE integrations SET config_json=?,status='pending_credentials',last_verified_at=NULL WHERE id=?").run(JSON.stringify({fields:Object.keys(old)}), existing.id);
+    else db.prepare('INSERT INTO integrations(id,user_id,service_name,config_json,status,last_verified_at,created_at) VALUES(?,?,?,?,?,NULL,?)')
+      .run(`integration-${crypto.randomUUID()}`, userId, service, JSON.stringify({fields:Object.keys(old)}), 'pending_credentials', now);
     return this.summary(userId, service);
   }
   static async test(userId: string, service: string) {
@@ -61,9 +68,28 @@ export class IntegrationService {
     }
     if (!token) throw new Error('Credencial ausente. Configure e salve antes de testar.');
     const response = await fetch(url, {headers:{Authorization:`Bearer ${token}`, Accept:'application/json'}, redirect:'error', signal:AbortSignal.timeout(15000)});
-    if (!response.ok) throw new Error(`O serviço recusou a consulta (HTTP ${response.status}). Confira credencial, projeto e permissões.`);
+    if (!response.ok) {
+      db.prepare("UPDATE integrations SET status='error',last_verified_at=? WHERE user_id=? AND service_name=?").run(new Date().toISOString(),userId,service);
+      throw new Error(`O serviço recusou a consulta (HTTP ${response.status}). Confira credencial, projeto e permissões.`);
+    }
     const data = await response.json();
     if (data.success === false) throw new Error('O serviço não aprovou a consulta.');
-    return {success:true, message:'Conexão e acesso de leitura confirmados. Permissões de publicação são verificadas ao publicar.'};
+    db.prepare("UPDATE integrations SET status='connected',last_verified_at=? WHERE user_id=? AND service_name=?").run(new Date().toISOString(),userId,service);
+    return {success:true, message:'Conexão confirmada e credencial pronta para operações autorizadas.'};
+  }
+
+  static async deployCloudflarePages(userId: string, branch: string) {
+    const c = this.read(userId, 'cloudflare');
+    if (!c.token || !c.accountId || !c.projectName) throw new Error('Configure token, Account ID e nome do projeto Cloudflare Pages.');
+    const form = new FormData();
+    form.set('branch', branch || 'main');
+    form.set('commit_dirty', 'false');
+    form.set('commit_message', 'Deploy iniciado pelo Forge Agent');
+    const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${c.accountId}/pages/projects/${encodeURIComponent(c.projectName)}/deployments`, {
+      method: 'POST', headers: { Authorization: `Bearer ${c.token}` }, body: form, signal: AbortSignal.timeout(30000),
+    });
+    const data = await response.json() as any;
+    if (!response.ok || data.success === false) throw new Error(data?.errors?.[0]?.message || `Cloudflare recusou o deploy (HTTP ${response.status}).`);
+    return { success: true, deploymentId: data.result?.id, url: data.result?.url, status: data.result?.latest_stage?.status || 'queued' };
   }
 }

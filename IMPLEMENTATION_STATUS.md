@@ -22,14 +22,22 @@ This is a working revision undergoing release validation.
 
 The release workflow runs typecheck, foundation and HTTP security tests, the original test suite, production build, and mandatory-login browser verification. Merge is allowed only after this workflow succeeds.
 
-## Still required for the requested complete product
+## Concluído nesta revisão
 
-- Isolated execution worker for generated projects, actual build/test/browser evidence, and stop/cost/time limits.
-- Multi-agent programmer/reviewer orchestration is intentionally paused for product redesign. It is excluded from this release.
-- Full deployment actions and domain management for Cloudflare, DB/storage actions for Supabase, and project setup actions for Firebase. Current new integration tests verify read access only.
-- Validate ZIP/binary/checkpoint recovery, conflicting remote Git changes, and persisted proposals end-to-end.
-- Test Firebase account signup and Google login against the configured product project; enable providers and authorized domains there.
-- Production hosting and a desktop packaging/update pipeline for this web codebase; the old Forge-Agent installer is a separate application.
+- Persistência direta e incremental no Supabase Postgres/Storage, com restauração antes do carregamento local e fallback legado de migração.
+- Criação do zero, importação GitHub e upload ZIP validado pelo backend com preservação de binários.
+- Propostas imutáveis no servidor, preview temporário, aprovação por ID, rejeição e rollback somente quando um gate executado falha.
+- Execução de gates com ambiente filtrado, sem credenciais do Forge, e estado `unverified` quando nenhum gate se aplica.
+- GitHub com criação/vínculo de repositório, pull, push, branches, pull requests e checkpoints nomeados.
+- Provedores OpenAI-compatible/Gemini com endpoint e modelo configuráveis, teste real e seleção persistida por conta.
+- Integrações GitHub, Cloudflare, Supabase e Firebase com vault, teste real e estado persistido; deploy Cloudflare Pages disponível.
+- Login Firebase obrigatório, Google/e-mail e redefinição de senha.
+
+## Fora do escopo deliberado desta revisão
+
+- Multi-agent programmer/reviewer orchestration permanece pausada por decisão de produto.
+- Gestão avançada de DNS/domínios e provisionamento de projetos externos continuam como expansão posterior.
+- Empacotamento desktop desta nova base web permanece uma etapa de distribuição posterior.
 - Rotate any real credentials that were stored in the previously committed database. Removing files from the latest commit does not erase Git history.
 
 Sources used for protocols: https://firebase.google.com/docs/reference/rest/auth and https://supabase.com/docs/reference/api/v1-list-all-projects .

@@ -209,7 +209,7 @@ export default function App() {
     description: string;
     origin: 'novo' | 'local' | 'github';
     repo_url?: string;
-    initialFiles?: Record<string, string>;
+    zipData?: string;
   }) => {
     try {
       const res = await fetch('/api/projects', {
@@ -332,7 +332,6 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           proposalId: proposal.id,
-          files: proposal.files,
           summary: proposal.summary,
         }),
       });
@@ -348,6 +347,14 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleRejectProposal = async (proposal: ChangeProposal) => {
+    if (!activeProject) return;
+    const res = await fetch(`/api/conversations/${activeProject.id}/reject-proposal`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proposalId: proposal.id }),
+    });
+    if (res.ok) await loadProjectDetails(activeProject.id);
   };
 
   // Abort execution
@@ -528,6 +535,7 @@ export default function App() {
         onSendMessage={handleSendMessage}
         onApprovePlan={handleApprovePlan}
         onApplyProposal={handleApplyProposal}
+        onRejectProposal={handleRejectProposal}
         activePlan={activePlan}
         isLoading={isLoading}
         onAbort={handleAbort}

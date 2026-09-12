@@ -88,6 +88,8 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
   const [pushCommitMessage, setPushCommitMessage] = useState<string>('Alterações via Forge Agent');
   const [gitActionNotice, setGitActionNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isExportingZip, setIsExportingZip] = useState<boolean>(false);
+  const [isDeploying, setIsDeploying] = useState(false);
+  const [deployNotice, setDeployNotice] = useState<{success:boolean;text:string;url?:string}|null>(null);
 
   // GitHub Advanced (Branches, PR, Connect)
   const [repoBranches, setRepoBranches] = useState<string[]>([]);
@@ -1102,6 +1104,16 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
 
             {/* Export ZIP Box */}
             <div className="p-5 rounded-xl bg-slate-900/70 border border-slate-800 space-y-4">
+              <h3 className="text-sm font-semibold text-slate-200">Publicar na Cloudflare Pages</h3>
+              <p className="text-xs text-slate-400">Usa a integração Cloudflare e a branch atual vinculada ao projeto Pages.</p>
+              <button disabled={isDeploying} onClick={async()=>{setIsDeploying(true);setDeployNotice(null);try{const r=await fetch(`/api/projects/${project.id}/deploy/cloudflare`,{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.error);setDeployNotice({success:true,text:'Deploy iniciado na Cloudflare.',url:d.url});}catch(e:any){setDeployNotice({success:false,text:e.message});}finally{setIsDeploying(false);}}} className="py-2 px-4 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs flex items-center gap-2 disabled:opacity-50">
+                {isDeploying?<Loader2 size={15} className="animate-spin"/>:<Rocket size={15}/>} Publicar agora
+              </button>
+              {deployNotice&&<p className={`text-xs ${deployNotice.success?'text-emerald-400':'text-rose-400'}`}>{deployNotice.text}{deployNotice.url&&<> <a className="underline" href={deployNotice.url} target="_blank" rel="noreferrer">Abrir</a></>}</p>}
+            </div>
+
+            {/* Export ZIP Box */}
+            <div className="p-5 rounded-xl bg-slate-900/70 border border-slate-800 space-y-4">
               <h3 className="text-sm font-semibold text-slate-200">Exportação do Projeto</h3>
               <p className="text-xs text-slate-400">
                 Baixe um arquivo ZIP real contendo todos os arquivos do workspace para desenvolvimento local.
@@ -1135,13 +1147,13 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
                 [SYSTEM {new Date(project.created_at).toLocaleTimeString()}] Projeto & Sandbox inicializados.
               </div>
               <div className="text-cyan-400">
-                [VERIFY {new Date().toLocaleTimeString()}] Quality gates validados com sucesso.
+                [VERIFY] {verifications.length ? `${verifications.filter(v=>v.status==='pass').length} aprovadas, ${verifications.filter(v=>v.status==='fail').length} falhas, ${verifications.filter(v=>v.status==='warn').length} não verificadas.` : 'Nenhuma verificação executada neste projeto.'}
               </div>
               <div className="text-slate-400">
                 [CHECKPOINT {new Date().toLocaleTimeString()}] Checkpoint corrente: {project.current_checkpoint_id || 'inicial'}.
               </div>
               <div className="text-slate-500">
-                [STORAGE] Banco persistente SQLite ativo em .data/forge.db com migrações aplicadas.
+                [STORAGE] Persistência da conta usa Supabase quando configurado; o workspace local funciona como cache reconstruível.
               </div>
             </div>
           </div>

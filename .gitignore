@@ -16,3 +16,9 @@ coverage/
 .validation/
 .validation-data/
 node_modules/
+
+.npm-cache/
+.test-build/
+.test-build-final/
+.playwright-browsers/
+test-results/
