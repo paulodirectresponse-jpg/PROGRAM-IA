@@ -250,7 +250,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="px-2 py-1.5 rounded-lg bg-slate-900/50 border border-slate-800/60 flex items-center justify-between text-[11px]">
           <span className="flex items-center gap-1.5 text-slate-400 font-medium truncate">
             <Cpu size={12} className="text-cyan-400 shrink-0" />
-            <span className="truncate">{activeProvider?.name || 'Gemini 3.5 Flash'}</span>
+            <span className="truncate">{activeProvider?.model_id || 'Nenhum modelo ativo'}</span>
           </span>
           {activeProvider?.is_configured ? (
             <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400 shrink-0">

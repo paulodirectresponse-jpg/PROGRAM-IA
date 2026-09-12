@@ -20,6 +20,12 @@ import { CloudSyncService } from './services/cloudSyncService.js';
 export const router = express.Router();
 const activeProjects = new Set<string>();
 
+router.get('/version', (_req, res) => res.json({
+  version: process.env.npm_package_version || 'dev',
+  sha: process.env.GITHUB_SHA || process.env.RENDER_GIT_COMMIT || process.env.COMMIT_SHA || 'local',
+  agentEngineEnabled: process.env.AGENT_ENGINE_ENABLED === 'true',
+}));
+
 // Extend Express Request type for authenticated user
 declare global {
   namespace Express {
@@ -179,9 +185,9 @@ router.post('/providers/test', requireAuth, async (req, res) => {
   try {
     const {providerKey, baseUrl, modelId, apiKey} = req.body;
     const result = await LLMAdapterService.testConnection({providerKey, baseUrl, modelId, apiKey, userId:req.user!.id});
-    db.prepare('UPDATE providers SET connection_status = ? WHERE user_id = ? AND provider_key = ?').run(result.success?'connected':'error', req.user!.id, providerKey);
+    db.prepare('UPDATE providers SET connection_status = ?, last_error = ? WHERE user_id = ? AND provider_key = ?').run(result.success?'connected':'error', result.success?null:result.message, req.user!.id, providerKey);
     res.json(result);
-  } catch { res.status(400).json({success:false,message:'Falha ao testar o provedor.'}); }
+  } catch (error: any) { res.status(400).json({success:false,status:'request_error',message:String(error?.message||'Falha ao testar o provedor.').slice(0,300)}); }
 });
 router.get('/model-profiles',requireAuth,(req,res)=>res.json({profiles:ModelRouter.listProfiles(req.user!.id)}));
 router.put('/model-profiles/:profileKey/candidates',requireAuth,(req,res)=>{try{res.json({profiles:ModelRouter.saveCandidate(req.user!.id,req.params.profileKey as ProfileKey,req.body)});}catch(e:any){res.status(400).json({error:e.message});}});
@@ -737,7 +743,8 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     } else {
       db.prepare('UPDATE conversations SET mode = ?, updated_at = ? WHERE id = ?').run(mode, now, conv.id);
     }
-    execution=RunService.start(req.user!.id,projectId,conv.id,mode,.5);
+    const agentEngineEnabled = process.env.AGENT_ENGINE_ENABLED === 'true';
+    if (agentEngineEnabled) execution=RunService.start(req.user!.id,projectId,conv.id,mode,.5);
 
     // Save user message
     const userMsgId = 'msg-user-' + Date.now();
@@ -750,13 +757,13 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    const providerRow = db.prepare("SELECT provider_key, model_id FROM providers WHERE user_id = ? AND connection_status = 'active' ORDER BY created_at DESC LIMIT 1").get(req.user!.id) as any
-      || db.prepare('SELECT provider_key, model_id FROM providers WHERE id = ? AND user_id = ?').get(project?.provider_id || '', req.user!.id) as any;
-    const providerKey = providerRow?.provider_key || 'useoneai';
-    const modelId = providerRow?.model_id || project?.model_id || undefined;
+    const providerConfig = LLMAdapterService.getActiveProviderConfig(req.user!.id);
+    if (!providerConfig) return res.status(409).json({error:'Selecione e salve um provedor de IA antes de enviar mensagens.'});
+    const providerKey = providerConfig.key;
+    const modelId = providerConfig.modelId;
 
     // Call LLM Adapter with authenticated userId
-    let result = process.env.AGENT_ENGINE_ENABLED!=='true' ? await LLMAdapterService.executePrompt({
+    let result = !agentEngineEnabled ? await LLMAdapterService.executePrompt({
       prompt: content,
       mode: mode as AgentMode,
       projectId,
@@ -767,7 +774,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       conversationHistory: history,
       userId: req.user!.id,
       signal: controller.signal,
-    }) : await AgentEngine.execute({prompt:content,mode:mode as AgentMode,projectId,existingFiles,appliedSkills,conversationHistory:history,userId:req.user!.id,runId:execution.runId,stepId:execution.stepId,signal:controller.signal});
+    }) : await AgentEngine.execute({prompt:content,mode:mode as AgentMode,projectId,existingFiles,appliedSkills,conversationHistory:history,userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal});
     controller.signal.throwIfAborted();
     if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
       return res.status(409).json({error:'Os arquivos mudaram durante a revisão. Envie novamente para usar a versão atual.'});
@@ -819,7 +826,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       }
     }
     if(checkpointCreatedId){
-      validation=await ValidatorEngine.validate({projectId,runId:execution.runId,stepId:execution.stepId,signal:controller.signal});
+      validation=await ValidatorEngine.validate({projectId,runId:execution?.runId,stepId:execution?.stepId,signal:controller.signal});
       if(!validation.passed&&rollbackCheckpointId){
         WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);
         result.hasErrors=true;
@@ -867,8 +874,9 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       hasErrors: result.hasErrors,
       invalidResponse: result.invalidResponse,
       errorMessage: result.errorMessage || result.errorReason,
-      runId: execution.runId,
-      agentKey: (result as any).agentKey || 'PROGRAM',
+      runId: execution?.runId,
+      executionType: agentEngineEnabled ? 'agent_engine' : 'direct_llm',
+      agentKey: agentEngineEnabled ? ((result as any).agentKey || 'PROGRAM') : undefined,
       profileKey: (result as any).profileKey,
       validation,
     };
@@ -878,7 +886,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       VALUES (?, ?, 'agent', ?, ?, ?)
     `).run(agentMsgId, conv.id, result.replyText, JSON.stringify(metadata), now);
 
-    RunService.finish(execution.runId,execution.stepId,result.hasErrors?'failed':'completed');
+    if (execution) RunService.finish(execution.runId,execution.stepId,result.hasErrors?'failed':'completed');
     res.json({
       success: !result.hasErrors && !result.invalidResponse,
       agentMessage: {
@@ -1280,7 +1288,7 @@ router.post('/skills/toggle', requireAuth, (req: Request, res: Response) => {
 
 router.get('/providers', requireAuth, (req: Request, res: Response) => {
   try {
-    const providers = db.prepare('SELECT id, provider_key, name, base_url, model_id, is_configured, connection_status, context_limit, created_at FROM providers WHERE user_id = ?').all(req.user!.id) as any[];
+    const providers = db.prepare('SELECT id, provider_key, name, base_url, model_id, is_configured, is_active, connection_status, context_limit, created_at FROM providers WHERE user_id = ?').all(req.user!.id) as any[];
 
     // Synchronize is_configured with user's encrypted secret and include masked hint
     const enriched = providers.map((p) => {
@@ -1320,21 +1328,29 @@ router.post('/providers/save-with-key', requireAuth, async (req: Request, res: R
       }
     }
 
-    db.prepare("UPDATE providers SET connection_status = CASE WHEN is_configured = 1 THEN 'configured' ELSE connection_status END WHERE user_id = ? AND connection_status = 'active'").run(req.user!.id);
-    db.prepare(`
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare('UPDATE providers SET is_active = 0 WHERE user_id = ?').run(req.user!.id);
+      db.prepare(`
       UPDATE providers
       SET base_url = COALESCE(?, base_url),
           model_id = COALESCE(?, model_id),
           is_configured = ?,
-          connection_status = ?
+          is_active = ?,
+          connection_status = CASE WHEN ? = 1 AND connection_status = 'not_configured' THEN 'untested' WHEN ? = 0 THEN 'not_configured' ELSE connection_status END
       WHERE provider_key = ? AND user_id = ?
     `).run(
       baseUrl || null,
       modelId || null,
       hasKey ? 1 : 0,
-      hasKey ? 'active' : 'not_configured',
+      hasKey ? 1 : 0,
+      hasKey ? 1 : 0,
+      hasKey ? 1 : 0,
       providerKey, req.user!.id
     );
+      if (modelId) db.prepare('UPDATE model_candidates SET model_id = ?, updated_at = ? WHERE provider_key = ? AND profile_id IN (SELECT id FROM model_profiles WHERE user_id = ?)').run(modelId, new Date().toISOString(), providerKey, req.user!.id);
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
 
     res.json({
       success: true,

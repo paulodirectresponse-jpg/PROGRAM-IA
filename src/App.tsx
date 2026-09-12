@@ -3,13 +3,10 @@ import { Sidebar } from './components/Sidebar';
 import { ConversationPanel } from './components/ConversationPanel';
 import { WorkspaceArea } from './components/WorkspaceArea';
 import { NewProjectModal } from './components/NewProjectModal';
-import { ProvidersModal } from './components/ProvidersModal';
 import { SkillsModal } from './components/SkillsModal';
 import { AgentsModal } from './components/AgentsModal';
 import { CheckpointsModal } from './components/CheckpointsModal';
-import { IntegrationsModal } from './components/IntegrationsModal';
 import { AuthModal } from './components/AuthModal';
-import { CredentialsModal } from './components/CredentialsModal';
 import { SettingsProfileModal, SettingsTab } from './components/SettingsProfileModal';
 import { DeleteProjectModal } from './components/DeleteProjectModal';
 import { testFirestoreConnection, deleteFirestoreProjectDoc } from './lib/firebase';
@@ -44,23 +41,22 @@ export default function App() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
   const [previewNonce, setPreviewNonce] = useState<number>(Date.now());
 
   // Modal visibility states
   const [isAuthOpen, setIsAuthOpen] = useState(false);
-  const [isCredentialsOpen, setIsCredentialsOpen] = useState(false);
   const [isNewProjectOpen, setIsNewProjectOpen] = useState(false);
-  const [isProvidersOpen, setIsProvidersOpen] = useState(false);
   const [isSkillsOpen, setIsSkillsOpen] = useState(false);
   const [isAgentsOpen,setIsAgentsOpen]=useState(false);
   const [isCheckpointsOpen, setIsCheckpointsOpen] = useState(false);
-  const [isIntegrationsOpen, setIsIntegrationsOpen] = useState(false);
   const [isSettingsProfileOpen, setIsSettingsProfileOpen] = useState(false);
   const [settingsProfileTab, setSettingsProfileTab] = useState<SettingsTab>('profile');
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [syncStatus,setSyncStatus]=useState<'checking'|'synced'|'local_only'|'error'>('checking');
+  const [buildInfo,setBuildInfo]=useState<{version:string;sha:string}|null>(null);
 
   // Abort controller ref
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -68,6 +64,7 @@ export default function App() {
   // Initial load
   useEffect(() => {
     checkCurrentUser();
+    fetch('/api/version').then(r=>r.json()).then(setBuildInfo).catch(()=>setBuildInfo(null));
 
   }, []);
 
@@ -111,14 +108,19 @@ export default function App() {
     try {
       const res = await fetch('/api/projects');
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Falha ao carregar projetos (${res.status})`);
       if (data.projects) {
         setProjects(data.projects);
-        if (!activeProject && data.projects.length > 0) {
-          setActiveProject(data.projects[0]);
+        setProjectLoadError(null);
+        if (data.projects.length > 0 && (!activeProject || !data.projects.some((p: Project) => p.id === activeProject.id))) {
+          const remembered = localStorage.getItem('forge:lastActiveProjectId');
+          setActiveProject(data.projects.find((p: Project) => p.id === remembered) || data.projects[0]);
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Falha ao carregar projetos:', err);
+      setProjectLoadError(err.message || 'Não foi possível carregar seus projetos.');
+      setToastMessage({text: err.message || 'Não foi possível carregar seus projetos. Tente novamente.', type:'error'});
     }
   };
 
@@ -154,31 +156,39 @@ export default function App() {
 
   // Load project details whenever activeProject changes
   const loadProjectDetails = useCallback(async (projectId: string) => {
+    setMessages([]); setFiles([]); setActivePlan(null); setCheckpoints([]); setVerifications([]);
     try {
       // 1. Files
       const filesRes = await fetch(`/api/projects/${projectId}/files`);
       const filesData = await filesRes.json();
-      if (filesData.files) setFiles(filesData.files);
+      if (!filesRes.ok) throw new Error(filesData.error || 'Falha ao carregar arquivos.');
+      setFiles(Array.isArray(filesData.files) ? filesData.files : []);
 
       // 2. Conversation & Messages
       const convRes = await fetch(`/api/conversations/${projectId}`);
       const convData = await convRes.json();
-      if (convData.messages) setMessages(convData.messages);
-      if (convData.activePlan) setActivePlan(convData.activePlan);
+      if (!convRes.ok) throw new Error(convData.error || 'Falha ao carregar conversa.');
+      setMessages(Array.isArray(convData.messages) ? convData.messages : []);
+      setActivePlan(convData.activePlan || null);
       if (convData.conversation?.mode) setActiveMode(convData.conversation.mode);
 
       // 3. Project Details (Checkpoints & Verifications)
       const projRes = await fetch(`/api/projects/${projectId}`);
       const projData = await projRes.json();
-      if (projData.checkpoints) setCheckpoints(projData.checkpoints);
-      if (projData.verifications) setVerifications(projData.verifications);
-    } catch (err) {
+      if (!projRes.ok) throw new Error(projData.error || 'Falha ao carregar projeto.');
+      setCheckpoints(Array.isArray(projData.checkpoints) ? projData.checkpoints : []);
+      setVerifications(Array.isArray(projData.verifications) ? projData.verifications : []);
+      setProjectLoadError(null);
+    } catch (err: any) {
       console.error('Falha ao carregar detalhes do projeto:', err);
+      setProjectLoadError(err.message || 'Não foi possível abrir este projeto.');
+      setToastMessage({text: err.message || 'Não foi possível abrir este projeto. Tente novamente.', type:'error'});
     }
   }, []);
 
   useEffect(() => {
     if (activeProject) {
+      localStorage.setItem('forge:lastActiveProjectId', activeProject.id);
       loadProjectDetails(activeProject.id);
     }
   }, [activeProject, loadProjectDetails]);
@@ -367,20 +377,6 @@ export default function App() {
     }
   };
 
-  // Update provider
-  const handleUpdateProvider = async (providerKey: string, baseUrl: string, modelId: string) => {
-    try {
-      await fetch('/api/providers/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerKey, baseUrl, modelId }),
-      });
-      await loadProviders();
-    } catch (err) {
-      console.error('Falha ao atualizar provedor:', err);
-    }
-  };
-
   // Duplicate project
   const handleDuplicateProject = async (projectId: string) => {
     try {
@@ -464,11 +460,12 @@ export default function App() {
     window.location.href = `/api/projects/${projectId}/export/zip`;
   };
 
-  const activeProvider = providers.find((p) => p.connection_status === 'active') || providers.find((p) => p.is_configured) || providers[0] || null;
+  const activeProvider = providers.find((p) => Boolean(p.is_active)) || null;
 
   return (
     <div id="forge-agent-root" className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans select-none">
       {currentUser&&<button onClick={async()=>{setSyncStatus('checking');const r=await fetch('/api/sync/push',{method:'POST'});setSyncStatus(r.ok?'synced':'error')}} className="fixed right-4 bottom-4 z-40 rounded-full border border-slate-700 bg-slate-900/90 px-3 py-1.5 text-[10px] text-slate-300 shadow-xl" title="Clique para sincronizar agora">{syncStatus==='synced'?'● Nuvem sincronizada':syncStatus==='local_only'?'○ Somente local':syncStatus==='error'?'× Erro de sincronização':'◌ Sincronizando'}</button>}
+      {buildInfo&&<span className="fixed right-4 bottom-12 z-40 rounded border border-slate-800 bg-slate-950/80 px-2 py-1 text-[9px] font-mono text-slate-500">v{buildInfo.version} · {buildInfo.sha.slice(0,8)}</span>}
       {/* 1. Sidebar */}
       <Sidebar
         projects={projects}
@@ -518,7 +515,7 @@ export default function App() {
         isLoading={isLoading}
         onAbort={handleAbort}
         availableSkills={skills}
-        canSend={Boolean(activeProject)}
+        canSend={Boolean(activeProject) && !projectLoadError}
       />
 
       {/* 3. Main Workspace Area */}
@@ -547,26 +544,10 @@ export default function App() {
         onLogout={handleLogout}
       />
 
-      <CredentialsModal
-        isOpen={isCredentialsOpen}
-        onClose={() => setIsCredentialsOpen(false)}
-        onCredentialsUpdated={() => {
-          loadProviders();
-          loadGitHubStatus();
-        }}
-      />
-
       <NewProjectModal
         isOpen={isNewProjectOpen}
         onClose={() => setIsNewProjectOpen(false)}
         onCreateProject={handleCreateProject}
-      />
-
-      <ProvidersModal
-        isOpen={isProvidersOpen}
-        onClose={() => setIsProvidersOpen(false)}
-        providers={providers}
-        onUpdateProvider={handleUpdateProvider}
       />
 
       <SkillsModal
@@ -600,14 +581,6 @@ export default function App() {
         onRestoreCheckpoint={handleRestoreCheckpoint}
       />
 
-      <IntegrationsModal
-        isOpen={isIntegrationsOpen}
-        onClose={() => setIsIntegrationsOpen(false)}
-        githubStatus={githubStatus}
-        onRefreshGitHub={loadGitHubStatus}
-        activeProject={activeProject}
-      />
-
       {/* Unified User Profile & Settings Modal */}
       <SettingsProfileModal
         isOpen={isSettingsProfileOpen}
@@ -617,7 +590,6 @@ export default function App() {
         onLogout={handleLogout}
         defaultTab={settingsProfileTab}
         providers={providers}
-        onUpdateProvider={handleUpdateProvider}
         githubStatus={githubStatus}
         onRefreshGitHub={loadGitHubStatus}
         activeProject={activeProject}

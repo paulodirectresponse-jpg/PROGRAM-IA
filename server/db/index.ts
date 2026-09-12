@@ -54,10 +54,20 @@ export function initializeDatabase() {
   ensureColumn('projects', 'user_id', "TEXT DEFAULT 'user-default'");
   ensureColumn('skills', 'user_id', "TEXT DEFAULT 'user-default'");
   ensureColumn('providers', 'user_id', "TEXT DEFAULT 'user-default'");
+  ensureColumn('providers', 'is_active', 'INTEGER DEFAULT 0');
   ensureColumn('integrations', 'user_id', "TEXT DEFAULT 'user-default'");
   ensureColumn('attachments', 'user_id', "TEXT DEFAULT 'user-default'");
   ensureColumn('logs', 'user_id', "TEXT DEFAULT 'user-default'");
+  ensureColumn('users', 'last_active_project_id', 'TEXT');
   ensureColumn('skills', 'is_custom', "INTEGER DEFAULT 0");
+  // Migrate the legacy overloaded provider status into independent activity and health states.
+  db.exec("UPDATE providers SET is_active = 1 WHERE connection_status = 'active'");
+  db.exec("UPDATE providers SET connection_status = CASE WHEN is_configured = 1 THEN 'untested' ELSE 'not_configured' END WHERE connection_status IN ('active','configured')");
+  const duplicateActiveUsers = db.prepare('SELECT user_id FROM providers WHERE is_active = 1 GROUP BY user_id HAVING COUNT(*) > 1').all() as any[];
+  for (const {user_id} of duplicateActiveUsers) {
+    const keep = db.prepare('SELECT id FROM providers WHERE user_id = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 1').get(user_id) as any;
+    db.prepare('UPDATE providers SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE user_id = ?').run(keep.id, user_id);
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS model_profiles (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,profile_key TEXT NOT NULL,level INTEGER NOT NULL,max_attempts INTEGER NOT NULL DEFAULT 1,max_cost_usd REAL NOT NULL DEFAULT 0,enabled INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(user_id,profile_key));
     CREATE TABLE IF NOT EXISTS model_candidates (id TEXT PRIMARY KEY,profile_id TEXT NOT NULL,provider_key TEXT NOT NULL,model_id TEXT NOT NULL,priority INTEGER NOT NULL DEFAULT 0,enabled INTEGER NOT NULL DEFAULT 1,health_state TEXT NOT NULL DEFAULT 'healthy',consecutive_failures INTEGER NOT NULL DEFAULT 0,circuit_open_until TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(profile_id,provider_key,model_id));
@@ -86,6 +96,7 @@ export function initializeDatabase() {
       } catch (err) { db.exec('ROLLBACK'); throw err; }
     }
   }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS providers_one_active_per_user ON providers(user_id) WHERE is_active = 1');
 
   // Create sessions table
   db.exec(`
