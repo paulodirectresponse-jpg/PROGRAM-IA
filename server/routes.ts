@@ -479,6 +479,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 
     const starterTitle = name.replace(/</g, '&lt;');
     const initialHtml = `<!DOCTYPE html>
+<!-- forge-placeholder: preview-only; this file is NOT the required application architecture -->
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
@@ -544,7 +545,19 @@ router.delete('/projects/:id', requireAuth, requireProjectOwner, (req: Request, 
     // 2. Delete conversations
     db.prepare('DELETE FROM conversations WHERE project_id = ?').run(projectId);
 
-    // 3. Delete verifications
+    // 3. Delete execution/planning children before the project itself.
+    db.prepare('DELETE FROM requirements WHERE project_id = ?').run(projectId);
+    const runIds = db.prepare('SELECT id FROM agent_runs WHERE project_id = ?').all(projectId) as {id:string}[];
+    for (const run of runIds) {
+      db.prepare('DELETE FROM model_invocations WHERE run_id = ?').run(run.id);
+      db.prepare('DELETE FROM tool_executions WHERE run_id = ?').run(run.id);
+      db.prepare('DELETE FROM agent_steps WHERE run_id = ?').run(run.id);
+    }
+    db.prepare('DELETE FROM agent_runs WHERE project_id = ?').run(projectId);
+    db.prepare('DELETE FROM plans WHERE project_id = ?').run(projectId);
+    db.prepare('DELETE FROM tasks WHERE project_id = ?').run(projectId);
+
+    // 4. Delete verifications
     db.prepare('DELETE FROM verifications WHERE project_id = ?').run(projectId);
 
     // 4. Delete checkpoints
