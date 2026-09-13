@@ -1,6 +1,8 @@
 import { LLMAdapterService, type AgentMode, type LLMExecutionResult } from '../services/llmAdapter.js';
 import { ModelRouter, type FailureKind, type ProfileKey } from '../services/modelRouter.js';
 import { RunService } from '../services/runService.js';
+import { ProgressRetryController, type AttemptEvidence } from '../services/progressRetryController.js';
+import { contractPrompt } from './agentContracts.js';
 import { selectAgent } from './agentRegistry.js';
 
 type Input = {
@@ -25,8 +27,25 @@ type Input = {
 
 type ExecuteOptions = { profile?: ProfileKey; forcedAgentKey?: string; allowExpertEscalation?: boolean; repair?: boolean };
 
-function relevantFiles(files: Record<string, string>, limit: number) {
-  return Object.entries(files).slice(0, limit).map(([file, content]) => ({ file, chars: content.length, preview: content.slice(0, 240) }));
+function relevantFiles(files: Record<string, string>, previewLimit: number) {
+  // Never hide the project tree. Content previews remain bounded until Context Engine V2,
+  // but every path is visible to the planning agents.
+  return Object.entries(files).map(([file, content], index) => ({
+    file,
+    chars: content.length,
+    preview: index < previewLimit ? content.slice(0, 480) : '',
+  }));
+}
+
+function reducedRetryFiles(files:Record<string,string>,maxFiles=12){
+  const entries=Object.entries(files);
+  if(entries.length<=maxFiles)return files;
+  return Object.fromEntries(entries
+    .sort(([a],[b])=>{
+      const score=(p:string)=>/package\.json|tsconfig|vite\.config|src\/(app|main|index)|index\.html/i.test(p)?0:/src\//i.test(p)?1:2;
+      return score(a)-score(b);
+    })
+    .slice(0,maxFiles));
 }
 
 function needsStudio(prompt: string, mode: AgentMode) {
@@ -80,42 +99,55 @@ export class AgentEngine {
       return { ...fallback, agentKey, profileKey: profile };
     }
     const maxAttempts = Math.max(1, Number(available[0]?.max_attempts || 1));
-    let last: unknown;
+    let last: any;
+    const attemptHistory:AttemptEvidence[]=[];
+    let retryStrategy:'same_candidate'|'next_candidate'|'reduce_context'|'fragment_task'|'expert'|'stop'='same_candidate';
     for (let i = 0; i < maxAttempts; i++) {
       x.signal?.throwIfAborted();
       RunService.recordAttempt(x.stepId);
-      // Try candidates by priority, then cycle again if the profile allows more attempts
-      // than there are configured candidates. This makes max_attempts mean attempts,
-      // not merely "number of distinct candidates".
-      const c = available[i % available.length];
+      const candidateIndex=retryStrategy==='next_candidate' ? Math.min(i,available.length-1) : i % available.length;
+      const candidate = available[candidateIndex];
       const started = Date.now();
       try {
-        ModelRouter.assertBudget(x.userId, Number(c.max_cost_usd || 0), { runId: x.runId });
-        const result = x.reliableBuild && x.mode === 'build'
+        ModelRouter.assertBudget(x.userId, Number(candidate.max_cost_usd || 0), { runId: x.runId });
+        const attemptInput = retryStrategy==='reduce_context' || retryStrategy==='fragment_task'
+          ? {
+              ...x,
+              existingFiles: reducedRetryFiles(x.existingFiles, retryStrategy==='fragment_task'?8:12),
+              conversationHistory: x.conversationHistory.slice(-2),
+              prompt: [
+                x.prompt,
+                retryStrategy==='fragment_task'
+                  ? 'RETRY STRATEGY: a tentativa anterior foi incompatível. Produza a menor alteração coerente possível, estritamente estruturada, sem expandir o escopo.'
+                  : 'RETRY STRATEGY: a tentativa anterior falhou operacionalmente. Use o contexto reduzido e responda de forma objetiva e estruturada.',
+              ].join('\n\n'),
+            }
+          : x;
+        const result = attemptInput.reliableBuild && attemptInput.mode === 'build'
           ? await LLMAdapterService.buildApprovedPlanReliably({
-              projectId: x.projectId,
-              providerKey: c.provider_key,
-              modelId: c.model_id,
-              userId: x.userId,
-              existingFiles: x.existingFiles,
-              requestedFiles: x.reliableBuild.requestedFiles,
-              objective: x.reliableBuild.objective,
-              scopeIn: x.reliableBuild.scopeIn,
-              scopeOut: x.reliableBuild.scopeOut,
-              acceptanceCriteria: x.reliableBuild.acceptanceCriteria,
-              signal: x.signal,
+              projectId: attemptInput.projectId,
+              providerKey: candidate.provider_key,
+              modelId: candidate.model_id,
+              userId: attemptInput.userId,
+              existingFiles: attemptInput.existingFiles,
+              requestedFiles: attemptInput.reliableBuild.requestedFiles,
+              objective: attemptInput.reliableBuild.objective,
+              scopeIn: attemptInput.reliableBuild.scopeIn,
+              scopeOut: attemptInput.reliableBuild.scopeOut,
+              acceptanceCriteria: attemptInput.reliableBuild.acceptanceCriteria,
+              signal: attemptInput.signal,
             })
           : await LLMAdapterService.executePrompt({
-              ...x,
-              providerKey: c.provider_key,
-              modelId: c.model_id === 'auto' ? undefined : c.model_id,
+              ...attemptInput,
+              providerKey: candidate.provider_key,
+              modelId: candidate.model_id === 'auto' ? undefined : candidate.model_id,
             });
         if (result.isDemonstrativeFallback || result.hasErrors) {
           const reason = String(result.errorReason || result.errorMessage || 'provider_error');
           const operational = /timeout|network|rate_limit|provider_error|429|5\d\d/i.test(reason);
           throw Object.assign(Error(result.errorMessage || 'Provider indisponível'), { kind: operational ? 'operational' : 'incompatible', reason });
         }
-        ModelRouter.recordCandidateResult(c.id, true);
+        ModelRouter.recordCandidateResult(candidate.id, true);
         ModelRouter.recordInvocation({
           userId: x.userId,
           projectId: x.projectId,
@@ -123,8 +155,8 @@ export class AgentEngine {
           stepId: x.stepId,
           agentKey,
           profileKey: profile,
-          providerKey: c.provider_key,
-          modelId: c.model_id,
+          providerKey: candidate.provider_key,
+          modelId: candidate.model_id,
           inputTokens: result.usage?.inputTokens,
           outputTokens: result.usage?.outputTokens,
           costUsd: result.usage?.billedCostUsd,
@@ -137,7 +169,7 @@ export class AgentEngine {
         last = e;
         const operational = /429|5\d\d|timeout|fetch|network|indispon/i.test(String(e.message));
         const kind: FailureKind = operational ? 'operational' : 'incompatible';
-        ModelRouter.recordCandidateResult(c.id, false, kind);
+        ModelRouter.recordCandidateResult(candidate.id, false, kind);
         ModelRouter.recordInvocation({
           userId: x.userId,
           projectId: x.projectId,
@@ -145,14 +177,35 @@ export class AgentEngine {
           stepId: x.stepId,
           agentKey,
           profileKey: profile,
-          providerKey: c.provider_key,
-          modelId: c.model_id,
+          providerKey: candidate.provider_key,
+          modelId: candidate.model_id,
           latencyMs: Date.now() - started,
           status: x.signal?.aborted ? 'aborted' : 'failed',
           errorCode: x.signal?.aborted ? 'aborted' : kind,
           retryIndex: i,
         });
         if (x.signal?.aborted) throw e;
+
+        const evidence:AttemptEvidence={
+          failureKind:kind,
+          errorMessage:String(e?.message||e),
+          strategy:retryStrategy,
+          progressMarkers:[],
+        };
+        const decision=ProgressRetryController.decide(evidence,attemptHistory,{
+          attempt:i+1,
+          maxAttempts,
+          hasNextCandidate:available.length>candidateIndex+1,
+          canEscalate:Boolean(options.allowExpertEscalation&&profile==='BASE_FREE'),
+        });
+        attemptHistory.push(evidence);
+        retryStrategy=decision.nextStrategy;
+        if(!decision.retryAllowed){
+          if(decision.escalateAllowed){
+            throw Object.assign(e,{kind:e?.kind||kind,reason:e?.reason||kind,retryDecision:decision});
+          }
+          throw Object.assign(e,{kind:e?.kind||kind,reason:e?.reason||kind,retryDecision:decision});
+        }
       }
     }
     throw last || Error('Nenhum modelo disponível.');
@@ -224,8 +277,8 @@ export class AgentWorkflowEngine extends AgentEngine {
           ...x,
           mode: 'review',
           prompt: [
-            'Atue como SCOUT interno do fluxo de programação.',
-            'Analise o pedido e o workspace e produza um briefing curto para o próximo agente.',
+            contractPrompt('SCOUT'),
+            'Analise o pedido e o workspace e produza um briefing estruturado para o próximo agente.',
             'Inclua: objetivo real, arquivos/áreas provavelmente relevantes, dependências, riscos e critérios de aceite.',
             'Não gere código. Não altere arquivos. Não responda ao usuário final.',
             '',
@@ -298,7 +351,7 @@ export class AgentWorkflowEngine extends AgentEngine {
             ...x,
             mode: 'review',
             prompt: [
-              'Atue como STUDIO interno do fluxo de programação.',
+              contractPrompt('STUDIO'),
               'Transforme o pedido visual e o briefing do SCOUT em critérios objetivos para o FORGE.',
               'Foque em composição, hierarquia, responsividade, estados, consistência e regressões visuais prováveis.',
               'Não gere código. Não altere arquivos. Não responda ao usuário final.',
@@ -340,6 +393,7 @@ export class AgentWorkflowEngine extends AgentEngine {
     steps.push(forge);
 
     const forgePrompt = [
+      contractPrompt('FORGE'),
       x.prompt,
       'BRIEF INTERNO DO SCOUT:\n' + scoutBrief,
       studioGuidance ? 'CRITÉRIOS INTERNOS DO STUDIO:\n' + studioGuidance : '',
