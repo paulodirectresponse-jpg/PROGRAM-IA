@@ -1,0 +1,15 @@
+create index if not exists forge_branches_owner on public.forge_branches(firebase_uid);
+create index if not exists forge_checkpoints_owner on public.forge_checkpoints(firebase_uid);
+create index if not exists forge_checkpoints_project on public.forge_checkpoints(project_id);
+create index if not exists forge_conversations_owner on public.forge_conversations(firebase_uid);
+create index if not exists forge_conversations_project on public.forge_conversations(project_id);
+create index if not exists forge_messages_owner on public.forge_messages(firebase_uid);
+create index if not exists forge_messages_conversation on public.forge_messages(conversation_id);
+create index if not exists forge_candidates_owner on public.forge_model_candidates(firebase_uid);
+create index if not exists forge_candidates_profile on public.forge_model_candidates(profile_id);
+create index if not exists forge_invocations_owner on public.forge_model_invocations(firebase_uid);
+create index if not exists forge_invocations_project on public.forge_model_invocations(project_id);
+create index if not exists forge_model_profiles_owner on public.forge_model_profiles(firebase_uid);
+create index if not exists forge_provider_secrets_provider on public.forge_provider_secrets(provider_id);
+create index if not exists forge_repositories_owner on public.forge_repositories(firebase_uid);
+create index if not exists forge_skills_project on public.forge_skills(project_id);

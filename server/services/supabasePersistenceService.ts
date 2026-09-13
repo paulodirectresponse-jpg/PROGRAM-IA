@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { SupabaseRepository, type CanonicalTable } from '../repositories/supabaseRepository.js';
 
 export type DirectSnapshot = {
   schemaVersion: 1;
@@ -39,6 +40,72 @@ export class SupabasePersistenceService {
   private static async expect(response: Response, operation: string) {
     if (!response.ok) throw new Error(`${operation} ${response.status}: ${(await response.text()).slice(0, 300)}`);
     return response;
+  }
+
+  private static repository() { return new SupabaseRepository(String(process.env.SUPABASE_URL), (extra={}) => this.headers(extra)); }
+
+  private static canonicalRows(snapshot: DirectSnapshot, firebaseUid: string) {
+    const t=snapshot.tables, stamp=snapshot.createdAt;
+    const json=(value:any,fallback:any={})=>{try{return typeof value==='string'?JSON.parse(value):value??fallback;}catch{return fallback;}};
+    const rows: Partial<Record<CanonicalTable,any[]>> = {
+      forge_profiles:(t.users||[]).map((x:any)=>({firebase_uid:firebaseUid,email:x.email||null,display_name:x.name||null,created_at:x.created_at||stamp,updated_at:x.updated_at||stamp})),
+      forge_projects:(t.projects||[]).map((x:any)=>({id:x.id,firebase_uid:firebaseUid,workspace_id:x.workspace_id||null,name:x.name,description:x.description||null,origin:x.origin,status:x.status||'active',current_checkpoint_id:x.current_checkpoint_id||null,revision:Number(x.revision||0),created_at:x.created_at||stamp,updated_at:x.updated_at||stamp})),
+      forge_conversations:(t.conversations||[]).map((x:any)=>({id:x.id,firebase_uid:firebaseUid,project_id:x.project_id,title:x.title,mode:x.mode,created_at:x.created_at||stamp,updated_at:x.updated_at||stamp})),
+      forge_messages:(t.messages||[]).map((x:any)=>({id:x.id,firebase_uid:firebaseUid,conversation_id:x.conversation_id,sender:x.sender,content:x.content,metadata:json(x.metadata_json),created_at:x.created_at||stamp})),
+      forge_providers:(t.providers||[]).map((x:any)=>({id:x.id,firebase_uid:firebaseUid,provider_key:x.provider_key,name:x.name,base_url:x.base_url,model_id:x.model_id,extra_headers:json(x.extra_headers_json),configured:Boolean(x.is_configured),active:Boolean(x.is_active),health:x.connection_status==='connected'?'connected':x.connection_status==='error'?'error':'untested',last_error:x.last_error||null,created_at:x.created_at||stamp,updated_at:x.updated_at||x.created_at||stamp})),
+      forge_provider_secrets:(t.user_secrets||[]).map((x:any)=>({id:x.id,firebase_uid:firebaseUid,provider_id:null,service_key:x.service_key,encrypted_value:x.encrypted_value,iv:x.iv,tag:x.tag,masked_hint:x.masked_hint,status:x.status||'configured',last_tested_at:x.last_tested_at||null,last_error:x.last_error||null,created_at:x.created_at||stamp,updated_at:x.updated_at||stamp})),
+      forge_integrations:(t.integrations||[]).map((x:any)=>({id:x.id,firebase_uid:firebaseUid,service_name:x.service_name,config:json(x.config_json),status:x.status||'pending_credentials',last_verified_at:x.last_verified_at||null,created_at:x.created_at||stamp,updated_at:x.updated_at||x.created_at||stamp})),
+      forge_skills:(t.skills||[]).map((x:any)=>({id:x.id,firebase_uid:firebaseUid,project_id:x.project_id||null,name:x.name,slug:x.slug,description:x.description,system_instructions:x.system_instructions,scope:x.scope||'project',active:Boolean(x.is_active),created_at:x.created_at||stamp,updated_at:x.updated_at||x.created_at||stamp})),
+      forge_checkpoints:(t.checkpoints||[]).map((x:any)=>({id:x.id,firebase_uid:firebaseUid,project_id:x.project_id,title:x.title,description:x.description||null,parent_id:x.parent_id||null,files_manifest:Object.fromEntries(Object.entries(json(x.files_snapshot_json)).map(([p,v]:any)=>[p,crypto.createHash('sha256').update(String(v)).digest('hex')])),created_at:x.created_at||stamp})),
+      forge_repositories:(t.repositories||[]).map((x:any)=>({id:x.id,firebase_uid:firebaseUid,project_id:x.project_id,remote_url:x.remote_url||null,default_branch:x.default_branch||null,visibility:x.visibility||null,connected:Boolean(x.is_connected),created_at:x.created_at||stamp,updated_at:x.updated_at||x.created_at||stamp})),
+      forge_branches:(t.branches||[]).map((x:any)=>({id:x.id,firebase_uid:firebaseUid,project_id:x.project_id,name:x.name,current:Boolean(x.is_current),head_sha:x.head_commit_hash||null,created_at:x.created_at||stamp,updated_at:x.updated_at||x.created_at||stamp})),
+      forge_model_profiles:(t.model_profiles||[]).map((x:any)=>({id:x.id,firebase_uid:firebaseUid,name:x.name,profile_type:x.profile_type,max_cost_usd:x.max_cost_usd??null,active:x.is_active!==0,created_at:x.created_at||stamp,updated_at:x.updated_at||x.created_at||stamp})),
+      forge_model_candidates:(t.model_candidates||[]).map((x:any)=>({id:x.id,firebase_uid:firebaseUid,profile_id:x.profile_id,provider_id:x.provider_id||null,model_id:x.model_id,priority:Number(x.priority||0),active:x.is_active!==0,created_at:x.created_at||stamp,updated_at:x.updated_at||x.created_at||stamp})),
+      forge_model_invocations:(t.model_invocations||[]).map((x:any)=>({id:x.id,firebase_uid:firebaseUid,project_id:x.project_id||null,provider_id:x.provider_id||null,model_id:x.model_id||null,status:x.status,cost_usd:x.cost_usd??null,tokens_input:x.tokens_input??null,tokens_output:x.tokens_output??null,metadata:json(x.metadata_json),created_at:x.created_at||stamp})),
+    };
+    return rows;
+  }
+
+  static async pushCanonical(userId:string,firebaseUid:string,snapshot:DirectSnapshot){
+    if(!this.configured())return{status:'not_configured' as DirectStatus};
+    if(!firebaseUid)throw Error('Firebase UID ausente; persistência direta recusada.');
+    const repo=this.repository(), rows=this.canonicalRows(snapshot,firebaseUid);
+    const conflicts:Partial<Record<CanonicalTable,string>>={forge_profiles:'firebase_uid',forge_projects:'id',forge_conversations:'id',forge_messages:'id',forge_providers:'id',forge_provider_secrets:'id',forge_integrations:'id',forge_skills:'id',forge_checkpoints:'id',forge_repositories:'id',forge_branches:'id',forge_model_profiles:'id',forge_model_candidates:'id',forge_model_invocations:'id'};
+    for(const [table,items] of Object.entries(rows) as [CanonicalTable,any[]][])await repo.upsert(table,items,conflicts[table]||'id');
+    let files=0;
+    for(const [projectId,items] of Object.entries(snapshot.files))for(const [filePath,base64] of Object.entries(items)){
+      const content=Buffer.from(base64,'base64'),storagePath=this.storagePath(firebaseUid,projectId,filePath),sha256=crypto.createHash('sha256').update(content).digest('hex');
+      await this.expect(await fetch(`${process.env.SUPABASE_URL}/storage/v1/object/forge-project-files/${storagePath}`,{method:'POST',headers:this.headers({'Content-Type':'application/octet-stream','x-upsert':'true'}),body:content}),'Supabase Storage upload');
+      await repo.upsert('forge_project_files',[{user_id:userId,firebase_uid:firebaseUid,project_id:projectId,path:filePath,storage_path:storagePath,sha256,size_bytes:content.length,content_type:'application/octet-stream',updated_at:snapshot.createdAt}], 'user_id,project_id,path'); files++;
+    }
+    return{status:'synced' as DirectStatus,records:Object.values(rows).reduce((n,x)=>n+(x?.length||0),0),files};
+  }
+
+  static async pullCanonical(userId:string,firebaseUid:string):Promise<{status:DirectStatus;snapshot?:DirectSnapshot}>{
+    if(!this.configured())return{status:'not_configured'};
+    if(!firebaseUid)return{status:'local_only'};
+    const repo=this.repository();
+    const tablesToRead:CanonicalTable[]=['forge_profiles','forge_projects','forge_conversations','forge_messages','forge_providers','forge_provider_secrets','forge_integrations','forge_skills','forge_checkpoints','forge_repositories','forge_branches','forge_model_profiles','forge_model_candidates','forge_model_invocations','forge_project_files'];
+    const values=await Promise.all(tablesToRead.map(t=>repo.owned(t,firebaseUid))),remote=Object.fromEntries(tablesToRead.map((t,i)=>[t,values[i]]));
+    if(!remote.forge_profiles.length)return{status:'local_only'};
+    const bool=(x:any)=>x?1:0, string=(x:any)=>JSON.stringify(x??{}), tables:Record<string,any[]>={};
+    tables.users=remote.forge_profiles.map((x:any)=>({id:userId,email:x.email||'',name:x.display_name||'',role:'developer',firebase_uid:firebaseUid,created_at:x.created_at,updated_at:x.updated_at}));
+    tables.projects=remote.forge_projects.map(({firebase_uid,revision,...x}:any)=>({...x,user_id:userId,revision}));
+    tables.conversations=remote.forge_conversations.map(({firebase_uid,...x}:any)=>x);
+    tables.messages=remote.forge_messages.map(({firebase_uid,metadata,...x}:any)=>({...x,metadata_json:string(metadata)}));
+    tables.providers=remote.forge_providers.map(({firebase_uid,configured,active,health,extra_headers,updated_at,...x}:any)=>({...x,user_id:userId,is_configured:bool(configured),is_active:bool(active),connection_status:health==='connected'?'connected':health==='error'?'error':'not_configured',extra_headers_json:string(extra_headers)}));
+    tables.user_secrets=remote.forge_provider_secrets.map(({firebase_uid,provider_id,...x}:any)=>({...x,user_id:userId,is_default:0,is_active:1}));
+    tables.integrations=remote.forge_integrations.map(({firebase_uid,config,updated_at,...x}:any)=>({...x,user_id:userId,config_json:string(config)}));
+    tables.skills=remote.forge_skills.map(({firebase_uid,active,updated_at,...x}:any)=>({...x,user_id:userId,is_active:bool(active)}));
+    tables.checkpoints=remote.forge_checkpoints.map(({firebase_uid,files_manifest,...x}:any)=>({...x,files_snapshot_json:'{}'}));
+    tables.repositories=remote.forge_repositories.map(({firebase_uid,connected,updated_at,...x}:any)=>({...x,is_connected:bool(connected)}));
+    tables.branches=remote.forge_branches.map(({firebase_uid,current,updated_at,head_sha,...x}:any)=>({...x,is_current:bool(current),head_commit_hash:head_sha}));
+    tables.model_profiles=remote.forge_model_profiles.map(({firebase_uid,active,...x}:any)=>({...x,user_id:userId,is_active:bool(active)}));
+    tables.model_candidates=remote.forge_model_candidates.map(({firebase_uid,active,...x}:any)=>({...x,is_active:bool(active)}));
+    tables.model_invocations=remote.forge_model_invocations.map(({firebase_uid,metadata,...x}:any)=>({...x,user_id:userId,metadata_json:string(metadata)}));
+    const files:Record<string,Record<string,string>>={};
+    for(const row of remote.forge_project_files){const response=await this.expect(await fetch(`${process.env.SUPABASE_URL}/storage/v1/object/forge-project-files/${row.storage_path}`,{headers:this.headers()}),'Supabase Storage download');const content=Buffer.from(await response.arrayBuffer());if(crypto.createHash('sha256').update(content).digest('hex')!==row.sha256)throw Error(`Arquivo remoto corrompido: ${row.path}`);(files[row.project_id]||={})[row.path]=content.toString('base64');}
+    return{status:'synced',snapshot:{schemaVersion:1,userId,deviceId:'supabase-canonical',createdAt:remote.forge_profiles[0].updated_at,tables,files}};
   }
 
   static async push(userId: string, firebaseUid: string, snapshot: DirectSnapshot): Promise<{status: DirectStatus; records?: number; files?: number}> {

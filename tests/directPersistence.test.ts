@@ -64,3 +64,11 @@ test('finds a legacy direct account through the stable Firebase UID', async (t) 
     assert.ok(urls.some((url) => url.includes('user_id=eq.legacy-user')));
   } finally { restore('SUPABASE_URL', oldUrl); restore('SUPABASE_SECRET_KEY', oldKey); }
 });
+
+test('canonical persistence writes normalized domains and Storage without legacy snapshot', async (t) => {
+  const oldUrl=process.env.SUPABASE_URL,oldKey=process.env.SUPABASE_SECRET_KEY;
+  process.env.SUPABASE_URL='https://canonical.example.test';process.env.SUPABASE_SECRET_KEY='server-secret-value';
+  const urls:string[]=[];t.mock.method(globalThis,'fetch',async(input:string|URL|Request)=>{urls.push(String(input));return new Response('{}',{status:201});});
+  try{const result=await SupabasePersistenceService.pushCanonical('u1','fb1',{schemaVersion:1,userId:'u1',deviceId:'A',createdAt:'2026-09-12T00:00:00.000Z',tables:{users:[{id:'u1',email:'a@example.test',name:'A'}],projects:[{id:'p1',user_id:'u1',name:'P',origin:'novo',status:'active'}],providers:[],user_secrets:[],integrations:[],skills:[],conversations:[],messages:[],checkpoints:[],repositories:[],branches:[],model_profiles:[],model_candidates:[],model_invocations:[]},files:{p1:{'index.html':Buffer.from('<h1>A</h1>').toString('base64')}}});assert.equal(result.status,'synced');assert.ok(urls.some(x=>x.includes('/forge_profiles?')));assert.ok(urls.some(x=>x.includes('/forge_projects?')));assert.ok(urls.some(x=>x.includes('/forge_project_files?')));assert.equal(urls.some(x=>x.includes('forge_sync_snapshots')),false);assert.equal(urls.some(x=>x.includes('forge_entities')),false);}
+  finally{restore('SUPABASE_URL',oldUrl);restore('SUPABASE_SECRET_KEY',oldKey);}
+});
