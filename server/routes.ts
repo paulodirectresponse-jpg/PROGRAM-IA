@@ -1122,14 +1122,27 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const explicitPlanIntent = /\b(planej|plano|arquitetura|roadmap|especifica[cç][aã]o)\b/i.test(content);
 
     if (!agentEngineEnabled && mode === 'auto' && explicitPlanIntent && !result.plan && !result.build && !result.hasErrors) {
+      const fallbackCriteria=['Implementação funcional','Validação sem erros críticos'];
       result.plan = LLMAdapterService.extractPlan(result.replyText) || {
         objective: content.trim().slice(0, 500),
         scope_in: String(result.replyText || content).trim().slice(0, 2500),
         scope_out: '',
+        architecture_summary: 'Arquitetura a determinar pelo produto solicitado; nenhum arquivo ou stack é presumido.',
+        existing_files_to_modify: [],
+        new_files_to_create: [],
+        files_to_delete: [],
         files_affected: [],
         integrations: [],
         risks: [],
-        acceptance_criteria: ['Implementação funcional', 'Validação sem erros críticos'],
+        acceptance_criteria: fallbackCriteria,
+        requirements: fallbackCriteria.map((criterion,index)=>({
+          id:`REQ-${String(index+1).padStart(3,'0')}`,
+          title:criterion,
+          description:criterion,
+          priority:'high' as const,
+          verification:[criterion],
+        })),
+        task_graph: [],
       };
       result.decisionType = 'plan';
     }
