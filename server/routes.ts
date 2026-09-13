@@ -47,6 +47,20 @@ function upsertRepository(projectId: string, remoteUrl: string, branch: string, 
   }
 }
 
+function projectRepositoryContext(projectId: string, legacyProject?: any) {
+  const repository = db.prepare(
+    'SELECT remote_url, default_branch FROM repositories WHERE project_id = ? AND is_connected = 1 ORDER BY created_at DESC LIMIT 1'
+  ).get(projectId) as {remote_url?:string;default_branch?:string}|undefined;
+  const currentBranch = db.prepare(
+    'SELECT name, head_commit_hash FROM branches WHERE project_id = ? AND is_current = 1 ORDER BY created_at DESC LIMIT 1'
+  ).get(projectId) as {name?:string;head_commit_hash?:string}|undefined;
+  return {
+    repoUrl: repository?.remote_url || legacyProject?.repo_url || '',
+    branch: currentBranch?.name || repository?.default_branch || legacyProject?.branch || 'main',
+    headSha: currentBranch?.head_commit_hash || null,
+  };
+}
+
 router.get('/version', (_req, res) => res.json({
   version: process.env.npm_package_version || 'dev',
   sha: process.env.GITHUB_SHA || process.env.RENDER_GIT_COMMIT || process.env.COMMIT_SHA || 'local',
