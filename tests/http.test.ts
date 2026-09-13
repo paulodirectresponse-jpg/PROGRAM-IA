@@ -245,6 +245,83 @@ test('approving a draft plan generates a reviewable build proposal without apply
 });
 
 
+test('agent-engine plan approval uses reliable atomic build and remains waiting for user approval',async()=>{
+  const now=new Date(Date.now()+6500).toISOString();
+  const conversation=`agent-plan-approve-conversation-${Date.now()}`;
+  const planId=`agent-plan-approve-${Date.now()}`;
+
+  db.prepare('INSERT INTO conversations(id,project_id,title,mode,created_at,updated_at) VALUES(?,?,?,?,?,?)')
+    .run(conversation,id,'Agent plan approval','plan',now,now);
+  db.prepare(`INSERT INTO plans(
+    id,task_id,project_id,objective,scope_in,scope_out,files_affected_json,integrations_json,risks_json,acceptance_criteria_json,status,created_at,updated_at
+  ) VALUES(?,NULL,?,?,?,?,?,?,?,?,'draft',?,?)`)
+    .run(
+      planId,id,'Criar painel completo','Dashboard, estoque e vendas','Deploy externo',
+      JSON.stringify(['index.html']),JSON.stringify([]),JSON.stringify([]),JSON.stringify(['Fluxo funcional']),now,now
+    );
+
+  WorkspaceManager.writeFile(id,'index.html','<html><body>AGENT_ENGINE_ORIGINAL</body></html>');
+  SecretService.saveSecret(userA,'omniroute','test-omniroute-key-agent-plan-approval');
+  db.prepare('UPDATE providers SET is_active=0 WHERE user_id=?').run(userA);
+  db.prepare("UPDATE providers SET is_active=1,is_configured=1,connection_status='connected',model_id='auto' WHERE user_id=? AND provider_key='omniroute'")
+    .run(userA);
+  db.prepare("UPDATE model_profiles SET enabled=1 WHERE user_id=? AND profile_key='BASE_FREE'").run(userA);
+  db.prepare(`UPDATE model_candidates SET enabled=1,health_state='healthy',consecutive_failures=0,circuit_open_until=NULL
+    WHERE profile_id=(SELECT id FROM model_profiles WHERE user_id=? AND profile_key='BASE_FREE') AND provider_key='omniroute'`).run(userA);
+
+  const previousFlag=process.env.AGENT_ENGINE_ENABLED;
+  process.env.AGENT_ENGINE_ENABLED='true';
+  const originalReliable=(LLMAdapterService as any).buildApprovedPlanReliably;
+  let reliableCalls=0;
+  (LLMAdapterService as any).buildApprovedPlanReliably=async(options:any)=>{
+    reliableCalls+=1;
+    assert.equal(options.providerKey,'omniroute');
+    assert.equal(options.objective,'Criar painel completo');
+    assert.deepEqual(options.requestedFiles,['index.html']);
+    return {
+      replyText:'Proposta atômica gerada pelos agentes.',
+      mode:'build',
+      decisionType:'change',
+      isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute (Free Pool)',
+      modelUsed:'auto',
+      hasErrors:false,
+      build:{
+        summary:'Painel completo',
+        explanation:'Construção atômica',
+        files:[{path:'index.html',action:'modify',content:'<html><body>AGENT_ENGINE_PROPOSAL</body></html>'}]
+      },
+      usage:{inputTokens:10,outputTokens:20,billedCostUsd:0},
+      diagnostics:{strategy:'atomic_file_build',attempts:1,targets:['index.html'],failures:[]}
+    } as any;
+  };
+
+  try {
+    const response=await fetch(`${base}/conversations/${id}/plan/approve`,{
+      method:'POST',
+      headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
+      body:JSON.stringify({planId})
+    });
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.equal(body.success,true);
+    assert.equal(reliableCalls,1);
+    assert.equal(body.proposal.status,'pending');
+    assert.equal(body.agentMessage.metadata.executionType,'agent_engine');
+    assert.equal(body.agentMessage.metadata.workflow.status,'waiting_approval');
+    assert.match(WorkspaceManager.readFile(id,'index.html')||'',/AGENT_ENGINE_ORIGINAL/);
+
+    const run=db.prepare('SELECT status FROM agent_runs WHERE id=?').get(body.agentMessage.metadata.runId) as any;
+    assert.equal(run.status,'waiting_approval');
+    const plan=db.prepare('SELECT status FROM plans WHERE id=?').get(planId) as any;
+    assert.equal(plan.status,'approved');
+  } finally {
+    (LLMAdapterService as any).buildApprovedPlanReliably=originalReliable;
+    if(previousFlag===undefined) delete process.env.AGENT_ENGINE_ENABLED; else process.env.AGENT_ENGINE_ENABLED=previousFlag;
+  }
+});
+
+
 test('plan approval retries an atomic file once and preserves review-before-apply',async()=>{
   const now=new Date(Date.now()+7000).toISOString();
   const conversation=`plan-repair-conversation-${Date.now()}`;
