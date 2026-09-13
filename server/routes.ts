@@ -890,6 +890,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
       profileKey: (result as any).profileKey,
       workflow: (result as any).workflow,
       formatRepairAttempted,
+      buildDiagnostics: result.diagnostics,
     };
 
     db.exec('BEGIN IMMEDIATE');
