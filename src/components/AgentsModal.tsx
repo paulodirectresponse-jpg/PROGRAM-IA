@@ -10,7 +10,20 @@ type AgentRun={id:string;project_id:string;mode:string;status:string;spent_usd:n
 
 export function AgentsModal({isOpen,onClose}:{isOpen:boolean;onClose:()=>void}){
   const [agents,setAgents]=useState<Agent[]>([]),[profiles,setProfiles]=useState<Profile[]>([]),[runs,setRuns]=useState<AgentRun[]>([]),[providerKey,setProviderKey]=useState('omniroute'),[modelId,setModelId]=useState('auto'),[profileKey,setProfileKey]=useState('BASE_FREE'),[error,setError]=useState(''),[engineEnabled,setEngineEnabled]=useState<boolean|null>(null);
-  const load=async()=>{const [a,p,v,runsData]=await Promise.all([fetch('/api/agents').then(r=>r.json()),fetch('/api/model-profiles').then(r=>r.json()),fetch('/api/version').then(r=>r.json()),fetch('/api/agent-runs').then(r=>r.json())]);setAgents(a.agents||[]);setProfiles(p.profiles||[]);setRuns(runsData.runs||[]);setEngineEnabled(Boolean(v.agentEngineEnabled))};
+  const load=async()=>{
+    const [a,p,v,runsData]=await Promise.allSettled([
+      fetch('/api/agents').then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.error||'Falha ao carregar agentes');return d}),
+      fetch('/api/model-profiles').then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.error||'Falha ao carregar perfis');return d}),
+      fetch('/api/version').then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.error||'Falha ao carregar versão');return d}),
+      fetch('/api/agent-runs').then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.error||'Falha ao carregar execuções');return d}),
+    ]);
+    const failures:string[]=[];
+    if(a.status==='fulfilled')setAgents(a.value.agents||[]);else failures.push('agentes');
+    if(p.status==='fulfilled')setProfiles(p.value.profiles||[]);else failures.push('perfis');
+    if(v.status==='fulfilled')setEngineEnabled(Boolean(v.value.agentEngineEnabled));else failures.push('status');
+    if(runsData.status==='fulfilled')setRuns(runsData.value.runs||[]);else failures.push('execuções');
+    setError(failures.length?`Falha parcial ao carregar: ${failures.join(', ')}.`:'');
+  };
   useEffect(()=>{if(!isOpen)return;load().catch(()=>setError('Não foi possível carregar agentes e perfis.'));const timer=setInterval(()=>load().catch(()=>{}),2000);return()=>clearInterval(timer)},[isOpen]);
   const mutate=async(url:string,method:string,body?:unknown)=>{setError('');const r=await fetch(url,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const data=await r.json();if(!r.ok)throw Error(data.error||'Operação falhou.');setProfiles(data.profiles||[])};
   const cancelRun=async(run:AgentRun)=>{
