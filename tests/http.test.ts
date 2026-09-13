@@ -9,6 +9,7 @@ import {LLMAdapterService} from '../server/services/llmAdapter.js';
 import {WorkspaceManager} from '../server/services/workspaceManager.js';
 import {RuntimeManager} from '../server/services/runtimeManager.js';
 import {SecretService} from '../server/services/secretService.js';
+import {ValidatorEngine} from '../server/services/validatorEngine.js';
 import type {Server} from 'node:http';
 
 let server:Server, base:string, tokenA:string, tokenB:string, userA:string, userB:string;
