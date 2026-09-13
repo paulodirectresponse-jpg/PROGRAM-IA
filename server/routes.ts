@@ -17,6 +17,7 @@ import { AGENTS } from './agent-engine/agentRegistry.js';
 import { GitHubService } from './services/githubService.js';
 import { DesktopService } from './services/desktopService.js';
 import { CloudSyncService } from './services/cloudSyncService.js';
+import { RuntimeManager } from './services/runtimeManager.js';
 
 export const router = express.Router();
 const activeProjects = new Set<string>();
@@ -525,7 +526,8 @@ router.delete('/projects/:id', requireAuth, requireProjectOwner, (req: Request, 
     // 5. Delete branches
     db.prepare('DELETE FROM branches WHERE project_id = ?').run(projectId);
 
-    // 6. Delete physical workspace directory
+    // 6. Stop runtime and delete physical workspace directory
+    void RuntimeManager.stop(projectId);
     WorkspaceManager.deleteProject(projectId);
 
     // 7. Delete project row from SQLite
@@ -1548,8 +1550,17 @@ router.post('/desktop/command', requireAuth, (_req, res) => {
 // 9. LIVE PREVIEW SANDBOX (PUBLIC SERVING FOR IFRAME)
 // ==========================================
 
-router.get('/projects/:projectId/preview/status', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
-  res.json(WorkspaceManager.getPreviewInfo(req.params.projectId));
+router.get('/projects/:projectId/preview/status', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  const staticInfo = WorkspaceManager.getPreviewInfo(req.params.projectId);
+  if (staticInfo.status === 'running') return res.json(staticInfo);
+  try {
+    const runtime = await RuntimeManager.ensure(req.params.projectId);
+    if (runtime.status === 'running') return res.json({ status: 'running', entryPath: '', runtime, message: `Runtime ${runtime.framework || 'framework'} ativo em ${runtime.url}.` });
+    if (runtime.status === 'static') return res.status(422).json(staticInfo);
+    return res.status(runtime.status === 'error' ? 422 : 202).json({ status: runtime.status === 'error' ? 'error' : 'loading', runtime, message: runtime.lastError || `Runtime ${runtime.status}.` });
+  } catch (error: any) {
+    res.status(422).json({ status: 'error', message: String(error?.message || error) });
+  }
 });
 
 router.post('/projects/:id/deploy/cloudflare', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
@@ -1609,9 +1620,16 @@ router.post('/conversations/:projectId/reject-proposal', requireAuth, requirePro
   res.json({ success: true });
 });
 
-router.post('/projects/:projectId/preview/rebuild', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
-  const info = WorkspaceManager.getPreviewInfo(req.params.projectId);
-  res.status(info.status === 'running' ? 200 : 422).json(info);
+router.post('/projects/:projectId/preview/rebuild', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  const staticInfo = WorkspaceManager.getPreviewInfo(req.params.projectId);
+  if (staticInfo.status === 'running') return res.json(staticInfo);
+  const runtime = await RuntimeManager.restart(req.params.projectId);
+  if (runtime.status === 'running') return res.json({ status: 'running', entryPath: '', runtime, message: `Runtime ${runtime.framework || 'framework'} reiniciado em ${runtime.url}.` });
+  res.status(422).json({ status: 'error', runtime, message: runtime.lastError || 'Não foi possível iniciar o runtime do projeto.' });
+});
+
+router.post('/projects/:projectId/runtime/stop', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  res.json(await RuntimeManager.stop(req.params.projectId));
 });
 
 function findPendingProposal(projectId:string,proposalId:string){const conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;if(!conversation)return null;const rows=db.prepare("SELECT metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[];for(const row of rows){try{const proposal=JSON.parse(row.metadata_json||'{}')?.proposal;if(proposal?.id===proposalId&&['pending','previewing'].includes(proposal.status))return proposal;}catch{}}return null;}
@@ -1620,12 +1638,13 @@ router.get('/preview-proposal/:projectId/:proposalId/*',requireAuth,requireProje
 
 router.get('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const projectId = req.params.projectId;
+  const requestedFile = req.params[0] || '';
+  if (RuntimeManager.proxy(projectId, `/${requestedFile}`, res)) return;
   const projectDir = WorkspaceManager.getProjectDir(projectId);
 
   const preview = WorkspaceManager.getPreviewInfo(projectId);
   if (preview.status !== 'running' || !preview.entryPath) return res.status(404).send(preview.message);
-  const requestedFile = req.params[0] || preview.entryPath;
-  const safeRel = path.normalize(requestedFile).replace(/^(\.\.[\/\\])+/, '');
+  const safeRel = path.normalize(requestedFile || preview.entryPath).replace(/^(\.\.[\/\\])+/, '');
   let filePath = path.join(projectDir, safeRel === 'index.html' || safeRel.replace(/\\/g,'/') === preview.entryPath ? preview.entryPath : path.join(preview.root || '', safeRel));
 
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
@@ -1633,7 +1652,7 @@ router.get('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Requ
   }
 
   if (!fs.existsSync(filePath)) {
-    return res.status(404).send('Preview nÃ£o disponÃ­vel para este projeto.');
+    return res.status(404).send('Preview não disponível para este projeto.');
   }
 
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');

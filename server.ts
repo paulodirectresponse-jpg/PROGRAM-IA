@@ -7,6 +7,7 @@ import { createServer as createViteServer } from 'vite';
 import { initializeDatabase } from './server/db/index.js';
 import { router as apiRouter } from './server/routes.js';
 import { CloudSyncService } from './server/services/cloudSyncService.js';
+import { RuntimeManager } from './server/services/runtimeManager.js';
 
 dotenv.config();
 
@@ -71,9 +72,15 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Forge Agent full-stack server running on http://0.0.0.0:${PORT}`);
   });
+  const shutdown = async () => {
+    await RuntimeManager.stopAll();
+    server.close(() => process.exit(0));
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 startServer();

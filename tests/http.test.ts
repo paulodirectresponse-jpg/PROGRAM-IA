@@ -7,6 +7,7 @@ import {db,initializeDatabase} from '../server/db/index.js';
 import {AuthService} from '../server/services/authService.js';
 import {LLMAdapterService} from '../server/services/llmAdapter.js';
 import {WorkspaceManager} from '../server/services/workspaceManager.js';
+import {RuntimeManager} from '../server/services/runtimeManager.js';
 import type {Server} from 'node:http';
 
 let server:Server, base:string, tokenA:string, tokenB:string, userA:string, userB:string;
@@ -22,7 +23,7 @@ before(async()=>{
   await new Promise<void>(resolve=>{server=app.listen(0,'127.0.0.1',resolve);});
   base=`http://127.0.0.1:${(server.address() as any).port}/api`;
 });
-after(async()=>{await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()));db.close();});
+after(async()=>{await RuntimeManager.stopAll();await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()));db.close();});
 test('no anonymous access without a Firebase-backed session',async()=>{
   const r=await fetch(`${base}/projects`);assert.equal(r.status,401);
 });
@@ -103,3 +104,69 @@ test('testing a provider never changes the active provider',async()=>{
   } finally { LLMAdapterService.testConnection=original; }
 });
 
+
+
+test('framework runtime starts, proxies preview, filters Forge secrets and stops cleanly', async () => {
+  const runtimeProject = `runtime-project-${Date.now()}`;
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'Runtime','novo',?,?)")
+    .run(runtimeProject,userA,`ws-${userA}`,now,now);
+  WorkspaceManager.writeFile(runtimeProject,'package.json',JSON.stringify({scripts:{dev:'node server.js'}}));
+  WorkspaceManager.writeFile(runtimeProject,'server.js',`
+    const http = require('http');
+    const body = JSON.stringify({
+      ok: true,
+      port: process.env.PORT,
+      leaked: Boolean(process.env.SUPABASE_SECRET_KEY || process.env.SECRETS_MASTER_KEY || process.env.GITHUB_TOKEN)
+    });
+    http.createServer((req,res)=>{
+      res.setHeader('content-type','application/json');
+      res.end(body);
+    }).listen(Number(process.env.PORT), '127.0.0.1');
+  `);
+  const previousSecret = process.env.SUPABASE_SECRET_KEY;
+  process.env.SUPABASE_SECRET_KEY = 'must-not-leak-to-runtime';
+  try {
+    const status = await fetch(`${base}/projects/${runtimeProject}/preview/status`,{headers:{Authorization:`Bearer ${tokenA}`}});
+    assert.equal(status.status,200);
+    const body = await status.json();
+    assert.equal(body.status,'running');
+    assert.equal(body.runtime.framework,'node');
+    assert.ok(body.runtime.port > 0);
+    const preview = await fetch(`${base}/preview/${runtimeProject}/`,{headers:{Authorization:`Bearer ${tokenA}`}});
+    assert.equal(preview.status,200);
+    const payload = await preview.json();
+    assert.equal(payload.ok,true);
+    assert.equal(payload.leaked,false);
+    const stopped = await fetch(`${base}/projects/${runtimeProject}/runtime/stop`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`}});
+    assert.equal(stopped.status,200);
+    assert.equal((await stopped.json()).status,'stopped');
+  } finally {
+    if (previousSecret === undefined) delete process.env.SUPABASE_SECRET_KEY; else process.env.SUPABASE_SECRET_KEY = previousSecret;
+    await RuntimeManager.stop(runtimeProject);
+    WorkspaceManager.deleteProject(runtimeProject);
+    db.prepare('DELETE FROM projects WHERE id=?').run(runtimeProject);
+  }
+});
+
+
+test('failed framework start returns error status and leaves no running runtime', async () => {
+  const runtimeProject = `runtime-fail-${Date.now()}`;
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'Runtime fail','novo',?,?)")
+    .run(runtimeProject,userA,`ws-${userA}`,now,now);
+  WorkspaceManager.writeFile(runtimeProject,'package.json',JSON.stringify({scripts:{}}));
+  try {
+    const status = await fetch(`${base}/projects/${runtimeProject}/preview/status`,{headers:{Authorization:`Bearer ${tokenA}`}});
+    assert.equal(status.status,422);
+    const body = await status.json();
+    assert.equal(body.status,'error');
+    assert.match(body.message,/script dev\/start|Nenhum script/i);
+    const runtime = RuntimeManager.get(runtimeProject);
+    assert.equal(runtime?.status,'error');
+  } finally {
+    await RuntimeManager.stop(runtimeProject);
+    WorkspaceManager.deleteProject(runtimeProject);
+    db.prepare('DELETE FROM projects WHERE id=?').run(runtimeProject);
+  }
+});
