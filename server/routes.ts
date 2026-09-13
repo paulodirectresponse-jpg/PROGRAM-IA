@@ -941,9 +941,9 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       `).run(
         savedPlanId,
         projectId,
-        result.plan.objective,
-        result.plan.scope_in,
-        result.plan.scope_out,
+        typeof result.plan.objective === 'string' ? result.plan.objective : JSON.stringify(result.plan.objective ?? ''),
+        typeof result.plan.scope_in === 'string' ? result.plan.scope_in : JSON.stringify(result.plan.scope_in ?? ''),
+        typeof result.plan.scope_out === 'string' ? result.plan.scope_out : JSON.stringify(result.plan.scope_out ?? ''),
         JSON.stringify(result.plan.files_affected || []),
         JSON.stringify(result.plan.integrations || []),
         JSON.stringify(result.plan.risks || []),
