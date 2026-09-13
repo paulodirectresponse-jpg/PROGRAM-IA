@@ -55,10 +55,9 @@ export class CloudSyncService{
     if(row.device_id!==deviceId&&newestLocal?.updated_at&&new Date(newestLocal.updated_at)>new Date(row.updated_at)) return{status:'conflict',revision:row.revision,deviceId,message:'Existem alterações locais mais novas. Sincronize manualmente para escolher a versão.'};
     this.assertSecretsReadable(row.payload);this.import(userId,row.payload);
     await this.pushDirect(userId);
-    // Preserve legacy snapshot as a rollback source during Phase A; Phase B removes it after acceptance.
+    // Legacy snapshot is read-only migration compatibility until the reconciliation gate in CODEX_HANDOFF.md is approved.
     return{status:'synced',restored:true,revision:row.revision,migratedFrom,source:'legacy-migrated'};
   }
   const hasLocal=(db.prepare('SELECT COUNT(*) n FROM projects WHERE user_id=?').get(userId) as any).n>0;
   return hasLocal?await this.pushDirect(userId):{status:'local_only',deviceId};}catch(e:any){return{status:'error',message:e.message,deviceId};}}
-  private static async removeRemote(userId:string){const r=await fetch(`${process.env.SUPABASE_URL}/rest/v1/forge_sync_snapshots?user_id=eq.${encodeURIComponent(userId)}`,{method:'DELETE',headers:this.headers()});if(!r.ok)throw Error(`Supabase sync migration cleanup ${r.status}`);}
 }
