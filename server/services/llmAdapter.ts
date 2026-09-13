@@ -867,6 +867,7 @@ export class LLMAdapterService {
     let providerUsed = '';
     let modelUsed = options.modelId;
     let totalAttempts = 0;
+    let terminalFailure: string | null = null;
 
     for (const targetPath of targets) {
       options.signal?.throwIfAborted();
@@ -924,7 +925,10 @@ export class LLMAdapterService {
           };
         }
 
-        if (!accepted && result.errorReason && ['invalid_key', 'invalid_model', 'rate_limit'].includes(result.errorReason)) break;
+        if (!accepted && result.errorReason && ['invalid_key', 'invalid_model', 'rate_limit'].includes(result.errorReason)) {
+          terminalFailure = result.errorMessage || result.errorReason;
+          break;
+        }
       }
 
       if (accepted) {
@@ -933,6 +937,24 @@ export class LLMAdapterService {
       } else {
         failures.push(targetPath + (lastRaw ? ' (resposta incompatível)' : ' (sem resposta utilizável)'));
       }
+      if (terminalFailure) break;
+    }
+
+    if (terminalFailure && generated.length === 0) {
+      return {
+        replyText: 'O provedor recusou a construção antes de gerar arquivos.',
+        mode: 'build',
+        decisionType: 'invalid_response',
+        isDemonstrativeFallback: false,
+        providerUsed: providerUsed || 'Provider ativo',
+        modelUsed,
+        hasErrors: true,
+        invalidResponse: true,
+        errorMessage: terminalFailure,
+        errorReason: 'terminal_provider_error',
+        usage: { inputTokens, outputTokens, billedCostUsd },
+        diagnostics: { strategy: 'atomic_file_build', attempts: totalAttempts, targets, failures },
+      };
     }
 
     if (generated.length === 0) {
