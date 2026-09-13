@@ -517,7 +517,7 @@ export class GitHubService {
     repo: string;
     newBranch: string;
     fromBranch?: string;
-  }): Promise<{ success: boolean; branch?: string; error?: string }> {
+  }): Promise<{ success: boolean; branch?: string; baseSha?: string; error?: string }> {
     const token = this.getToken(options.userId);
     if (!token) return { success: false, error: 'Token do GitHub não configurado.' };
 
@@ -551,7 +551,7 @@ export class GitHubService {
         return { success: false, error: `Falha ao criar branch "${newBranch}": ${errText.slice(0, 150)}` };
       }
 
-      return { success: true, branch: newBranch };
+      return { success: true, branch: newBranch, baseSha };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
@@ -614,13 +614,13 @@ export class GitHubService {
             else if (compData.status === 'behind') status = 'ahead'; // remote is behind local
             else if (compData.status === 'diverged') status = 'diverged';
           } else {
-            status = 'ahead';
+            status = 'unknown';
           }
         } catch {
-          status = 'ahead';
+          status = 'unknown';
         }
       } else {
-        status = 'ahead';
+        status = 'unknown';
       }
 
       return {

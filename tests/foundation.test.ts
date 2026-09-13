@@ -10,6 +10,7 @@ import {ModelRouter} from '../server/services/modelRouter.js';
 import {CloudSyncService} from '../server/services/cloudSyncService.js';
 import {ValidatorEngine} from '../server/services/validatorEngine.js';
 import {LLMAdapterService} from '../server/services/llmAdapter.js';
+import {GitHubService} from '../server/services/githubService.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -160,4 +161,45 @@ test('provider tester classifies rate limit and upstream errors precisely', asyn
   const upstream = await LLMAdapterService.testConnection({providerKey:'useoneai', apiKey:'sk-test', baseUrl:'https://api.example.test/v1', modelId:'chatgpt-5.5'});
   assert.equal(upstream.success, false);
   assert.equal(upstream.status, 'provider_error');
+});
+
+
+test('GitHub status remains unknown when compare API cannot classify divergence', async (t) => {
+  const originalToken = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = 'ghp_test_token';
+  t.after(() => { if (originalToken === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = originalToken; });
+  t.mock.method(globalThis, 'fetch', async (url: any) => {
+    const target = String(url);
+    if (target.includes('/commits/main')) {
+      return new Response(JSON.stringify({sha:'remote-sha', commit:{message:'remote', author:{date:'2026-09-13T00:00:00Z', name:'Dev'}}}), {status: 200});
+    }
+    if (target.includes('/compare/local-sha...remote-sha')) {
+      return new Response(JSON.stringify({message:'comparison unavailable'}), {status: 502});
+    }
+    return new Response('{}', {status: 404});
+  });
+  const status = await GitHubService.getSyncStatus({owner:'owner', repo:'repo', branch:'main', localHeadSha:'local-sha'});
+  assert.equal(status.success, true);
+  assert.equal(status.syncStatus, 'unknown');
+});
+
+test('GitHub branch creation returns the real base SHA instead of a placeholder', async (t) => {
+  const originalToken = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = 'ghp_test_token';
+  t.after(() => { if (originalToken === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = originalToken; });
+  t.mock.method(globalThis, 'fetch', async (url: any, init?: any) => {
+    const target = String(url);
+    if (target.includes('/git/ref/heads/main')) {
+      return new Response(JSON.stringify({object:{sha:'base-real-sha'}}), {status: 200});
+    }
+    if (target.includes('/git/refs') && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body));
+      assert.equal(body.sha, 'base-real-sha');
+      return new Response(JSON.stringify({ref:'refs/heads/feature/test'}), {status: 201});
+    }
+    return new Response('{}', {status: 404});
+  });
+  const result = await GitHubService.createBranch({owner:'owner', repo:'repo', newBranch:'feature/test', fromBranch:'main'});
+  assert.equal(result.success, true);
+  assert.equal(result.baseSha, 'base-real-sha');
 });

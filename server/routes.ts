@@ -1202,8 +1202,8 @@ router.post('/projects/:id/github/branch', requireAuth, requireProjectOwner, asy
     db.prepare('UPDATE projects SET branch = ?, updated_at = ? WHERE id = ?').run(newBranch.trim(), now, req.params.id);
     db.prepare(`
       INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
-      VALUES (?, ?, ?, 1, 'head-new', ?)
-    `).run('br-' + Date.now(), req.params.id, newBranch.trim(), now);
+      VALUES (?, ?, ?, 1, ?, ?)
+    `).run('br-' + Date.now(), req.params.id, newBranch.trim(), result.baseSha || null, now);
 
     res.json({ success: true, branch: newBranch.trim() });
   } catch (err: any) {
