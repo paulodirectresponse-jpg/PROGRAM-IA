@@ -1,44 +1,90 @@
-# Implementation status — 2026-09-11
+# PROGRAM-IA — Implementation status
 
-This is a working revision undergoing release validation.
+Atualizado em 2026-09-13 após a consolidação B→I.
 
-## Corrected in this revision
+A `main` representa uma base funcional em validação de release. O CI oficial deve permanecer verde a cada mudança.
 
-- Removed automatic authentication as `user-default`.
-- Firebase login passes an ID token; backend retrieves the identity from Firebase Auth. Client email and uid are not trusted.
-- Removed local password-login fallback from public routes.
-- Enforced project ownership and CSRF checks; added client CSRF header transport.
-- Scoped provider configuration, skills, and secrets to the authenticated user; migrated legacy global provider/skill uniqueness.
-- Removed host credential fallback for logged-in users.
-- Consolidated integration settings with service-specific fields and actual read-access tests.
-- Removed fake Firebase/custom-key success responses and false build/preview pass results.
-- Added named pre-change checkpoints and path validation before application.
-- Preserved URLs and source text when parsing structured JSON model responses.
-- Excluded runtime database and encryption material from source distribution.
-- Completed create, edit, and delete flows for user-owned Skills.
-- Added an explicit explanation for Firebase authorized-domain failures in temporary previews.
+## Arquitetura canônica atual
 
-## Verification
+- Firebase Auth = identidade do PROGRAM-IA.
+- Sessão Forge = cookie HttpOnly emitido pelo backend após validação do ID token Firebase.
+- Supabase Postgres/Storage = persistência cloud canônica.
+- SQLite/workspace local = camada operacional/cache reconstruível.
+- `repositories` + `branches` = estado canônico do GitHub.
+- `ValidatorEngine` + `ExecutionWorker` = validação e gates executáveis.
+- `LLMAdapterService` = execução de providers.
+- `ModelRouter` = perfis, candidates, budget, circuit breaker e telemetria.
+- Agent Engine = feature flag de runtime; infraestrutura presente, state machine completa ainda pendente.
 
-The release workflow runs typecheck, foundation and HTTP security tests, the original test suite, production build, and mandatory-login browser verification. Merge is allowed only after this workflow succeeds.
+## Consolidado
 
-## Concluído nesta revisão
+### B — Fundação, auth e persistência
+- login local removido do fluxo público e da UI;
+- identidade Firebase estável por UID;
+- `user-default` e `ws-default` não são provisionados;
+- Firestore interno removido; Firebase permanece apenas para autenticação do Forge;
+- escrita cloud normal usa tabelas normalizadas + Storage;
+- pull/push manuais usam somente a persistência canônica;
+- snapshot legado permanece apenas como leitor de bootstrap/migração.
 
-- Persistência direta e incremental no Supabase Postgres/Storage, com restauração antes do carregamento local e fallback legado de migração.
-- Criação do zero, importação GitHub e upload ZIP validado pelo backend com preservação de binários.
-- Propostas imutáveis no servidor, preview temporário, aprovação por ID, rejeição e rollback somente quando um gate executado falha.
-- Execução de gates com ambiente filtrado, sem credenciais do Forge, e estado `unverified` quando nenhum gate se aplica.
-- GitHub com criação/vínculo de repositório, pull, push, branches, pull requests e checkpoints nomeados.
-- Provedores OpenAI-compatible/Gemini com endpoint e modelo configuráveis, teste real e seleção persistida por conta.
-- Integrações GitHub, Cloudflare, Supabase e Firebase com vault, teste real e estado persistido; deploy Cloudflare Pages disponível.
-- Login Firebase obrigatório, Google/e-mail e redefinição de senha.
+### C — Projetos, ZIP e preview
+- criação/importação aguarda sucesso real do backend;
+- ZIP é validado no backend, preserva binários e trata wrapper root;
+- preview permite rede controlada por CSP;
+- `ExecutionWorker` executa scripts allowlisted com env filtrado, timeout e AbortSignal.
 
-## Fora do escopo deliberado desta revisão
+O runtime geral de frameworks/dev servers ainda não está concluído. Ver `CODEX_HANDOFF.md`.
 
-- Multi-agent programmer/reviewer orchestration permanece pausada por decisão de produto.
-- Gestão avançada de DNS/domínios e provisionamento de projetos externos continuam como expansão posterior.
-- Empacotamento desktop desta nova base web permanece uma etapa de distribuição posterior.
-- Rotate any real credentials that were stored in the previously committed database. Removing files from the latest commit does not erase Git history.
+### D — Providers
+- tester canônico em `LLMAdapterService`;
+- taxonomia de erro para timeout, key/model, rate limit, network e upstream;
+- provider ativo por usuário;
+- status e timestamps de verificação persistidos;
+- profiles/candidates, telemetria, circuit breaker e budget implementados;
+- Agent Engine não pode mais escapar silenciosamente do perfil para o provider ativo.
 
-Sources used for protocols: https://firebase.google.com/docs/reference/rest/auth and https://supabase.com/docs/reference/api/v1-list-all-projects .
+### E — GitHub
+- criação/vínculo, pull, push, branches, status, PR e publicação via chat;
+- SHA real de branch;
+- status inconclusivo fica `unknown`;
+- push propaga deleções e suporta binários;
+- consumidores operacionais usam `repositories` + `branches`, com campos de `projects` apenas como compatibilidade transitória.
 
+### F — Validator
+- `ValidatorEngine` é o validator canônico;
+- verificações ligadas a checkpoint;
+- gates executam em worker real quando aplicáveis;
+- `unverified` é usado quando não existe gate executável;
+- rollback após gate executado falhar possui teste HTTP real.
+
+### G — Integrações
+- GitHub, Cloudflare, Supabase e Firebase possuem configuração no vault e teste real;
+- salvar configuração volta para `pending_credentials`;
+- falha de teste persiste `error`;
+- Cloudflare Pages atual é Git-trigger e registra sucesso/falha.
+
+Direct Upload e E2E com credenciais reais permanecem pendentes. Ver `CODEX_HANDOFF.md`.
+
+### H — Agent Engine
+Já existem:
+- SCOUT, STUDIO, FORGE, SENTINEL e SHIP;
+- BASE_FREE, EXPERT_PAID e PREMIUM_OVERRIDE;
+- candidates substituíveis;
+- budget, telemetria e circuit breaker;
+- `agent_runs`, `agent_steps` e `tool_executions`;
+- UI de agentes/perfis;
+- feature flag transparente no runtime.
+
+A state machine multi-step, escalonamento por step, loop de correção limitado e benchmark final ainda são trabalho pendente do Codex.
+
+### I — Limpeza
+- modais antigos removidos;
+- segunda UI de credenciais removida;
+- tester duplicado removido;
+- bootstrap/demo morto removido;
+- Firestore operacional removido;
+- documentação atualizada para a arquitetura canônica.
+
+## Pendências que bloqueiam “release completa”
+
+O backlog executável está em `CODEX_HANDOFF.md`. Os principais gates restantes são runtime real de frameworks, E2E externo, state machine multiagente e remoção destrutiva do snapshot/colunas espelho somente depois de reconciliação real.
