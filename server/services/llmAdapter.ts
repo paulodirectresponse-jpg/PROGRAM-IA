@@ -954,6 +954,15 @@ export class LLMAdapterService {
     scopeOut?: string;
     acceptanceCriteria?: string[];
     signal?: AbortSignal;
+    onProgress?: (event:{
+      type:'file_started'|'file_retry'|'file_completed'|'file_failed';
+      path:string;
+      index:number;
+      total:number;
+      attempt?:number;
+      action?:'create'|'modify';
+      reason?:string;
+    })=>void|Promise<void>;
   }): Promise<LLMExecutionResult> {
     const targets = this.resolveBuildTargets(
       options.requestedFiles,
@@ -972,15 +981,18 @@ export class LLMAdapterService {
     let totalAttempts = 0;
     let terminalFailure: string | null = null;
 
-    for (const targetPath of targets) {
+    for (let targetIndex=0;targetIndex<targets.length;targetIndex++) {
+      const targetPath=targets[targetIndex];
       options.signal?.throwIfAborted();
       const current = workingFiles[targetPath];
       const action: 'create' | 'modify' = current === undefined ? 'create' : 'modify';
+      await options.onProgress?.({type:'file_started',path:targetPath,index:targetIndex+1,total:targets.length,action});
       const contextFiles = this.contextForBuildTarget(workingFiles, targetPath);
       let accepted: FileChangeProposal | null = null;
       let lastRaw = '';
 
       for (let attempt = 1; attempt <= 2 && !accepted; attempt++) {
+        if(attempt>1)await options.onProgress?.({type:'file_retry',path:targetPath,index:targetIndex+1,total:targets.length,attempt,action});
         const prompt = [
           'Implemente APENAS o arquivo solicitado abaixo. Esta é uma etapa atômica de uma construção maior.',
           'ARQUIVO ALVO: ' + targetPath,
@@ -1041,8 +1053,11 @@ export class LLMAdapterService {
       if (accepted) {
         generated.push(accepted);
         workingFiles[targetPath] = accepted.content;
+        await options.onProgress?.({type:'file_completed',path:targetPath,index:targetIndex+1,total:targets.length,action});
       } else {
-        failures.push(targetPath + (lastRaw ? ' (resposta incompatível)' : ' (sem resposta utilizável)'));
+        const reason=lastRaw ? 'resposta incompatível' : 'sem resposta utilizável';
+        failures.push(targetPath + ' (' + reason + ')');
+        await options.onProgress?.({type:'file_failed',path:targetPath,index:targetIndex+1,total:targets.length,action,reason});
       }
       if (terminalFailure) break;
     }
