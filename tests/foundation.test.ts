@@ -203,3 +203,41 @@ test('GitHub branch creation returns the real base SHA instead of a placeholder'
   assert.equal(result.success, true);
   assert.equal(result.baseSha, 'base-real-sha');
 });
+
+
+test('GitHub push includes deletions for remote files removed locally', async (t) => {
+  const originalToken = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = 'ghp_test_token';
+  t.after(() => { if (originalToken === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = originalToken; });
+  let createdTreeBody: any = null;
+  t.mock.method(globalThis, 'fetch', async (url: any, init?: any) => {
+    const target = String(url);
+    if (target.includes('/git/ref/heads/main') && (!init || init.method === undefined)) {
+      return new Response(JSON.stringify({object:{sha:'commit-sha'}}), {status: 200});
+    }
+    if (target.includes('/git/commits/commit-sha') && (!init || init.method === undefined)) {
+      return new Response(JSON.stringify({tree:{sha:'base-tree-sha'}}), {status: 200});
+    }
+    if (target.includes('/git/trees/base-tree-sha')) {
+      return new Response(JSON.stringify({tree:[{path:'keep.html', type:'blob'}, {path:'removed.html', type:'blob'}]}), {status: 200});
+    }
+    if (target.endsWith('/git/blobs') && init?.method === 'POST') {
+      return new Response(JSON.stringify({sha:'blob-keep'}), {status: 201});
+    }
+    if (target.endsWith('/git/trees') && init?.method === 'POST') {
+      createdTreeBody = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({sha:'new-tree-sha'}), {status: 201});
+    }
+    if (target.endsWith('/git/commits') && init?.method === 'POST') {
+      return new Response(JSON.stringify({sha:'new-commit-sha'}), {status: 201});
+    }
+    if (target.includes('/git/refs/heads/main') && init?.method === 'PATCH') {
+      return new Response(JSON.stringify({object:{sha:'new-commit-sha'}}), {status: 200});
+    }
+    return new Response('{}', {status: 404});
+  });
+  const result = await GitHubService.pushFilesToRepo({owner:'owner', repo:'repo', branch:'main', commitMessage:'sync', files:{'keep.html':'<h1>keep</h1>'}});
+  assert.equal(result.success, true);
+  assert.ok(createdTreeBody.tree.some((item: any) => item.path === 'removed.html' && item.sha === null));
+  assert.ok(createdTreeBody.tree.some((item: any) => item.path === 'keep.html' && item.sha === 'blob-keep'));
+});

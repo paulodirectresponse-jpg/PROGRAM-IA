@@ -359,8 +359,19 @@ export class GitHubService {
       const commitData = await commitRes.json() as any;
       const baseTreeSha = commitData.tree.sha;
 
-      // 3. Create blobs & tree items
+      // 3. Create blobs & tree items, including deletions for remote files absent locally.
       const treeItems: any[] = [];
+      const localPaths = new Set(Object.keys(files).map((filePath) => filePath.replace(/\\/g, '/')));
+      const currentTreeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/${baseTreeSha}?recursive=1`, { headers });
+      if (currentTreeRes.ok) {
+        const currentTree = await currentTreeRes.json() as any;
+        for (const item of currentTree.tree || []) {
+          if (item.type === 'blob' && !localPaths.has(String(item.path))) {
+            treeItems.push({ path: item.path, mode: '100644', type: 'blob', sha: null });
+          }
+        }
+      }
+
       for (const [filePath, content] of Object.entries(files)) {
         const blobRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs`, {
           method: 'POST',
