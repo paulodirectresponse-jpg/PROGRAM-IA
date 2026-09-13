@@ -10,7 +10,7 @@ interface NewProjectModalProps {
     origin: 'novo' | 'local' | 'github';
     repo_url?: string;
     zipData?: string;
-  }) => void;
+  }) => Promise<void>;
 }
 
 export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClose, onCreateProject }) => {
@@ -22,6 +22,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
   const [zipFileName, setZipFileName] = useState<string>('');
   const [isProcessingZip, setIsProcessingZip] = useState(false);
   const [zipError, setZipError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!isOpen) return null;
@@ -47,7 +48,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
         setName(defaultName.charAt(0).toUpperCase() + defaultName.slice(1));
       }
     } catch (err: any) {
-      setZipError(`Falha ao descompactar arquivo ZIP: ${err.message || 'Arquivo corrompido'}`);
+      setZipError(`Falha ao preparar arquivo ZIP: ${err.message || 'Arquivo corrompido'}`);
       setZipData('');
     } finally {
       setIsProcessingZip(false);
@@ -62,30 +63,36 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
     );
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || isSubmitting) return;
+    setSubmitError(null);
 
     if (origin === 'github' && !isGitHubUrlValid(repoUrl)) {
-      alert('Por favor, informe uma URL de repositório válida do GitHub (Ex: https://github.com/usuario/repo ou usuario/repo).');
+      setSubmitError('Informe uma URL de repositório válida do GitHub. Ex: https://github.com/usuario/repo ou usuario/repo.');
       return;
     }
 
     if (origin === 'local' && !zipData) {
-      alert('Por favor, selecione um arquivo ZIP válido contendo os arquivos do projeto.');
+      setSubmitError('Selecione um arquivo ZIP válido contendo os arquivos do projeto.');
       return;
     }
 
     setIsSubmitting(true);
-    onCreateProject({
-      name: name.trim(),
-      description: description.trim(),
-      origin,
-      repo_url: repoUrl.trim(),
-      zipData: origin === 'local' ? zipData : undefined,
-    });
-    setIsSubmitting(false);
-    onClose();
+    try {
+      await onCreateProject({
+        name: name.trim(),
+        description: description.trim(),
+        origin,
+        repo_url: repoUrl.trim(),
+        zipData: origin === 'local' ? zipData : undefined,
+      });
+      onClose();
+    } catch (err: any) {
+      setSubmitError(err?.message || 'Não foi possível criar/importar o projeto.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -246,7 +253,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
               {isProcessingZip && (
                 <div className="flex items-center gap-2 text-xs text-cyan-400 font-mono">
                   <Loader2 size={13} className="animate-spin" />
-                  <span>Processando e descompactando arquivo ZIP...</span>
+                  <span>Preparando arquivo ZIP para importação segura no servidor...</span>
                 </div>
               )}
 
@@ -260,6 +267,11 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
           )}
 
           <div className="pt-2 flex justify-end gap-2 border-t border-slate-800">
+            {submitError && (
+              <div className="mr-auto max-w-[280px] rounded-lg border border-rose-800 bg-rose-950/60 px-3 py-2 text-[11px] text-rose-200">
+                {submitError}
+              </div>
+            )}
             <button
               type="button"
               onClick={onClose}

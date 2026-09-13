@@ -218,6 +218,9 @@ export default function App() {
         body: JSON.stringify(data),
       });
       const result = await res.json();
+      if (!res.ok || !result.success || !result.projectId) {
+        throw new Error(result.error || 'Não foi possível criar/importar o projeto.');
+      }
       if (result.success && result.projectId) {
         await loadProjects();
         const createdProj = {
@@ -233,9 +236,12 @@ export default function App() {
           updated_at: new Date().toISOString(),
         };
         setActiveProject(createdProj);
+        setToastMessage({ text: 'Projeto criado/importado com sucesso.', type: 'success' });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Erro ao criar projeto:', err);
+      setToastMessage({ text: err?.message || 'Erro ao criar/importar projeto.', type: 'error' });
+      throw err;
     }
   };
 
