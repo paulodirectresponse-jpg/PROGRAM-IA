@@ -1182,16 +1182,17 @@ router.get('/projects/:id/github/branches', requireAuth, requireProjectOwner, as
 router.post('/projects/:id/github/branch', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const { newBranch, fromBranch } = req.body;
-    if (!newBranch) return res.status(400).json({ error: 'Nome da nova branch Ã© obrigatÃ³rio.' });
+    if (!newBranch) return res.status(400).json({ error: 'Nome da nova branch é obrigatório.' });
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
-    if (!project || !project.repo_url) {
-      return res.status(400).json({ error: 'RepositÃ³rio GitHub nÃ£o vinculado.' });
-    }
-    const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) return res.status(400).json({ error: 'URL do repositÃ³rio invÃ¡lida.' });
+    if (!project) return res.status(404).json({ error: 'Projeto não encontrado.' });
+    const repoContext = projectRepositoryContext(req.params.id, project);
+    if (!repoContext.repoUrl) return res.status(400).json({ error: 'Repositório GitHub não vinculado.' });
 
-    const baseBranch = fromBranch || project.branch || 'main';
+    const parsed = GitHubService.parseRepoUrl(repoContext.repoUrl);
+    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
+
+    const baseBranch = fromBranch || repoContext.branch;
     const result = await GitHubService.createBranch({
       userId: req.user!.id,
       owner: parsed.owner,
@@ -1199,20 +1200,26 @@ router.post('/projects/:id/github/branch', requireAuth, requireProjectOwner, asy
       newBranch: newBranch.trim(),
       fromBranch: baseBranch,
     });
-
-    if (!result.success) {
-      return res.status(400).json({ error: result.error });
-    }
+    if (!result.success) return res.status(400).json({ error: result.error });
 
     const now = new Date().toISOString();
-    db.prepare('UPDATE projects SET branch = ?, updated_at = ? WHERE id = ?').run(newBranch.trim(), now, req.params.id);
     db.prepare('UPDATE branches SET is_current = 0 WHERE project_id = ?').run(req.params.id);
-    db.prepare(`
-      INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
-      VALUES (?, ?, ?, 1, ?, ?)
-    `).run('br-' + Date.now(), req.params.id, newBranch.trim(), result.baseSha || null, now);
+    const existing = db.prepare('SELECT id FROM branches WHERE project_id=? AND name=?').get(req.params.id,newBranch.trim()) as {id:string}|undefined;
+    if (existing) {
+      db.prepare('UPDATE branches SET is_current=1,head_commit_hash=? WHERE id=?')
+        .run(result.baseSha || null, existing.id);
+    } else {
+      db.prepare(`
+        INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
+        VALUES (?, ?, ?, 1, ?, ?)
+      `).run('br-' + Date.now(), req.params.id, newBranch.trim(), result.baseSha || null, now);
+    }
 
-    res.json({ success: true, branch: newBranch.trim() });
+    // Legacy mirror only; branches remains canonical until projects.branch is removed by migration.
+    db.prepare('UPDATE projects SET branch = ?, updated_at = ? WHERE id = ?').run(newBranch.trim(), now, req.params.id);
+    upsertRepository(req.params.id, repoContext.repoUrl, newBranch.trim());
+
+    res.json({ success: true, branch: newBranch.trim(), baseSha: result.baseSha });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
