@@ -115,9 +115,16 @@ test('invalid integration config does not overwrite a saved secret',()=>{
   assert.equal(IntegrationService.read(a,'cloudflare').accountId,'account456');
   assert.throws(()=>IntegrationService.save(a,'firebase',{serviceAccount:'{}'}));
 });
-test('unknown credentials are not reported as connected just because they contain characters',async()=>{
-  const result=await SecretService.testConnection(a,'unimplemented-service',{apiKey:'long-arbitrary-value'});
+test('unknown provider configuration is never reported as connected just because a key has characters',async()=>{
+  const result=await LLMAdapterService.testConnection({
+    providerKey:'unimplemented-service',
+    apiKey:'long-arbitrary-value',
+    baseUrl:'not-a-valid-url',
+    modelId:'unknown-model',
+    userId:a,
+  });
   assert.equal(result.success,false);
+  assert.equal(result.status,'invalid_url');
 });
 test('Firebase login rejects missing token without network request',async()=>{
   await assert.rejects(()=>verifyFirebaseIdentity(undefined),/Token/);
