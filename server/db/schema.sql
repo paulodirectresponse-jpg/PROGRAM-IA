@@ -123,14 +123,42 @@ CREATE TABLE IF NOT EXISTS plans (
   objective TEXT NOT NULL,
   scope_in TEXT NOT NULL,
   scope_out TEXT NOT NULL,
+  architecture_summary TEXT NOT NULL DEFAULT '',
+  existing_files_json TEXT NOT NULL DEFAULT '[]',
+  new_files_json TEXT NOT NULL DEFAULT '[]',
+  files_to_delete_json TEXT NOT NULL DEFAULT '[]',
   files_affected_json TEXT NOT NULL,
   integrations_json TEXT,
   risks_json TEXT,
   acceptance_criteria_json TEXT NOT NULL,
+  requirements_json TEXT NOT NULL DEFAULT '[]',
+  task_graph_json TEXT NOT NULL DEFAULT '[]',
   status TEXT DEFAULT 'draft', -- 'draft', 'approved', 'rejected'
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- 11b. requirement ledger
+CREATE TABLE IF NOT EXISTS requirements (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  conversation_id TEXT,
+  run_id TEXT,
+  plan_id TEXT,
+  requirement_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  priority TEXT NOT NULL DEFAULT 'high',
+  status TEXT NOT NULL DEFAULT 'pending',
+  verification_json TEXT NOT NULL DEFAULT '[]',
+  files_json TEXT NOT NULL DEFAULT '[]',
+  evidence_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(project_id, plan_id, requirement_key)
+);
+CREATE INDEX IF NOT EXISTS idx_requirements_project_status ON requirements(project_id,status);
+CREATE INDEX IF NOT EXISTS idx_requirements_run ON requirements(run_id);
 
 -- 12. skills
 CREATE TABLE IF NOT EXISTS skills (
