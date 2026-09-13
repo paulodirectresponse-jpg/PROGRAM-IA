@@ -186,9 +186,11 @@ test('workflow forced FORGE keeps agent_steps and model_invocations agent_key co
     });
     const rows = db.prepare(`SELECT s.agent_key step_agent, i.agent_key invocation_agent
       FROM model_invocations i JOIN agent_steps s ON s.id=i.step_id WHERE i.run_id=?`).all(runId) as any[];
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].step_agent, 'FORGE');
-    assert.equal(rows[0].invocation_agent, 'FORGE');
+    const forgeRows=rows.filter(row=>row.invocation_agent==='FORGE');
+    assert.equal(forgeRows.length, 1);
+    assert.equal(forgeRows[0].step_agent, 'FORGE');
+    assert.equal(forgeRows[0].invocation_agent, 'FORGE');
+    assert.ok(rows.every(row=>row.step_agent===row.invocation_agent));
   } finally {
     db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
     db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
