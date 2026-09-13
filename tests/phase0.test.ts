@@ -84,7 +84,7 @@ test('phase0 atomic builder emits live progress for every generated file', async
     requestedFiles:files,
     objective:'Construir produtos',
     acceptanceCriteria:['Cadastro funcional'],
-    onProgress:(event)=>events.push(event),
+    onProgress:(event)=>{ events.push(event); },
   });
   assert.equal(result.hasErrors,false);
   assert.equal(result.build?.files.length,3);
