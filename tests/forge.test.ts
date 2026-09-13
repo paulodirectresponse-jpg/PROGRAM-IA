@@ -431,6 +431,35 @@ Criar API segura
       assert.deepEqual(plan.risks, ['Dados financeiros incorretos']);
       assert.equal(plan.acceptance_criteria.length, 2);
     });
+
+    test('4.10: Build aceita aliases comuns de modelos gratuitos', () => {
+      const structured = `\`\`\`json
+{
+  "build": {
+    "summary": "Dashboard",
+    "files": {
+      "index.html": {
+        "operation": "update",
+        "code": "<html><body>Dashboard</body></html>"
+      }
+    }
+  }
+}
+\`\`\``;
+
+      const parsed = (LLMAdapterService as any).parseLLMResponse(
+        structured,
+        'build',
+        'OmniRoute (Free Pool)',
+        'auto',
+        { 'index.html': '<html><body>Original</body></html>' }
+      );
+      assert.equal(parsed.decisionType, 'change');
+      assert.equal(parsed.hasErrors, false);
+      assert.equal(parsed.build.files.length, 1);
+      assert.equal(parsed.build.files[0].path, 'index.html');
+      assert.match(parsed.build.files[0].content, /Dashboard/);
+    });
   });
 
   // =========================================================================
