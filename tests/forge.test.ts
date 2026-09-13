@@ -665,6 +665,48 @@ Criar API segura
       }
     });
     });
+
+
+    test('4.17: Erro terminal de provider interrompe build atômico sem repetir arquivos', async () => {
+      const original = LLMAdapterService.executePrompt;
+      let calls = 0;
+      LLMAdapterService.executePrompt = async () => {
+        calls += 1;
+        return {
+          replyText: 'Provider recusou autenticação.',
+          mode: 'build',
+          decisionType: 'invalid_response',
+          isDemonstrativeFallback: false,
+          providerUsed: 'Provider teste',
+          modelUsed: 'modelo',
+          hasErrors: true,
+          invalidResponse: true,
+          errorReason: 'invalid_key',
+          errorMessage: 'Chave inválida',
+        } as any;
+      };
+
+      try {
+        const result = await LLMAdapterService.buildApprovedPlanReliably({
+          projectId: 'terminal-provider-test',
+          providerKey: 'omniroute',
+          modelId: 'auto',
+          userId: 'user-test',
+          existingFiles: {
+            'src/App.tsx': 'export default function App(){ return <main>OLD</main> }',
+            'src/index.css': 'body { margin: 0; }',
+          },
+          requestedFiles: ['src/App.tsx', 'src/index.css'],
+          objective: 'Atualizar interface',
+        });
+        assert.equal(calls, 1);
+        assert.equal(result.hasErrors, true);
+        assert.equal(result.errorReason, 'terminal_provider_error');
+        assert.equal(result.diagnostics?.attempts, 1);
+      } finally {
+        LLMAdapterService.executePrompt = original;
+      }
+    });
   });
 
   // =========================================================================
