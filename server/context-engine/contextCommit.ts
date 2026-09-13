@@ -30,7 +30,7 @@ export class ContextCommitService {
       id,project_id,run_id,task_id,agent_key,scope,task,decisions_json,changed_files_json,
       requirement_ids_json,validation_json,blockers_json,next_state_json,created_at
     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      record.id,record.projectId,record.runId,record.taskId,record.agentKey,record.scope,record.task,
+      record.id,record.projectId,record.runId ?? null,record.taskId ?? null,record.agentKey ?? null,record.scope ?? 'TASK',record.task,
       JSON.stringify(record.decisions),JSON.stringify(record.changedFiles),JSON.stringify(record.requirementIds),
       JSON.stringify(record.validation),JSON.stringify(record.blockers),JSON.stringify(record.nextState),record.createdAt
     );
