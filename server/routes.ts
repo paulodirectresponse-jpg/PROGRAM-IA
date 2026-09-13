@@ -1310,6 +1310,136 @@ router.post('/conversations/:projectId/abort', requireAuth, requireProjectOwner,
   res.json({ success: true });
 });
 
+router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res: Response) => {
+  const run = db.prepare('SELECT * FROM agent_runs WHERE id=? AND user_id=?').get(req.params.runId, req.user!.id) as any;
+  if (!run) return res.status(404).json({ error: 'Execução não encontrada.' });
+  if (!['failed','aborted'].includes(run.status)) {
+    return res.status(409).json({ error: `Esta execução não pode ser continuada no estado atual (${run.status}).` });
+  }
+  if (!['build','auto'].includes(run.mode)) {
+    return res.status(409).json({ error: 'Continuação por etapa está disponível apenas para fluxos de construção.' });
+  }
+  if (activeProjects.has(run.project_id)) {
+    return res.status(409).json({ error: 'Já há uma execução ativa neste projeto.' });
+  }
+
+  const trace = RunService.trace(run.id) as any[];
+  const scout = [...trace].reverse().find(step => step.agent_key === 'SCOUT' && step.status === 'completed');
+  if (!scout?.context?.objective) {
+    return res.status(409).json({ error: 'Esta execução não possui contexto persistido suficiente para continuar sem recomeçar.' });
+  }
+  const studio = [...trace].reverse().find(step => step.agent_key === 'STUDIO' && step.status === 'completed');
+  const objective = String(scout.context.objective || '').trim();
+  const scoutBrief = String(scout.context.brief || '').trim();
+  const studioGuidance = String(studio?.context?.guidance || '').trim();
+
+  activeProjects.add(run.project_id);
+  const controller = new AbortController();
+  activeProjectControllers.set(run.project_id, controller);
+  RunService.resume(run.id);
+
+  try {
+    const existingFiles = WorkspaceManager.getAllFilesContent(run.project_id);
+    const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id=? ORDER BY created_at DESC, rowid DESC LIMIT 20')
+      .all(run.conversation_id).reverse() as any[];
+    const forge = RunService.createStep(
+      run.id,
+      'FORGE',
+      'Continuar proposta de código a partir do progresso salvo',
+      undefined,
+      'local',
+      RunService.context('local', {
+        objective,
+        acceptanceCriteria: ['Continuar sem repetir etapas já concluídas', 'Gerar alteração concreta e revisável'],
+        snippets: Object.entries(existingFiles).slice(0,10).map(([file,content])=>({file,content:String(content).slice(0,6000)})),
+        previousAttempt: 'SCOUT/STUDIO preservados; retomada iniciada no FORGE.',
+        constraints: ['Não refazer SCOUT/STUDIO concluídos', 'Não aplicar definitivamente antes da aprovação'],
+      })
+    );
+
+    const prompt = [
+      objective,
+      scoutBrief ? 'BRIEF SALVO DO SCOUT:\n' + scoutBrief : '',
+      studioGuidance ? 'CRITÉRIOS SALVOS DO STUDIO:\n' + studioGuidance : '',
+      'CONTINUAÇÃO: retome a partir do FORGE. Não repita as etapas já concluídas.',
+    ].filter(Boolean).join('\n\n');
+
+    let result = await AgentEngine.execute({
+      prompt,
+      mode: 'build',
+      projectId: run.project_id,
+      existingFiles,
+      appliedSkills: [],
+      conversationHistory: history,
+      userId: req.user!.id,
+      runId: run.id,
+      stepId: forge,
+      signal: controller.signal,
+    }, { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true });
+
+    RunService.finishStep(forge, result.hasErrors ? 'failed' : 'completed', {
+      continuedFromRunId: run.id,
+      providerUsed: result.providerUsed,
+      modelUsed: result.modelUsed,
+      profileKey: result.profileKey,
+      files: result.build?.files?.map((file:any)=>file.path) || result.proposal?.files?.map((file:any)=>file.path) || [],
+    });
+
+    if (result.build?.files?.length && !result.proposal && !result.isDemonstrativeFallback && !result.hasErrors) {
+      result.proposal = {
+        id: `proposal-${crypto.randomUUID()}`,
+        summary: result.build.summary || 'Continuação da construção',
+        requiresConfirmation: true,
+        files: result.build.files,
+        status: 'pending',
+      };
+    }
+
+    if (result.hasErrors || result.invalidResponse || !result.proposal?.files?.length) {
+      const sentinel = RunService.createStep(run.id,'SENTINEL','Diagnosticar falha após continuação',undefined,'micro',
+        RunService.context('micro',{objective:'Diagnosticar a falha da continuação',errors:[result.errorMessage || result.errorReason || 'Resposta inválida']}));
+      RunService.finishStep(sentinel,'completed');
+      RunService.finish(run.id, forge, 'failed');
+      return res.status(422).json({ success:false, error: result.errorMessage || result.errorReason || 'A continuação não produziu uma proposta válida.', runId:run.id, trace:RunService.trace(run.id) });
+    }
+
+    const sentinel = RunService.createStep(run.id,'SENTINEL','Aguardar aplicação para executar quality gates',undefined,'micro',{
+      status:'pending_user_apply', validator:'ValidatorEngine', continued:true,
+    });
+    RunService.finishStep(sentinel,'completed');
+    RunService.waitForApproval(run.id);
+
+    const now = new Date().toISOString();
+    const msgId = `msg-agent-${Date.now()}`;
+    const metadata = {
+      mode:'build',
+      decisionType:result.decisionType,
+      providerUsed:result.providerUsed,
+      modelUsed:result.modelUsed,
+      proposal:result.proposal,
+      filesAffected:result.proposal.files.map((file:any)=>file.path),
+      hasErrors:false,
+      runId:run.id,
+      executionType:'agent_engine_continuation',
+      agentKey:'FORGE',
+      profileKey:result.profileKey,
+      workflow:{runId:run.id,status:'waiting_approval',steps:RunService.trace(run.id).map((s:any)=>s.id),trace:RunService.trace(run.id),continued:true},
+    };
+    db.prepare(`INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)`)
+      .run(msgId, run.conversation_id, result.replyText || 'Continuação concluída. Revise a proposta antes de aplicar.', JSON.stringify(metadata), now);
+
+    return res.json({success:true,runId:run.id,proposal:result.proposal,agentMessage:{id:msgId,conversation_id:run.conversation_id,sender:'agent',content:result.replyText || 'Continuação concluída.',metadata,created_at:now},trace:RunService.trace(run.id)});
+  } catch (err:any) {
+    const lastStep = (RunService.trace(run.id) as any[]).slice(-1)[0];
+    if (lastStep?.status === 'running') RunService.finishStep(lastStep.id, controller.signal.aborted ? 'aborted' : 'failed', {error:String(err?.message||err)});
+    RunService.finish(run.id, lastStep?.id || '', controller.signal.aborted ? 'aborted' : 'failed');
+    return res.status(controller.signal.aborted ? 499 : 500).json({error:controller.signal.aborted?'Continuação cancelada.':String(err?.message||err||'Falha ao continuar a execução.'),runId:run.id,trace:RunService.trace(run.id)});
+  } finally {
+    activeProjects.delete(run.project_id);
+    activeProjectControllers.delete(run.project_id);
+  }
+});
+
 router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   const projectId = req.params.projectId;
   let rollbackCheckpointId: string | null = null;
