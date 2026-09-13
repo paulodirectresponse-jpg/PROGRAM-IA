@@ -26,7 +26,7 @@ function ensureUserWorkspace(userId: string) {
   const existing = db.prepare('SELECT id FROM workspaces WHERE id = ?').get(id) as { id: string } | undefined;
   if (!existing) {
     db.prepare('INSERT INTO workspaces (id, user_id, name, root_path, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(id, userId, 'Workspace do usu�rio', `/workspace/${userId}`, new Date().toISOString());
+      .run(id, userId, 'Workspace do usuário', `/workspace/${userId}`, new Date().toISOString());
   }
   return id;
 }
@@ -90,7 +90,7 @@ function sessionAuthMiddleware(req: Request, res: Response, next: NextFunction) 
  */
 function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!req.user) {
-    return res.status(401).json({ error: 'Não autenticado. Faça login para acessar este recurso.' });
+    return res.status(401).json({ error: 'NÃ£o autenticado. FaÃ§a login para acessar este recurso.' });
   }
   next();
 }
@@ -107,7 +107,7 @@ function csrfProtection(req: Request, res: Response, next: NextFunction) {
       const csrfHeader = req.headers['x-csrf-token'];
       const sameOrigin = req.headers['sec-fetch-site']==='same-origin' && (!req.headers.origin || new URL(req.headers.origin).host===req.headers.host);
       if (!sameOrigin && (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader)) {
-        return res.status(403).json({ error: 'Falha de validação CSRF (token inválido).' });
+        return res.status(403).json({ error: 'Falha de validaÃ§Ã£o CSRF (token invÃ¡lido).' });
       }
     }
   }
@@ -122,16 +122,16 @@ function requireProjectOwner(req: Request, res: Response, next: NextFunction) {
   if (!projectId) return next();
 
   if (!req.user) {
-    return res.status(401).json({ error: 'Não autenticado.' });
+    return res.status(401).json({ error: 'NÃ£o autenticado.' });
   }
 
   const project = db.prepare('SELECT user_id FROM projects WHERE id = ?').get(projectId) as { user_id?: string } | undefined;
   if (!project) {
-    return res.status(404).json({ error: 'Projeto não encontrado.' });
+    return res.status(404).json({ error: 'Projeto nÃ£o encontrado.' });
   }
 
   if (project.user_id !== req.user.id) {
-    return res.status(403).json({ error: 'Este projeto pertence a outro usuário.' });
+    return res.status(403).json({ error: 'Este projeto pertence a outro usuÃ¡rio.' });
   }
 
   next();
@@ -200,11 +200,11 @@ router.post('/sync/pull',requireAuth,async(req,res)=>{try{const direct=await Clo
 
 router.get('/integrations', requireAuth, (req, res) => {
   try { res.json({integrations: Object.keys(integrationFields).map(key => IntegrationService.summary(req.user!.id, key))}); }
-  catch { res.status(500).json({error:'Não foi possível carregar integrações.'}); }
+  catch { res.status(500).json({error:'NÃ£o foi possÃ­vel carregar integraÃ§Ãµes.'}); }
 });
 router.put('/integrations/:service', requireAuth, (req, res) => {
   try { res.json(IntegrationService.save(req.user!.id, req.params.service, req.body.fields || {})); }
-  catch { res.status(400).json({error:'Configuração inválida. Confira os campos e o JSON da conta de serviço.'}); }
+  catch { res.status(400).json({error:'ConfiguraÃ§Ã£o invÃ¡lida. Confira os campos e o JSON da conta de serviÃ§o.'}); }
 });
 router.post('/integrations/:service/test', requireAuth, async (req, res) => {
   try { res.json(await IntegrationService.test(req.user!.id, req.params.service)); }
@@ -239,7 +239,7 @@ router.post('/secrets', requireAuth, (req: Request, res: Response) => {
   try {
     const { providerKey, secretValue } = req.body;
     if (!providerKey || !secretValue) {
-      return res.status(400).json({ error: 'Provedor e valor da chave são obrigatórios.' });
+      return res.status(400).json({ error: 'Provedor e valor da chave sÃ£o obrigatÃ³rios.' });
     }
 
     SecretService.saveSecret(req.user!.id, providerKey, secretValue);
@@ -255,7 +255,7 @@ router.post('/secrets/test', requireAuth, async (req: Request, res: Response) =>
   try {
     const { providerKey, secretValue, baseUrl, modelId } = req.body;
     if (!providerKey) {
-      return res.status(400).json({ error: 'Provedor é obrigatório para teste.' });
+      return res.status(400).json({ error: 'Provedor Ã© obrigatÃ³rio para teste.' });
     }
 
     const result = await SecretService.testConnection(req.user!.id, providerKey, {
@@ -269,7 +269,7 @@ router.post('/secrets/test', requireAuth, async (req: Request, res: Response) =>
     res.status(500).json({
       success: false,
       code: 'network_error',
-      message: `Erro interno ao testar conexão: ${err.message}`,
+      message: `Erro interno ao testar conexÃ£o: ${err.message}`,
     });
   }
 });
@@ -300,7 +300,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
   try {
     const { name, description, origin = 'novo', repo_url = '', branch = 'main', initialFiles = {}, zipData = '' } = req.body;
     if (!name || name.trim().length === 0) {
-      return res.status(400).json({ error: 'O nome do projeto é obrigatório.' });
+      return res.status(400).json({ error: 'O nome do projeto Ã© obrigatÃ³rio.' });
     }
 
     const projectId = 'proj-' + Date.now();
@@ -312,13 +312,13 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
     // 1. GITHUB REPOSITORY IMPORT
     if (origin === 'github') {
       if (!repo_url || repo_url.trim().length === 0) {
-        return res.status(400).json({ error: 'URL do repositório GitHub é obrigatória para importação.' });
+        return res.status(400).json({ error: 'URL do repositÃ³rio GitHub Ã© obrigatÃ³ria para importaÃ§Ã£o.' });
       }
 
       const parsed = GitHubService.parseRepoUrl(repo_url);
       if (!parsed) {
         return res.status(400).json({
-          error: 'URL do GitHub inválida. Formatos aceitos: https://github.com/usuario/repo ou usuario/repo',
+          error: 'URL do GitHub invÃ¡lida. Formatos aceitos: https://github.com/usuario/repo ou usuario/repo',
         });
       }
 
@@ -326,7 +326,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       const importResult = await GitHubService.importRepoFiles(parsed.owner, parsed.repo, effectiveBranch, userId);
       if (!importResult.success) {
         return res.status(400).json({
-          error: importResult.error || 'Falha ao importar arquivos do repositório especificado.',
+          error: importResult.error || 'Falha ao importar arquivos do repositÃ³rio especificado.',
         });
       }
 
@@ -338,24 +338,23 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, NULL, ?, ?)
       `).run(projectId, userId, workspaceId, name.trim(), description || `Importado de ${repo_url}`, origin, repo_url.trim(), effectiveBranch, now, now);
 
-      // Write text files
+      // GitHub paths are already relative to repository root; never strip a common first directory.
       if (importResult.files) {
-        for (const [filePath, content] of Object.entries(WorkspaceManager.normalizeImportedFiles(importResult.files))) {
+        for (const [filePath, content] of Object.entries(importResult.files)) {
           WorkspaceManager.writeFile(projectId, filePath, content);
         }
       }
 
-      // Write binary assets (images, fonts)
       if (importResult.binaryFiles) {
-        for (const [filePath, buf] of Object.entries(WorkspaceManager.normalizeImportedFiles(importResult.binaryFiles))) {
+        for (const [filePath, buf] of Object.entries(importResult.binaryFiles)) {
           WorkspaceManager.writeBinaryFile(projectId, filePath, buf);
         }
       }
 
       db.prepare(`
         INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
-        VALUES (?, ?, ?, 1, 'head-import', ?)
-      `).run('br-' + Date.now(), projectId, effectiveBranch, now);
+        VALUES (?, ?, ?, 1, ?, ?)
+      `).run('br-' + Date.now(), projectId, effectiveBranch, importResult.headSha || null, now);
       upsertRepository(projectId, repo_url.trim(), effectiveBranch);
 
       const convId = 'conv-' + Date.now();
@@ -370,12 +369,12 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       `).run(
         'msg-' + Date.now(),
         convId,
-        `Repositório **${parsed.owner}/${parsed.repo}** importado com sucesso!\n\nForam carregados **${importResult.filesCount || 0} arquivos** no workspace. Estou pronto para analisar e implementar o que você precisar.`,
+        `RepositÃ³rio **${parsed.owner}/${parsed.repo}** importado com sucesso!\n\nForam carregados **${importResult.filesCount || 0} arquivos** no workspace. Estou pronto para analisar e implementar o que vocÃª precisar.`,
         JSON.stringify({ isWelcome: true, mode: 'auto' }),
         now
       );
 
-      WorkspaceManager.createCheckpoint(projectId, 'Importação do GitHub', `Importado de ${parsed.owner}/${parsed.repo}`);
+      WorkspaceManager.createCheckpoint(projectId, 'ImportaÃ§Ã£o do GitHub', `Importado de ${parsed.owner}/${parsed.repo}`);
       return res.json(projectResponse(projectId, userId));
     }
 
@@ -390,7 +389,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       let importedCount = 0;
       if (zipData) {
         const encoded = String(zipData);
-        if (!/^[A-Za-z0-9+/=]+$/.test(encoded) || encoded.length > 36_000_000) throw new Error('Arquivo ZIP inválido ou acima do limite permitido.');
+        if (!/^[A-Za-z0-9+/=]+$/.test(encoded) || encoded.length > 36_000_000) throw new Error('Arquivo ZIP invÃ¡lido ou acima do limite permitido.');
         importedCount = (await WorkspaceManager.importZip(projectId, Buffer.from(encoded, 'base64'))).fileCount;
       } else {
         const normalizedInitialFiles = WorkspaceManager.normalizeImportedFiles(initialFiles as Record<string,string>);
@@ -402,7 +401,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 
       db.prepare(`
         INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
-        VALUES (?, ?, 'main', 1, 'head-zip', ?)
+        VALUES (?, ?, 'main', 1, NULL, ?)
       `).run('br-' + Date.now(), projectId, now);
 
       const convId = 'conv-' + Date.now();
@@ -417,12 +416,12 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       `).run(
         'msg-' + Date.now(),
         convId,
-        `Arquivo **${name}** extraído com sucesso!\n\nForam criados **${importedCount} arquivos** no workspace.`,
+        `Arquivo **${name}** extraÃ­do com sucesso!\n\nForam criados **${importedCount} arquivos** no workspace.`,
         JSON.stringify({ isWelcome: true, mode: 'auto' }),
         now
       );
 
-      if (!zipData) WorkspaceManager.createCheckpoint(projectId, 'Importação de Arquivo ZIP', `Extração de ${importedCount} arquivos`);
+      if (!zipData) WorkspaceManager.createCheckpoint(projectId, 'ImportaÃ§Ã£o de Arquivo ZIP', `ExtraÃ§Ã£o de ${importedCount} arquivos`);
       return res.json(projectResponse(projectId, userId));
     }
 
@@ -435,7 +434,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 
     db.prepare(`
       INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
-      VALUES (?, ?, 'main', 1, 'head-init', ?)
+      VALUES (?, ?, 'main', 1, NULL, ?)
     `).run('br-' + Date.now(), projectId, now);
 
     const convId = 'conv-' + Date.now();
@@ -450,7 +449,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
     `).run(
       'msg-' + Date.now(),
       convId,
-      `Projeto **${name}** pronto!\n\nEstou operando no modo **Automático**. Diga o que deseja construir, modificar ou entender.`,
+      `Projeto **${name}** pronto!\n\nEstou operando no modo **AutomÃ¡tico**. Diga o que deseja construir, modificar ou entender.`,
       JSON.stringify({ isWelcome: true, mode: 'auto' }),
       now
     );
@@ -461,7 +460,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${starterTitle} — Live Preview</title>
+  <title>${starterTitle} â Live Preview</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
@@ -471,15 +470,15 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 <body class="p-6 md:p-8 min-h-screen flex flex-col justify-between">
   <div class="max-w-3xl mx-auto w-full space-y-6">
     <div class="border-b border-slate-800 pb-4">
-      <span class="text-xs font-mono text-cyan-400">Sandbox Preview • Forge Agent</span>
+      <span class="text-xs font-mono text-cyan-400">Sandbox Preview â¢ Forge Agent</span>
       <h1 class="text-2xl font-bold mt-1 text-slate-100">${starterTitle}</h1>
       <p class="text-xs text-slate-400 mt-1">${description || 'Projeto criado com sucesso. Converse com o agente para construir telas e fluxos.'}</p>
     </div>
     <div class="p-6 rounded-xl bg-slate-900/90 border border-slate-800 text-center space-y-3">
-      <div class="w-10 h-10 rounded-full bg-cyan-950/80 border border-cyan-700/60 text-cyan-400 mx-auto flex items-center justify-center font-bold">✓</div>
-      <h2 class="text-base font-semibold text-slate-200">Workspace Pronto para Iterações</h2>
+      <div class="w-10 h-10 rounded-full bg-cyan-950/80 border border-cyan-700/60 text-cyan-400 mx-auto flex items-center justify-center font-bold">â</div>
+      <h2 class="text-base font-semibold text-slate-200">Workspace Pronto para IteraÃ§Ãµes</h2>
       <p class="text-xs text-slate-400 max-w-md mx-auto">
-        Envie sua instrução no painel ao lado. Seus arquivos serão atualizados e renderizados aqui em tempo real.
+        Envie sua instruÃ§Ã£o no painel ao lado. Seus arquivos serÃ£o atualizados e renderizados aqui em tempo real.
       </p>
     </div>
   </div>
@@ -488,7 +487,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 </html>`;
 
     WorkspaceManager.writeFile(projectId, 'index.html', initialHtml);
-    WorkspaceManager.createCheckpoint(projectId, 'Criação do Projeto', 'Setup inicial do workspace');
+    WorkspaceManager.createCheckpoint(projectId, 'CriaÃ§Ã£o do Projeto', 'Setup inicial do workspace');
 
     res.json(projectResponse(projectId, userId));
   } catch (err: any) {
@@ -537,7 +536,7 @@ router.delete('/projects/:id', requireAuth, requireProjectOwner, (req: Request, 
     // 7. Delete project row from SQLite
     db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
 
-    res.json({ success: true, message: 'Projeto excluído com sucesso.' });
+    res.json({ success: true, message: 'Projeto excluÃ­do com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -549,7 +548,7 @@ router.post('/projects/:id/duplicate', requireAuth, requireProjectOwner, (req: R
     const source = db.prepare('SELECT * FROM projects WHERE id = ?').get(sourceId) as any;
     const newId = 'proj-' + Date.now();
     const now = new Date().toISOString();
-    const newName = `${source.name} (Cópia)`;
+    const newName = `${source.name} (CÃ³pia)`;
 
     const workspaceId = ensureUserWorkspace(req.user!.id);
 
@@ -574,10 +573,12 @@ router.post('/projects/:id/duplicate', requireAuth, requireProjectOwner, (req: R
 
     WorkspaceManager.duplicateProject(sourceId, newId);
 
+    const sourceBranch = db.prepare('SELECT head_commit_hash FROM branches WHERE project_id = ? AND name = ? LIMIT 1').get(sourceId, source.branch || 'main') as {head_commit_hash?:string}|undefined;
     db.prepare(`
       INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
-      VALUES (?, ?, ?, 1, 'head-dup', ?)
-    `).run('br-' + Date.now(), newId, source.branch || 'main', now);
+      VALUES (?, ?, ?, 1, ?, ?)
+    `).run('br-' + Date.now(), newId, source.branch || 'main', sourceBranch?.head_commit_hash || null, now);
+    if (source.repo_url) upsertRepository(newId, source.repo_url, source.branch || 'main');
 
     const convId = 'conv-' + Date.now();
     db.prepare(`
@@ -596,7 +597,7 @@ router.post('/projects/:id/duplicate', requireAuth, requireProjectOwner, (req: R
       now
     );
 
-    WorkspaceManager.createCheckpoint(newId, 'Duplicação do Projeto', `Cópia criada a partir de ${source.name}`);
+    WorkspaceManager.createCheckpoint(newId, 'DuplicaÃ§Ã£o do Projeto', `CÃ³pia criada a partir de ${source.name}`);
     res.json({ success: true, projectId: newId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -634,17 +635,17 @@ router.get('/projects/:id/files', requireAuth, requireProjectOwner, (req: Reques
 router.get('/projects/:id/files/content', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   try {
     const filePath = req.query.path as string;
-    if (!filePath) return res.status(400).json({ error: 'Parâmetro path ausente.' });
+    if (!filePath) return res.status(400).json({ error: 'ParÃ¢metro path ausente.' });
 
     if (WorkspaceManager.isBinaryPath(filePath)) {
       const buffer = WorkspaceManager.readBinaryFile(req.params.id, filePath);
-      if (buffer === null) return res.status(404).json({ error: 'Arquivo não encontrado.' });
+      if (buffer === null) return res.status(404).json({ error: 'Arquivo nÃ£o encontrado.' });
       return res.json({ path: filePath, isBinary: true, base64: buffer.toString('base64') });
     }
 
     const content = WorkspaceManager.readFile(req.params.id, filePath);
     if (content === null) {
-      return res.status(404).json({ error: 'Arquivo não encontrado.' });
+      return res.status(404).json({ error: 'Arquivo nÃ£o encontrado.' });
     }
     res.json({ path: filePath, isBinary: false, content });
   } catch (err: any) {
@@ -656,10 +657,10 @@ router.post('/projects/:id/files', requireAuth, requireProjectOwner, (req: Reque
   try {
     const { path: filePath, content } = req.body;
     if (!filePath || content === undefined) {
-      return res.status(400).json({ error: 'Campos path e content são obrigatórios.' });
+      return res.status(400).json({ error: 'Campos path e content sÃ£o obrigatÃ³rios.' });
     }
     WorkspaceManager.writeFile(req.params.id, filePath, content);
-    const cpId = WorkspaceManager.createCheckpoint(req.params.id, `Edição manual: ${filePath}`);
+    const cpId = WorkspaceManager.createCheckpoint(req.params.id, `EdiÃ§Ã£o manual: ${filePath}`);
     res.json({ success: true, checkpointId: cpId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -679,12 +680,12 @@ router.post('/projects/:id/checkpoints', requireAuth, requireProjectOwner, (req:
   try {
     const { title, description } = req.body;
     if (!title || title.trim().length === 0) {
-      return res.status(400).json({ error: 'O nome da versão (o que foi alterado nesta atualização) é obrigatório.' });
+      return res.status(400).json({ error: 'O nome da versÃ£o (o que foi alterado nesta atualizaÃ§Ã£o) Ã© obrigatÃ³rio.' });
     }
 
     const cpId = WorkspaceManager.createCheckpoint(req.params.id, title.trim(), description?.trim() || '');
     const cp = db.prepare('SELECT id, title, description, parent_id, created_at FROM checkpoints WHERE id = ?').get(cpId);
-    res.json({ success: true, checkpoint: cp, message: `Versão "${title.trim()}" criada com sucesso.` });
+    res.json({ success: true, checkpoint: cp, message: `VersÃ£o "${title.trim()}" criada com sucesso.` });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -694,18 +695,18 @@ router.post('/projects/:id/checkpoints/rollback-previous', requireAuth, requireP
   try {
     const checkpoints = db.prepare('SELECT id, title, description, created_at FROM checkpoints WHERE project_id = ? ORDER BY created_at DESC LIMIT 2').all(req.params.id) as any[];
     if (checkpoints.length < 2) {
-      return res.status(400).json({ error: 'Não há versão anterior registrada para restaurar neste projeto.' });
+      return res.status(400).json({ error: 'NÃ£o hÃ¡ versÃ£o anterior registrada para restaurar neste projeto.' });
     }
 
     const previousCheckpoint = checkpoints[1];
     const success = WorkspaceManager.restoreCheckpoint(req.params.id, previousCheckpoint.id);
     if (!success) {
-      return res.status(500).json({ error: 'Falha ao restaurar arquivos da versão anterior.' });
+      return res.status(500).json({ error: 'Falha ao restaurar arquivos da versÃ£o anterior.' });
     }
 
     res.json({
       success: true,
-      message: `Versão anterior "${previousCheckpoint.title}" restaurada com sucesso!`,
+      message: `VersÃ£o anterior "${previousCheckpoint.title}" restaurada com sucesso!`,
       restoredCheckpoint: previousCheckpoint,
     });
   } catch (err: any) {
@@ -717,7 +718,7 @@ router.post('/projects/:id/checkpoints/:checkpointId/restore', requireAuth, requ
   try {
     const success = WorkspaceManager.restoreCheckpoint(req.params.id, req.params.checkpointId);
     if (!success) {
-      return res.status(404).json({ error: 'Checkpoint não encontrado.' });
+      return res.status(404).json({ error: 'Checkpoint nÃ£o encontrado.' });
     }
     res.json({ success: true, message: 'Checkpoint restaurado com sucesso.' });
   } catch (err: any) {
@@ -742,7 +743,7 @@ router.get('/conversations/:projectId', requireAuth, requireProjectOwner, (req: 
   try {
     const conversation = db.prepare('SELECT * FROM conversations WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(req.params.projectId) as any;
     if (!conversation) {
-      return res.status(404).json({ error: 'Conversa não encontrada.' });
+      return res.status(404).json({ error: 'Conversa nÃ£o encontrada.' });
     }
 
     const messages = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC').all(conversation.id);
@@ -755,7 +756,7 @@ router.get('/conversations/:projectId', requireAuth, requireProjectOwner, (req: 
 });
 
 router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
-  if (activeProjects.has(req.params.projectId)) return res.status(409).json({error:'Já há uma execução neste projeto. Aguarde ou cancele antes de enviar outro pedido.'});
+  if (activeProjects.has(req.params.projectId)) return res.status(409).json({error:'JÃ¡ hÃ¡ uma execuÃ§Ã£o neste projeto. Aguarde ou cancele antes de enviar outro pedido.'});
   activeProjects.add(req.params.projectId);
   const controller = new AbortController();
   let execution: {runId:string;stepId:string}|null=null;
@@ -763,7 +764,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
   try {
     const { content, mode = 'auto', appliedSkills = [] } = req.body;
     if (!content || content.trim().length === 0) {
-      return res.status(400).json({ error: 'Conteúdo da mensagem obrigatório.' });
+      return res.status(400).json({ error: 'ConteÃºdo da mensagem obrigatÃ³rio.' });
     }
 
     const projectId = req.params.projectId;
@@ -798,14 +799,14 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oó]rio|remoto)\b|\b(github|reposit[oó]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(content);
+    const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oÃ³]rio|remoto)\b|\b(github|reposit[oÃ³]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(content);
     if(requestsGitHubPublish){
-      if(!project?.repo_url)return res.status(409).json({error:'Vincule ou crie um repositório na aba Publicar antes de enviar o projeto ao GitHub.'});
-      const parsed=GitHubService.parseRepoUrl(project.repo_url);if(!parsed)return res.status(400).json({error:'A URL do repositório vinculado é inválida.'});
+      if(!project?.repo_url)return res.status(409).json({error:'Vincule ou crie um repositÃ³rio na aba Publicar antes de enviar o projeto ao GitHub.'});
+      const parsed=GitHubService.parseRepoUrl(project.repo_url);if(!parsed)return res.status(400).json({error:'A URL do repositÃ³rio vinculado Ã© invÃ¡lida.'});
       const pushed=await GitHubService.pushFilesToRepo({userId:req.user!.id,owner:parsed.owner,repo:parsed.repo,branch:project.branch||'main',commitMessage:`Forge Agent: ${content.trim().slice(0,72)}`,files:existingFiles});
-      if(!pushed.success)return res.status(400).json({error:pushed.error||'O GitHub recusou a publicação.'});
+      if(!pushed.success)return res.status(400).json({error:pushed.error||'O GitHub recusou a publicaÃ§Ã£o.'});
       const agentMsgId='msg-agent-'+Date.now();const commitUrl=`https://github.com/${parsed.owner}/${parsed.repo}/commit/${pushed.commitSha}`;
-      const replyText=`Publicação concluída no GitHub.\n\nCommit: ${pushed.commitSha}\n${commitUrl}`;const metadata={mode,decisionType:'publish',providerUsed:'GitHub',modelUsed:'ferramenta-direta',filesAffected:Object.keys(existingFiles),github:{owner:parsed.owner,repo:parsed.repo,branch:project.branch||'main',commitSha:pushed.commitSha,commitUrl}};
+      const replyText=`PublicaÃ§Ã£o concluÃ­da no GitHub.\n\nCommit: ${pushed.commitSha}\n${commitUrl}`;const metadata={mode,decisionType:'publish',providerUsed:'GitHub',modelUsed:'ferramenta-direta',filesAffected:Object.keys(existingFiles),github:{owner:parsed.owner,repo:parsed.repo,branch:project.branch||'main',commitSha:pushed.commitSha,commitUrl}};
       db.prepare("INSERT INTO messages (id,conversation_id,sender,content,metadata_json,created_at) VALUES (?,?,'agent',?,?,?)").run(agentMsgId,conv.id,replyText,JSON.stringify(metadata),now);
       return res.json({success:true,agentMessage:{id:agentMsgId,sender:'agent',content:replyText,metadata,created_at:now},github:metadata.github});
     }
@@ -829,7 +830,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     }) : await AgentEngine.execute({prompt:content,mode:mode as AgentMode,projectId,existingFiles,appliedSkills,conversationHistory:history,userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal});
     controller.signal.throwIfAborted();
     if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
-      return res.status(409).json({error:'Os arquivos mudaram durante a revisão. Envie novamente para usar a versão atual.'});
+      return res.status(409).json({error:'Os arquivos mudaram durante a revisÃ£o. Envie novamente para usar a versÃ£o atual.'});
     }
 
     let checkpointCreatedId: string | null = null;
@@ -858,7 +859,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
 
     if (canApplyFiles && result.build?.files?.length && (mode === 'build' || mode === 'auto') && !result.proposal) {
       for (const file of result.build.files) WorkspaceManager.resolveSafePath(projectId, file.path);
-      rollbackCheckpointId=WorkspaceManager.createCheckpoint(projectId, `Antes: ${content.slice(0, 60)}`, 'Ponto de restauração antes da alteração.');
+      rollbackCheckpointId=WorkspaceManager.createCheckpoint(projectId, `Antes: ${content.slice(0, 60)}`, 'Ponto de restauraÃ§Ã£o antes da alteraÃ§Ã£o.');
     }
     if (canApplyFiles) {
       if (mode === 'build' && !result.proposal && result.build?.files && result.build.files.length > 0) {
@@ -872,7 +873,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
         checkpointCreatedId = WorkspaceManager.createCheckpoint(
           projectId,
           `Build: ${content.slice(0, 30)}...`,
-          result.build.summary || 'Alterações validadas e aplicadas no workspace'
+          result.build.summary || 'AlteraÃ§Ãµes validadas e aplicadas no workspace'
         );
       } else if (mode === 'auto' && result.build?.files && !result.proposal) {
         for (const file of result.build.files) {
@@ -885,7 +886,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
         checkpointCreatedId = WorkspaceManager.createCheckpoint(
           projectId,
           `Auto: ${content.slice(0, 30)}...`,
-          result.build.summary || 'Alterações aplicadas automaticamente'
+          result.build.summary || 'AlteraÃ§Ãµes aplicadas automaticamente'
         );
       }
     }
@@ -894,7 +895,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       if(validation.status==='failed'&&rollbackCheckpointId){
         WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);
         result.hasErrors=true;
-        result.errorMessage='A alteração foi revertida automaticamente porque uma verificação real falhou.';
+        result.errorMessage='A alteraÃ§Ã£o foi revertida automaticamente porque uma verificaÃ§Ã£o real falhou.';
         checkpointCreatedId=null;
       }
     }
@@ -974,24 +975,24 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
 
 router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
-    const { proposalId, summary = 'Alterações aprovadas pelo usuário' } = req.body;
+    const { proposalId, summary = 'AlteraÃ§Ãµes aprovadas pelo usuÃ¡rio' } = req.body;
     const projectId = req.params.projectId;
 
-    if (!proposalId) return res.status(400).json({error:'Identificador da proposta é obrigatório.'});
+    if (!proposalId) return res.status(400).json({error:'Identificador da proposta Ã© obrigatÃ³rio.'});
     const conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
     const rows=conversation?db.prepare("SELECT id,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[]:[];
     const proposalMessage=rows.find((row:any)=>{try{return JSON.parse(row.metadata_json||'{}')?.proposal?.id===proposalId;}catch{return false;}});
-    if(!proposalMessage)return res.status(404).json({error:'Proposta não encontrada nesta conversa.'});
+    if(!proposalMessage)return res.status(404).json({error:'Proposta nÃ£o encontrada nesta conversa.'});
     const metadata=JSON.parse(proposalMessage.metadata_json||'{}');
-    if(metadata.proposal?.status!=='pending')return res.status(409).json({error:`Esta proposta não está mais disponível (${metadata.proposal?.status||'estado inválido'}).`});
+    if(metadata.proposal?.status!=='pending')return res.status(409).json({error:`Esta proposta nÃ£o estÃ¡ mais disponÃ­vel (${metadata.proposal?.status||'estado invÃ¡lido'}).`});
     const files = metadata.proposal.files;
-    if (!Array.isArray(files) || files.length === 0) return res.status(409).json({error:'A proposta armazenada está vazia ou corrompida.'});
+    if (!Array.isArray(files) || files.length === 0) return res.status(409).json({error:'A proposta armazenada estÃ¡ vazia ou corrompida.'});
     metadata.proposal.status='previewing';
     db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
 
     for (const file of files) {
       WorkspaceManager.resolveSafePath(projectId, file.path);
-      if (!['create', 'update', 'delete', 'modify'].includes(file.action) || (file.action !== 'delete' && typeof file.content !== 'string')) return res.status(400).json({error:'Arquivo proposto inválido.'});
+      if (!['create', 'update', 'delete', 'modify'].includes(file.action) || (file.action !== 'delete' && typeof file.content !== 'string')) return res.status(400).json({error:'Arquivo proposto invÃ¡lido.'});
     }
     const rollbackCheckpointId=WorkspaceManager.createCheckpoint(projectId, `Antes: ${summary.slice(0, 60)}`);
     for (const file of files) {
@@ -1004,9 +1005,9 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
 
     const checkpointId = WorkspaceManager.createCheckpoint(projectId, summary.slice(0, 100), summary);
     const validation=await ValidatorEngine.validate({projectId});
-    if(validation.status==='failed'){WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);metadata.proposal.status='failed_validation';metadata.validation=validation;metadata.hasErrors=true;metadata.errorMessage='Uma verificação executada falhou; a alteração foi revertida.';db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);return res.status(422).json({error:metadata.errorMessage,validation});}
+    if(validation.status==='failed'){WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);metadata.proposal.status='failed_validation';metadata.validation=validation;metadata.hasErrors=true;metadata.errorMessage='Uma verificaÃ§Ã£o executada falhou; a alteraÃ§Ã£o foi revertida.';db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);return res.status(422).json({error:metadata.errorMessage,validation});}
     metadata.proposal.status='applied';metadata.validation=validation;metadata.checkpointId=checkpointId;db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
-    res.json({ success: true, checkpointId, validation, message: validation.status==='unverified'?'Alterações aplicadas. Validação automática não disponível para este projeto.':'Alterações aplicadas e verificadas com sucesso.' });
+    res.json({ success: true, checkpointId, validation, message: validation.status==='unverified'?'AlteraÃ§Ãµes aplicadas. ValidaÃ§Ã£o automÃ¡tica nÃ£o disponÃ­vel para este projeto.':'AlteraÃ§Ãµes aplicadas e verificadas com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1053,25 +1054,30 @@ router.post('/projects/:id/github/pull', requireAuth, requireProjectOwner, async
   try {
     const projectId = req.params.id;
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    if (!project.repo_url) return res.status(400).json({ error: 'Projeto não possui URL do GitHub vinculada.' });
+    if (!project.repo_url) return res.status(400).json({ error: 'Projeto nÃ£o possui URL do GitHub vinculada.' });
 
     const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
+    if (!parsed) return res.status(400).json({ error: 'URL do repositÃ³rio invÃ¡lida.' });
 
     const result = await GitHubService.importRepoFiles(parsed.owner, parsed.repo, project.branch || 'main', req.user!.id);
     if (!result.success) {
       return res.status(400).json({ error: result.error });
     }
 
-    if (result.files) {
-      for (const [filePath, content] of Object.entries(result.files)) {
-        WorkspaceManager.writeFile(projectId, filePath, content);
+    const remotePaths = new Set((result.remotePaths || []).map(filePath => filePath.replace(/\\/g, '/')));
+    if (result.remotePaths) {
+      for (const localFile of WorkspaceManager.getFiles(projectId)) {
+        if (!remotePaths.has(localFile.path.replace(/\\/g, '/'))) WorkspaceManager.deleteFile(projectId, localFile.path);
       }
     }
+    if (result.files) {
+      for (const [filePath, content] of Object.entries(result.files)) WorkspaceManager.writeFile(projectId, filePath, content);
+    }
     if (result.binaryFiles) {
-      for (const [filePath, buf] of Object.entries(result.binaryFiles)) {
-        WorkspaceManager.writeBinaryFile(projectId, filePath, buf);
-      }
+      for (const [filePath, buf] of Object.entries(result.binaryFiles)) WorkspaceManager.writeBinaryFile(projectId, filePath, buf);
+    }
+    if (result.headSha) {
+      db.prepare('UPDATE branches SET head_commit_hash = ? WHERE project_id = ? AND name = ?').run(result.headSha, projectId, project.branch || 'main');
     }
 
     const cpId = WorkspaceManager.createCheckpoint(projectId, `Git Pull: ${project.branch}`, `Sincronizados ${result.filesCount} arquivos`);
@@ -1086,19 +1092,26 @@ router.post('/projects/:id/github/push', requireAuth, requireProjectOwner, async
     const projectId = req.params.id;
     const { commitMessage, commitDescription } = req.body;
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    if (!project.repo_url) return res.status(400).json({ error: 'Projeto não possui URL do GitHub vinculada.' });
+    if (!project.repo_url) return res.status(400).json({ error: 'Projeto nÃ£o possui URL do GitHub vinculada.' });
 
     const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
+    if (!parsed) return res.status(400).json({ error: 'URL do repositÃ³rio invÃ¡lida.' });
 
     const files = WorkspaceManager.getAllFilesContent(projectId);
+    const binaryFiles: Record<string, Buffer> = {};
+    for (const file of WorkspaceManager.getFiles(projectId)) {
+      if (!file.isBinary) continue;
+      const content = WorkspaceManager.readBinaryFile(projectId, file.path);
+      if (content) binaryFiles[file.path] = content;
+    }
     const result = await GitHubService.pushFilesToRepo({
       userId: req.user!.id,
       owner: parsed.owner,
       repo: parsed.repo,
       branch: project.branch || 'main',
-      commitMessage: commitMessage || 'Alterações aplicadas via Forge Agent',
+      commitMessage: commitMessage || 'AlteraÃ§Ãµes aplicadas via Forge Agent',
       files,
+      binaryFiles,
     });
 
     if (!result.success) {
@@ -1115,7 +1128,7 @@ router.post('/projects/:id/github/push', requireAuth, requireProjectOwner, async
     }
 
     // Create named checkpoint on GitHub push for full rollback control
-    const cpTitle = commitMessage ? `GitHub Push: ${commitMessage}` : 'GitHub Push: Atualização remota';
+    const cpTitle = commitMessage ? `GitHub Push: ${commitMessage}` : 'GitHub Push: AtualizaÃ§Ã£o remota';
     const cpDesc = commitDescription || `Commit ${result.commitSha ? result.commitSha.slice(0, 7) : 'recente'} enviado para branch ${project.branch || 'main'}`;
     const cpId = WorkspaceManager.createCheckpoint(projectId, cpTitle, cpDesc);
 
@@ -1129,11 +1142,11 @@ router.get('/projects/:id/github/status', requireAuth, requireProjectOwner, asyn
   try {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
     if (!project || !project.repo_url) {
-      return res.json({ connected: false, message: 'Repositório GitHub não vinculado.' });
+      return res.json({ connected: false, message: 'RepositÃ³rio GitHub nÃ£o vinculado.' });
     }
     const parsed = GitHubService.parseRepoUrl(project.repo_url);
     if (!parsed) {
-      return res.json({ connected: false, message: 'URL do repositório inválida.' });
+      return res.json({ connected: false, message: 'URL do repositÃ³rio invÃ¡lida.' });
     }
 
     const syncRes = await GitHubService.getSyncStatus({
@@ -1161,10 +1174,10 @@ router.get('/projects/:id/github/branches', requireAuth, requireProjectOwner, as
   try {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
     if (!project || !project.repo_url) {
-      return res.status(400).json({ error: 'Repositório GitHub não vinculado.' });
+      return res.status(400).json({ error: 'RepositÃ³rio GitHub nÃ£o vinculado.' });
     }
     const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
+    if (!parsed) return res.status(400).json({ error: 'URL do repositÃ³rio invÃ¡lida.' });
 
     const result = await GitHubService.listBranches(parsed.owner, parsed.repo, req.user!.id);
     res.json(result);
@@ -1176,14 +1189,14 @@ router.get('/projects/:id/github/branches', requireAuth, requireProjectOwner, as
 router.post('/projects/:id/github/branch', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const { newBranch, fromBranch } = req.body;
-    if (!newBranch) return res.status(400).json({ error: 'Nome da nova branch é obrigatório.' });
+    if (!newBranch) return res.status(400).json({ error: 'Nome da nova branch Ã© obrigatÃ³rio.' });
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
     if (!project || !project.repo_url) {
-      return res.status(400).json({ error: 'Repositório GitHub não vinculado.' });
+      return res.status(400).json({ error: 'RepositÃ³rio GitHub nÃ£o vinculado.' });
     }
     const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
+    if (!parsed) return res.status(400).json({ error: 'URL do repositÃ³rio invÃ¡lida.' });
 
     const baseBranch = fromBranch || project.branch || 'main';
     const result = await GitHubService.createBranch({
@@ -1200,6 +1213,7 @@ router.post('/projects/:id/github/branch', requireAuth, requireProjectOwner, asy
 
     const now = new Date().toISOString();
     db.prepare('UPDATE projects SET branch = ?, updated_at = ? WHERE id = ?').run(newBranch.trim(), now, req.params.id);
+    db.prepare('UPDATE branches SET is_current = 0 WHERE project_id = ?').run(req.params.id);
     db.prepare(`
       INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
       VALUES (?, ?, ?, 1, ?, ?)
@@ -1214,19 +1228,19 @@ router.post('/projects/:id/github/branch', requireAuth, requireProjectOwner, asy
 router.post('/projects/:id/github/pull-request', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const { title, base = 'main', body } = req.body;
-    if (!title) return res.status(400).json({ error: 'Título do Pull Request é obrigatório.' });
+    if (!title) return res.status(400).json({ error: 'TÃ­tulo do Pull Request Ã© obrigatÃ³rio.' });
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
     if (!project || !project.repo_url) {
-      return res.status(400).json({ error: 'Repositório GitHub não configurado.' });
+      return res.status(400).json({ error: 'RepositÃ³rio GitHub nÃ£o configurado.' });
     }
     const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
+    if (!parsed) return res.status(400).json({ error: 'URL do repositÃ³rio invÃ¡lida.' });
 
     const headBranch = project.branch || 'main';
     if (headBranch === base) {
       return res.status(400).json({
-        error: `A branch atual (${headBranch}) é a mesma que a branch base (${base}). Crie uma nova branch antes de abrir o PR.`,
+        error: `A branch atual (${headBranch}) Ã© a mesma que a branch base (${base}). Crie uma nova branch antes de abrir o PR.`,
       });
     }
 
@@ -1249,10 +1263,10 @@ router.post('/projects/:id/github/pull-request', requireAuth, requireProjectOwne
 router.post('/projects/:id/github/connect-repo', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const { repoUrl, branch = 'main' } = req.body;
-    if (!repoUrl) return res.status(400).json({ error: 'repoUrl é obrigatório.' });
+    if (!repoUrl) return res.status(400).json({ error: 'repoUrl Ã© obrigatÃ³rio.' });
 
     const parsed = GitHubService.parseRepoUrl(repoUrl);
-    if (!parsed) return res.status(400).json({ error: 'URL do GitHub inválida.' });
+    if (!parsed) return res.status(400).json({ error: 'URL do GitHub invÃ¡lida.' });
 
     const now = new Date().toISOString();
     db.prepare('UPDATE projects SET repo_url = ?, branch = ?, updated_at = ? WHERE id = ?').run(
@@ -1295,10 +1309,10 @@ router.post('/skills', requireAuth, (req: Request, res: Response) => {
   try {
     const { name, slug, description, system_instructions, scope = 'project', is_active = true } = req.body;
     if (!name || !name.trim()) {
-      return res.status(400).json({ error: 'O nome da skill é obrigatório.' });
+      return res.status(400).json({ error: 'O nome da skill Ã© obrigatÃ³rio.' });
     }
     if (!system_instructions || !system_instructions.trim()) {
-      return res.status(400).json({ error: 'As instruções do sistema para o agente são obrigatórias.' });
+      return res.status(400).json({ error: 'As instruÃ§Ãµes do sistema para o agente sÃ£o obrigatÃ³rias.' });
     }
 
     const cleanSlug = (slug || name)
@@ -1335,9 +1349,9 @@ router.post('/skills', requireAuth, (req: Request, res: Response) => {
 
 router.put('/skills/:id', requireAuth, (req,res) => {
   const skill=db.prepare('SELECT id FROM skills WHERE id=? AND user_id=?').get(req.params.id,req.user!.id);
-  if(!skill)return res.status(404).json({error:'Skill não encontrada.'});
+  if(!skill)return res.status(404).json({error:'Skill nÃ£o encontrada.'});
   const {name,description,system_instructions,scope}=req.body;
-  if(typeof name!=='string'||!name.trim()||typeof system_instructions!=='string'||!system_instructions.trim()||!['message','project','workspace'].includes(scope))return res.status(400).json({error:'Nome, instruções e escopo válidos são obrigatórios.'});
+  if(typeof name!=='string'||!name.trim()||typeof system_instructions!=='string'||!system_instructions.trim()||!['message','project','workspace'].includes(scope))return res.status(400).json({error:'Nome, instruÃ§Ãµes e escopo vÃ¡lidos sÃ£o obrigatÃ³rios.'});
   db.prepare('UPDATE skills SET name=?,description=?,system_instructions=?,scope=? WHERE id=? AND user_id=?').run(name.trim(),String(description||''),system_instructions.trim(),scope,req.params.id,req.user!.id);
   res.json({success:true});
 });
@@ -1345,13 +1359,13 @@ router.put('/skills/:id', requireAuth, (req,res) => {
 router.delete('/skills/:id', requireAuth, (req: Request, res: Response) => {
   try {
     const skill = db.prepare('SELECT * FROM skills WHERE id = ?').get(req.params.id) as any;
-    if (!skill) return res.status(404).json({ error: 'Skill não encontrada.' });
+    if (!skill) return res.status(404).json({ error: 'Skill nÃ£o encontrada.' });
     if (skill.user_id !== req.user!.id) {
-      return res.status(403).json({ error: 'Sem permissão para excluir esta skill.' });
+      return res.status(403).json({ error: 'Sem permissÃ£o para excluir esta skill.' });
     }
 
     db.prepare('DELETE FROM skills WHERE id = ?').run(req.params.id);
-    res.json({ success: true, message: 'Skill excluída com sucesso.' });
+    res.json({ success: true, message: 'Skill excluÃ­da com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1393,7 +1407,7 @@ router.get('/providers', requireAuth, (req: Request, res: Response) => {
 router.post('/providers/save-with-key', requireAuth, async (req: Request, res: Response) => {
   try {
     const { providerKey, baseUrl, modelId, apiKey } = req.body;
-    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatório.' });
+    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatÃ³rio.' });
 
     let hasKey = false;
     let masked = '';
@@ -1437,7 +1451,7 @@ router.post('/providers/save-with-key', requireAuth, async (req: Request, res: R
       success: true,
       providerKey,
       masked,
-      message: 'Configurações de IA e chave de API salvas com sucesso!',
+      message: 'ConfiguraÃ§Ãµes de IA e chave de API salvas com sucesso!',
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1447,7 +1461,7 @@ router.post('/providers/save-with-key', requireAuth, async (req: Request, res: R
 router.post('/providers/update', requireAuth, (req: Request, res: Response) => {
   try {
     const { providerKey, baseUrl, modelId } = req.body;
-    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatório.' });
+    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatÃ³rio.' });
 
     db.prepare('UPDATE providers SET base_url = COALESCE(?, base_url), model_id = COALESCE(?, model_id) WHERE provider_key = ? AND user_id = ?').run(
       baseUrl || null,
@@ -1455,7 +1469,7 @@ router.post('/providers/update', requireAuth, (req: Request, res: Response) => {
       providerKey, req.user!.id
     );
 
-    res.json({ success: true, message: 'Configuração atualizada com sucesso.' });
+    res.json({ success: true, message: 'ConfiguraÃ§Ã£o atualizada com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1475,7 +1489,7 @@ router.post('/desktop/check-updates', async (req: Request, res: Response) => {
 });
 
 router.post('/desktop/command', requireAuth, (_req, res) => {
-  res.status(501).json({error:'Executor isolado não configurado. Comandos no servidor compartilhado não estão habilitados.'});
+  res.status(501).json({error:'Executor isolado nÃ£o configurado. Comandos no servidor compartilhado nÃ£o estÃ£o habilitados.'});
 });
 
 // ==========================================
@@ -1499,13 +1513,13 @@ router.post('/projects/:id/deploy/cloudflare', requireAuth, requireProjectOwner,
 
 router.post('/conversations/:projectId/reject-proposal', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const proposalId = String(req.body?.proposalId || '');
-  if (!proposalId) return res.status(400).json({ error: 'Identificador da proposta é obrigatório.' });
+  if (!proposalId) return res.status(400).json({ error: 'Identificador da proposta Ã© obrigatÃ³rio.' });
   const conversation = db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(req.params.projectId) as any;
   const rows = conversation ? db.prepare("SELECT id,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[] : [];
   const row = rows.find(item => { try { return JSON.parse(item.metadata_json || '{}')?.proposal?.id === proposalId; } catch { return false; } });
-  if (!row) return res.status(404).json({ error: 'Proposta não encontrada.' });
+  if (!row) return res.status(404).json({ error: 'Proposta nÃ£o encontrada.' });
   const metadata = JSON.parse(row.metadata_json || '{}');
-  if (metadata.proposal.status !== 'pending') return res.status(409).json({ error: 'Esta proposta já foi encerrada.' });
+  if (metadata.proposal.status !== 'pending') return res.status(409).json({ error: 'Esta proposta jÃ¡ foi encerrada.' });
   metadata.proposal.status = 'rejected';
   db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), row.id);
   res.json({ success: true });
@@ -1517,8 +1531,8 @@ router.post('/projects/:projectId/preview/rebuild', requireAuth, requireProjectO
 });
 
 function findPendingProposal(projectId:string,proposalId:string){const conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;if(!conversation)return null;const rows=db.prepare("SELECT metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[];for(const row of rows){try{const proposal=JSON.parse(row.metadata_json||'{}')?.proposal;if(proposal?.id===proposalId&&['pending','previewing'].includes(proposal.status))return proposal;}catch{}}return null;}
-router.get('/projects/:projectId/proposals/:proposalId/preview/status',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).json({status:'error',message:'Proposta temporária não encontrada.'});const entry=proposal.files.find((f:any)=>f.action!=='delete'&&/(^|\/)index\.html$/i.test(f.path))?.path||WorkspaceManager.getPreviewInfo(req.params.projectId).entryPath;if(!entry)return res.status(422).json({status:'error',message:'A proposta não possui um arquivo HTML de entrada.'});res.json({status:'running',entryPath:entry,message:'Preview temporário da proposta.'});});
-router.get('/preview-proposal/:projectId/:proposalId/*',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).send('Proposta temporária não encontrada.');const preview=WorkspaceManager.getPreviewInfo(req.params.projectId),requested=path.normalize(req.params[0]||proposal.files.find((f:any)=>/(^|\/)index\.html$/i.test(f.path))?.path||preview.entryPath||'index.html').replace(/^(\.\.[\/\\])+/, '').replace(/\\/g,'/');const proposed=proposal.files.find((f:any)=>f.path.replace(/\\/g,'/')===requested);if(proposed?.action==='delete')return res.status(404).end();res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Content-Security-Policy',"sandbox allow-scripts; default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; connect-src 'self' https: wss:; form-action 'none'");if(proposed){res.type(path.extname(requested)||'text/plain').send(proposed.content);return;}const fallback=WorkspaceManager.resolveSafePath(req.params.projectId,requested);if(!fs.existsSync(fallback)||fs.statSync(fallback).isDirectory())return res.status(404).end();res.sendFile(fallback);});
+router.get('/projects/:projectId/proposals/:proposalId/preview/status',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).json({status:'error',message:'Proposta temporÃ¡ria nÃ£o encontrada.'});const entry=proposal.files.find((f:any)=>f.action!=='delete'&&/(^|\/)index\.html$/i.test(f.path))?.path||WorkspaceManager.getPreviewInfo(req.params.projectId).entryPath;if(!entry)return res.status(422).json({status:'error',message:'A proposta nÃ£o possui um arquivo HTML de entrada.'});res.json({status:'running',entryPath:entry,message:'Preview temporÃ¡rio da proposta.'});});
+router.get('/preview-proposal/:projectId/:proposalId/*',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).send('Proposta temporÃ¡ria nÃ£o encontrada.');const preview=WorkspaceManager.getPreviewInfo(req.params.projectId),requested=path.normalize(req.params[0]||proposal.files.find((f:any)=>/(^|\/)index\.html$/i.test(f.path))?.path||preview.entryPath||'index.html').replace(/^(\.\.[\/\\])+/, '').replace(/\\/g,'/');const proposed=proposal.files.find((f:any)=>f.path.replace(/\\/g,'/')===requested);if(proposed?.action==='delete')return res.status(404).end();res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Content-Security-Policy',"sandbox allow-scripts; default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; connect-src 'self' https: wss:; form-action 'none'");if(proposed){res.type(path.extname(requested)||'text/plain').send(proposed.content);return;}const fallback=WorkspaceManager.resolveSafePath(req.params.projectId,requested);if(!fs.existsSync(fallback)||fs.statSync(fallback).isDirectory())return res.status(404).end();res.sendFile(fallback);});
 
 router.get('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const projectId = req.params.projectId;
@@ -1535,7 +1549,7 @@ router.get('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Requ
   }
 
   if (!fs.existsSync(filePath)) {
-    return res.status(404).send('Preview não disponível para este projeto.');
+    return res.status(404).send('Preview nÃ£o disponÃ­vel para este projeto.');
   }
 
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
