@@ -12,7 +12,7 @@ import { LLMAdapterService, AgentMode } from './services/llmAdapter.js';
 import { ModelRouter, type ProfileKey } from './services/modelRouter.js';
 import { RunService } from './services/runService.js';
 import { ValidatorEngine } from './services/validatorEngine.js';
-import { AgentEngine } from './agent-engine/agentEngine.js';
+import { AgentEngine, AgentWorkflowEngine } from './agent-engine/agentEngine.js';
 import { AGENTS } from './agent-engine/agentRegistry.js';
 import { GitHubService } from './services/githubService.js';
 import { DesktopService } from './services/desktopService.js';
@@ -857,7 +857,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       conversationHistory: history,
       userId: req.user!.id,
       signal: controller.signal,
-    }) : await AgentEngine.execute({prompt:content,mode:mode as AgentMode,projectId,existingFiles,appliedSkills,conversationHistory:history,userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal});
+    }) : await AgentWorkflowEngine.executeWorkflow({prompt:content,mode:mode as AgentMode,projectId,existingFiles,appliedSkills,conversationHistory:history,userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal});
     controller.signal.throwIfAborted();
     if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
       return res.status(409).json({error:'Os arquivos mudaram durante a revisÃ£o. Envie novamente para usar a versÃ£o atual.'});
@@ -973,6 +973,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       executionType: agentEngineEnabled ? 'agent_engine' : 'direct_llm',
       agentKey: agentEngineEnabled ? ((result as any).agentKey || 'PROGRAM') : undefined,
       profileKey: (result as any).profileKey,
+      workflow: (result as any).workflow,
       validation,
     };
 

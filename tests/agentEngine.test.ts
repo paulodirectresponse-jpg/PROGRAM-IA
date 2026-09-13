@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { initializeDatabase, db } from '../server/db/index.js';
-import { AgentEngine } from '../server/agent-engine/agentEngine.js';
+import { AgentEngine, AgentWorkflowEngine } from '../server/agent-engine/agentEngine.js';
 import { RunService } from '../server/services/runService.js';
 import { ModelRouter } from '../server/services/modelRouter.js';
 
@@ -64,6 +64,51 @@ test('agent run persists selected agent, attempts and accumulated spend', () => 
     assert.equal(step.agent_key, 'FORGE');
     assert.equal(step.attempt_count, 2);
     assert.equal(Number(run.spent_usd), 0.12);
+  } finally {
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+  }
+});
+
+
+test('agent workflow persists SCOUT, STUDIO, FORGE and validation handoff for visual work', async () => {
+  const unique = Date.now().toString(36) + Math.random().toString(36).slice(2);
+  const userId = `agent-flow-user-${unique}`;
+  const projectId = `agent-flow-project-${unique}`;
+  const conversationId = `agent-flow-conv-${unique}`;
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'auto',0.5);
+  try {
+    const result = await AgentWorkflowEngine.executeWorkflow({
+      prompt:'melhore o layout visual premium desta tela',
+      mode:'auto',projectId,existingFiles:{'index.html':'<html></html>'},appliedSkills:[],conversationHistory:[],userId,runId,stepId
+    });
+    assert.equal(result.workflow.runId,runId);
+    const steps=db.prepare('SELECT agent_key,status,order_index FROM agent_steps WHERE run_id=? ORDER BY order_index').all(runId) as any[];
+    assert.deepEqual(steps.map(s=>s.agent_key),['SCOUT','STUDIO','FORGE','SENTINEL']);
+    assert.ok(steps.every(s=>s.status==='completed' || s.status==='failed'));
+    assert.equal(steps.filter(s=>s.agent_key==='FORGE').length,1);
+  } finally {
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+  }
+});
+
+test('agent workflow skips STUDIO for backend-only work and only adds SHIP when publish is requested', async () => {
+  const unique = Date.now().toString(36) + Math.random().toString(36).slice(2);
+  const userId = `agent-flow-user-${unique}`;
+  const projectId = `agent-flow-project-${unique}`;
+  const conversationId = `agent-flow-conv-${unique}`;
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'publish',0.5);
+  try {
+    await AgentWorkflowEngine.executeWorkflow({
+      prompt:'publique no github quando estiver pronto',
+      mode:'publish',projectId,existingFiles:{'server.ts':'export {}'},appliedSkills:[],conversationHistory:[],userId,runId,stepId
+    });
+    const keys=(db.prepare('SELECT agent_key FROM agent_steps WHERE run_id=? ORDER BY order_index').all(runId) as any[]).map(x=>x.agent_key);
+    assert.deepEqual(keys,['SCOUT','FORGE','SENTINEL','SHIP']);
+    assert.equal(keys.includes('STUDIO'),false);
   } finally {
     db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
     db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
