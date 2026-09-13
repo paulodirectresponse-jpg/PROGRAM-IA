@@ -147,7 +147,7 @@ export class ContextCompiler {
       id,project_id,run_id,step_id,agent_key,scope,project_hash,token_budget,estimated_tokens,
       selected_files_json,omitted_files_json,pack_json,created_at
     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      pack.id,pack.projectId,pack.runId,pack.stepId,pack.agentKey,pack.scope,pack.projectHash,
+      pack.id,pack.projectId,pack.runId ?? null,pack.stepId ?? null,pack.agentKey,pack.scope,pack.projectHash,
       pack.tokenBudget,pack.estimatedTokens,
       JSON.stringify(pack.selectedFiles.map(item=>({path:item.file.path,score:item.score,reasons:item.reasons}))),
       JSON.stringify(pack.omittedFiles),JSON.stringify(pack),pack.createdAt
