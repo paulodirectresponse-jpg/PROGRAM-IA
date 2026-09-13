@@ -514,6 +514,156 @@ Criar API segura
       } finally {
         globalThis.fetch = originalFetch;
       }
+
+
+    test('4.12: Modo plano sempre produz plano mesmo quando o provider responde só em prosa', () => {
+      const parsed = (LLMAdapterService as any).parseLLMResponse(
+        'Vamos criar um painel financeiro com estoque, vendas, relatórios e autenticação.',
+        'plan',
+        'Provider genérico',
+        'modelo-x',
+        {}
+      );
+      assert.equal(parsed.decisionType, 'plan');
+      assert.ok(parsed.plan);
+      assert.match(parsed.plan.objective, /painel financeiro/i);
+      assert.ok(Array.isArray(parsed.plan.acceptance_criteria));
+    });
+
+    test('4.13: Extração de arquivo conhecido aceita código puro em bloco markdown', () => {
+      const content = LLMAdapterService.extractKnownFileContent(
+        '\`\`\`tsx\nexport default function App(){ return <main>OK</main> }\n\`\`\`',
+        'src/App.tsx'
+      );
+      assert.ok(content);
+      assert.match(content!, /function App/);
+    });
+
+    test('4.14: Build atômico faz no máximo uma correção por arquivo e reaproveita conteúdo puro', async () => {
+      const original = LLMAdapterService.executePrompt;
+      let calls = 0;
+      LLMAdapterService.executePrompt = async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            replyText: 'Não consegui estruturar o arquivo.',
+            mode: 'build',
+            decisionType: 'invalid_response',
+            isDemonstrativeFallback: false,
+            providerUsed: 'Provider teste',
+            modelUsed: 'modelo',
+            hasErrors: true,
+            invalidResponse: true,
+          } as any;
+        }
+        return {
+          replyText: 'export default function App(){ return <main>ATOMIC_OK</main> }',
+          mode: 'build',
+          decisionType: 'invalid_response',
+          isDemonstrativeFallback: false,
+          providerUsed: 'Provider teste',
+          modelUsed: 'modelo',
+          hasErrors: true,
+          invalidResponse: true,
+        } as any;
+      };
+
+      try {
+        const result = await LLMAdapterService.buildApprovedPlanReliably({
+          projectId: 'atomic-test',
+          providerKey: 'omniroute',
+          modelId: 'auto',
+          userId: 'user-test',
+          existingFiles: { 'src/App.tsx': 'export default function App(){ return <main>OLD</main> }' },
+          requestedFiles: ['src/App.tsx'],
+          objective: 'Atualizar o painel',
+        });
+        assert.equal(calls, 2);
+        assert.equal(result.hasErrors, false);
+        assert.equal(result.build?.files.length, 1);
+        assert.match(result.build!.files[0].content, /ATOMIC_OK/);
+        assert.equal(result.diagnostics?.strategy, 'atomic_file_build');
+        assert.equal(result.diagnostics?.attempts, 2);
+      } finally {
+        LLMAdapterService.executePrompt = original;
+      }
+    });
+
+    test('4.15: OmniRoute negocia stream_options incompatível sem loop', async () => {
+      const originalFetch = globalThis.fetch;
+      const bodies: any[] = [];
+      const encoder = new TextEncoder();
+      let calls = 0;
+
+      globalThis.fetch = (async (_url: any, init?: any) => {
+        calls += 1;
+        bodies.push(JSON.parse(String(init?.body || '{}')));
+        if (calls === 1) {
+          return new Response(JSON.stringify({ error: { message: 'unknown field stream_options' } }), {
+            status: 400,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        const payload = '{"summary":"OK","files":[{"path":"index.html","action":"modify","content":"<html><body>NEGOTIATED</body></html>"}]}';
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: ' + JSON.stringify({ choices: [{ delta: { content: payload } }] }) + '\n\n'));
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        });
+        return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }) as typeof fetch;
+
+      try {
+        const result = await (LLMAdapterService as any).callOpenAICompatible(
+          { apiKey: 'x', baseUrl: 'https://example.test/v1', modelId: 'auto', name: 'OmniRoute (Free Pool)' },
+          {
+            mode: 'build',
+            skillsText: '',
+            filesList: ['index.html'],
+            existingFiles: { 'index.html': '<html><body>OLD</body></html>' },
+            conversationHistory: [],
+            prompt: 'Atualize',
+          }
+        );
+        assert.equal(calls, 2);
+        assert.equal(bodies[0].stream_options.include_usage, true);
+        assert.equal(bodies[1].stream, true);
+        assert.equal('stream_options' in bodies[1], false);
+        assert.equal(result.hasErrors, false);
+        assert.match(result.build.files[0].content, /NEGOTIATED/);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    test('4.16: Erro HTML do túnel é sanitizado antes de chegar à interface', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async () =>
+        new Response('<!DOCTYPE html><html><body><h1>524 A timeout occurred</h1><script>secret()</script></body></html>', {
+          status: 524,
+          headers: { 'content-type': 'text/html' },
+        })) as typeof fetch;
+      try {
+        await assert.rejects(
+          () => (LLMAdapterService as any).callOpenAICompatible(
+            { apiKey: 'x', baseUrl: 'https://example.test/v1', modelId: 'auto', name: 'OmniRoute (Free Pool)' },
+            {
+              mode: 'build',
+              skillsText: '',
+              filesList: [],
+              existingFiles: {},
+              conversationHistory: [],
+              prompt: 'Teste',
+            }
+          ),
+          (err: any) => /HTTP 524/.test(String(err?.message || '')) && !/DOCTYPE|<html|<script/i.test(String(err?.message || ''))
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
     });
   });
 
