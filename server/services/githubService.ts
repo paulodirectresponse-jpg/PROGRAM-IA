@@ -552,6 +552,27 @@ export class GitHubService {
     }
   }
 
+  static async getBranchHead(owner: string, repo: string, branch: string, userId?: string): Promise<{success:boolean;sha?:string;error?:string}> {
+    const token = this.getToken(userId);
+    const headers: Record<string,string> = {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'ForgeAgent-Workspace/1.0',
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`,
+        { headers }
+      );
+      if (!res.ok) return { success:false, error:`Branch "${branch}" não encontrada (HTTP ${res.status}).` };
+      const data = await res.json() as any;
+      const sha = String(data?.object?.sha || '');
+      return sha ? {success:true,sha} : {success:false,error:'O GitHub não retornou SHA para a branch.'};
+    } catch (err:any) {
+      return {success:false,error:String(err?.message || err)};
+    }
+  }
+
   static async createBranch(options: {
     userId?: string;
     owner: string;
