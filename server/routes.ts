@@ -206,7 +206,7 @@ router.post('/auth/logout', (req: Request, res: Response) => {
 router.get('/sync/status',requireAuth,async(req,res)=>{try{if(!CloudSyncService.configured())return res.json({configured:false,status:'not_configured',revision:0});const direct=await CloudSyncService.pullDirect(req.user!.id);res.json({configured:true,status:direct.status,source:direct.status==='synced'?'direct':undefined});}catch(e:any){res.status(502).json({configured:true,status:'error',error:e.message});}});
 router.get('/sync/configuration',(_req,res)=>res.json(CloudSyncService.configurationStatus()));
 router.post('/sync/push',requireAuth,async(req,res)=>{try{res.json(await CloudSyncService.syncAll(req.user!.id));}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
-router.post('/sync/pull',requireAuth,async(req,res)=>{try{const direct=await CloudSyncService.pullDirect(req.user!.id);res.json(direct.status==='local_only'?await CloudSyncService.pull(req.user!.id):direct);}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
+router.post('/sync/pull',requireAuth,async(req,res)=>{try{res.json(await CloudSyncService.pullDirect(req.user!.id));}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
 
 // ==========================================
 // 2. SECRETS & CREDENTIALS API (PER-USER)
