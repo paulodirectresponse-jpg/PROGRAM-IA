@@ -262,8 +262,8 @@ router.get('/agent-runs',requireAuth,(req,res)=>{
 
   for (const run of runs) {
     if (run.status === 'running' && !activeProjects.has(run.project_id)) {
-      db.prepare("UPDATE agent_runs SET status='aborted', finished_at=?, updated_at=? WHERE id=? AND status='running'")
-        .run(new Date().toISOString(), new Date().toISOString(), run.id);
+      db.prepare("UPDATE agent_runs SET status='aborted', finished_at=? WHERE id=? AND status='running'")
+        .run(new Date().toISOString(), run.id);
       run.status = 'aborted';
     }
   }
