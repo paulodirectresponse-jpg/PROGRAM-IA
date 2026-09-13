@@ -1035,8 +1035,16 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
     }
 
     const checkpointId = WorkspaceManager.createCheckpoint(projectId, summary.slice(0, 100), summary);
-    const validation=await ValidatorEngine.validate({projectId,checkpointId});
-    if(validation.status==='failed'){WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);metadata.proposal.status='failed_validation';metadata.validation=validation;metadata.hasErrors=true;metadata.errorMessage='Uma verificaÃ§Ã£o executada falhou; a alteraÃ§Ã£o foi revertida.';db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);return res.status(422).json({error:metadata.errorMessage,validation});}
+    const workflowRunId = metadata.workflow?.runId || null;
+    const validationStepId = workflowRunId ? RunService.createStep(workflowRunId, 'SENTINEL', 'Executar ValidatorEngine após aplicação', 90, 'micro', { proposalId, checkpointId }) : undefined;
+    const validation=await ValidatorEngine.validate({projectId,checkpointId,runId:workflowRunId||undefined,stepId:validationStepId});
+    if(validationStepId) RunService.finishStep(validationStepId, validation.status === 'failed' ? 'failed' : 'completed', { validator:'ValidatorEngine', status:validation.status, failedGate:validation.results.find((item:any)=>item.status==='fail')?.tool || null, security:validation.security?.status });
+    if(validation.status==='failed'){
+      const evidenceStepId = workflowRunId ? RunService.createStep(workflowRunId, 'SENTINEL', 'Diagnosticar falha real de validação', 91, 'micro', RunService.context('micro', { objective:'Explicar rollback por gate executado', errors:[validation.results.find((item:any)=>item.status==='fail')?.output || validation.security?.issues?.join('; ') || 'Gate executado falhou'], constraints:['Sem revisão genérica','Correção automática limitada a uma nova tentativa quando houver evidência nova'] })) : undefined;
+      if(evidenceStepId) RunService.finishStep(evidenceStepId,'completed');
+      if(workflowRunId) RunService.finish(workflowRunId,evidenceStepId||validationStepId||'', 'failed');
+      WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);metadata.proposal.status='failed_validation';metadata.validation=validation;metadata.hasErrors=true;metadata.errorMessage='Uma verificaÃ§Ã£o executada falhou; a alteraÃ§Ã£o foi revertida.';db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);return res.status(422).json({error:metadata.errorMessage,validation});}
+    if(workflowRunId) RunService.finish(workflowRunId,validationStepId||'', 'completed');
     metadata.proposal.status='applied';metadata.validation=validation;metadata.checkpointId=checkpointId;db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
     res.json({ success: true, checkpointId, validation, message: validation.status==='unverified'?'AlteraÃ§Ãµes aplicadas. ValidaÃ§Ã£o automÃ¡tica nÃ£o disponÃ­vel para este projeto.':'AlteraÃ§Ãµes aplicadas e verificadas com sucesso.' });
   } catch (err: any) {
@@ -1620,7 +1628,7 @@ router.post('/projects/:id/deploy/cloudflare/direct', requireAuth, requireProjec
     }
     db.prepare('INSERT INTO deployments(id,project_id,target,status,url,error_message,created_at) VALUES(?,?,?,?,NULL,NULL,?)')
       .run(deploymentId, req.params.id, 'cloudflare_pages_direct_upload', 'pending', now);
-    const result = await IntegrationService.deployCloudflareDirectUpload(req.user!.id, WorkspaceManager.getProjectDir(req.params.id), repoContext.branch || 'main');
+    const result = await IntegrationService.deployCloudflareDirectUpload(req.user!.id, req.params.id, repoContext.branch || 'main');
     db.prepare('UPDATE deployments SET status=?,url=?,error_message=NULL WHERE id=?')
       .run(result.status || 'active', result.url || null, deploymentId);
     res.json({...result, deploymentId, mode:'direct_upload'});
@@ -1664,10 +1672,10 @@ function findPendingProposal(projectId:string,proposalId:string){const conversat
 router.get('/projects/:projectId/proposals/:proposalId/preview/status',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).json({status:'error',message:'Proposta temporÃ¡ria nÃ£o encontrada.'});const entry=proposal.files.find((f:any)=>f.action!=='delete'&&/(^|\/)index\.html$/i.test(f.path))?.path||WorkspaceManager.getPreviewInfo(req.params.projectId).entryPath;if(!entry)return res.status(422).json({status:'error',message:'A proposta nÃ£o possui um arquivo HTML de entrada.'});res.json({status:'running',entryPath:entry,message:'Preview temporÃ¡rio da proposta.'});});
 router.get('/preview-proposal/:projectId/:proposalId/*',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).send('Proposta temporÃ¡ria nÃ£o encontrada.');const preview=WorkspaceManager.getPreviewInfo(req.params.projectId),requested=path.normalize(req.params[0]||proposal.files.find((f:any)=>/(^|\/)index\.html$/i.test(f.path))?.path||preview.entryPath||'index.html').replace(/^(\.\.[\/\\])+/, '').replace(/\\/g,'/');const proposed=proposal.files.find((f:any)=>f.path.replace(/\\/g,'/')===requested);if(proposed?.action==='delete')return res.status(404).end();res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Content-Security-Policy',"sandbox allow-scripts; default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; connect-src 'self' https: wss:; form-action 'none'");if(proposed){res.type(path.extname(requested)||'text/plain').send(proposed.content);return;}const fallback=WorkspaceManager.resolveSafePath(req.params.projectId,requested);if(!fs.existsSync(fallback)||fs.statSync(fallback).isDirectory())return res.status(404).end();res.sendFile(fallback);});
 
-router.get('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+router.all('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const projectId = req.params.projectId;
   const requestedFile = req.params[0] || '';
-  if (RuntimeManager.proxy(projectId, `/${requestedFile}`, res)) return;
+  if (RuntimeManager.proxy(projectId, req, req.originalUrl.replace(/^\/api\/preview\/[^/]+/, '') || '/', res)) return;
   const projectDir = WorkspaceManager.getProjectDir(projectId);
 
   const preview = WorkspaceManager.getPreviewInfo(projectId);
@@ -1688,4 +1696,7 @@ router.get('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Requ
   res.setHeader('Content-Security-Policy', "sandbox allow-scripts; default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; connect-src 'self' https: wss:; form-action 'none'");
   res.sendFile(filePath);
 });
+
+
+
 

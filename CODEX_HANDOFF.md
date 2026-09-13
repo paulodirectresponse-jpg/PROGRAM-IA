@@ -1,113 +1,81 @@
 # PROGRAM-IA — Handoff para Codex
 
-Atualizado em 2026-09-13 após a consolidação B→I no ChatGPT.
+Atualizado em 2026-09-13 após endurecimento local de C/H/G sobre `19aa28f`.
 
-Este arquivo contém somente o que **não deve ser tratado como concluído** pela camada atual. A main deve permanecer verde antes e depois de qualquer item abaixo.
+Este arquivo contém somente pendências reais. Não trate itens já implementados como abertos, e não declare gates externos sem credencial/teste real.
 
 ## Regras
 
-- Não reimplementar blocos já consolidados em B, D, E ou F.
-- Não substituir execução real por mock.
-- Não habilitar loops infinitos. Correções automáticas precisam ter limite de tentativas, budget e AbortSignal.
-- Não permitir que um perfil do Agent Engine escape silenciosamente para outro provider/modelo.
-- Não expor secrets ao browser, preview ou worker.
-- Não alterar Supabase remoto sem migration versionada e reconciliação.
+- Não reimplementar blocos já consolidados.
+- Não substituir execução real por mock quando o gate exigir runtime/integração real.
+- Não habilitar loops infinitos. Correções automáticas precisam ter limite de tentativa, budget e AbortSignal.
+- Não permitir que uma decisão explícita da state machine seja sobrescrita por seleção automática de agente.
+- Não expor secrets ao browser, preview, worker ou processo de deploy.
+- Não alterar Supabase remoto sem migration versionada, reconciliação e autorização explícita.
 - Manter Firebase como identidade do Forge; Firebase de projetos continua sendo integração externa separada.
 
 ## C — Runtime de frameworks e preview executável
 
-### Falta
-1. Criar uma camada de runtime/process manager para projetos com frameworks reais.
-2. Detectar package manager e framework a partir dos arquivos do projeto.
-3. Instalar dependências em sandbox controlado, com allowlist, timeout, limite de saída e cancelamento.
-4. Subir e derrubar dev servers sem processos órfãos.
-5. Reservar portas com segurança e registrar lifecycle/erros.
-6. Encaminhar preview para o servidor real do projeto quando aplicável.
-7. Garantir que env/secrets do Forge não sejam herdados pelo processo do projeto.
-8. Integrar AbortSignal ao processo e aos comandos de instalação/build.
-9. Testar React/Vite e pelo menos mais um framework suportado de ponta a ponta.
-10. Rodar smoke/browser test no preview real e validar cleanup após abort/erro.
+### Implementado localmente
+1. Runtime/process manager para projetos com `package.json`.
+2. Detecção de package manager e framework.
+3. Instalação com env filtrado, timeout, saída limitada, AbortSignal e `--ignore-scripts` por padrão.
+4. Start/stop/restart de dev server com cleanup de árvore de processos em Windows e POSIX.
+5. Retry limitado para colisão de porta.
+6. Proxy HTTP com método, body, query, status e headers seguros.
+7. Preview estático preservado para projetos sem `package.json`.
+8. Testes cobrindo start, proxy, segredo não vazado, erro, stop e lifecycle scripts bloqueados.
 
-### Gate
-- Importar projeto de framework real → instalar → iniciar → abrir preview → editar → recarregar → validar → encerrar sem processo órfão.
+### Ainda falta para gate completo
+1. WebSocket/HMR autenticado e validado por owner do projeto.
+2. E2E com React/Vite real e um segundo framework real, incluindo editar arquivo e confirmar reload.
+3. Prova operacional de zero processo órfão fora do ambiente de teste unitário.
 
-## G — Integrações externas com credenciais reais
+## G — Integrações externas
 
-### Falta
-1. Executar E2E real de GitHub com repo de teste.
-2. Executar E2E real de Cloudflare Pages no fluxo Git-trigger já implementado.
-3. Executar E2E real do teste de integração Supabase.
-4. Executar E2E real do teste de integração Firebase via service account.
-5. Implementar Cloudflare Direct Upload somente depois do runtime/build da Fase C produzir artefato confiável.
-6. Confirmar que falha externa permanece registrada como erro e não como conectado.
+### Implementado localmente
+1. Cloudflare Direct Upload agora exige build real antes do deploy.
+2. `public/` não é mais aceito automaticamente como artefato de build.
+3. Output esperado é derivado de framework/configuração explícita.
+4. Wrangler é resolvido a partir do Forge (`node_modules/.bin`) e não do projeto importado.
+5. Processo de deploy tem timeout, AbortSignal, output limitado e redaction de token/account.
+6. Estados continuam `pending` → `active` somente em sucesso real ou `failed` em erro.
+7. Testes cobrem falta de credencial/artefato, build falhando e `public/` inválido.
 
-### Gate
-- Cada integração deve provar uma operação real e uma falha real com estado persistido correto.
+### Ainda falta para gate completo
+1. E2E real de GitHub com repo de teste.
+2. E2E real de Cloudflare Pages Git-trigger.
+3. E2E real de Cloudflare Direct Upload com credencial autorizada.
+4. E2E real de Supabase/Firebase como integrações de projeto.
 
-## H — Agent Engine: state machine completa
+## H — Agent Engine
 
-A infraestrutura atual já possui: 5 agentes, perfis de modelo, candidates, circuit breaker, telemetria, budget, runs/steps, UI e feature flag. O que falta é a orquestração completa.
+### Implementado localmente
+1. State machine determinística básica: SCOUT, STUDIO quando visual, FORGE, SENTINEL e SHIP quando publicação é solicitada.
+2. SCOUT/STUDIO registram pacotes de contexto sem chain-of-thought.
+3. FORGE executa com `forcedAgentKey`, impedindo divergência entre `agent_steps.agent_key` e `model_invocations.agent_key`.
+4. ValidatorEngine é registrado no fluxo definitivo de `apply-proposal`.
+5. Falha de validation cria evidência SENTINEL e rollback seguro já existente.
+6. Testes cobrem backend sem STUDIO, visual com STUDIO, publish com SHIP e consistência de agent key.
 
-### Falta
-1. Implementar state machine determinística no backend.
-2. Fluxo mínimo:
-   - SCOUT mapeia contexto/plano;
-   - STUDIO entra apenas quando houver trabalho visual/UX;
-   - FORGE produz a proposta;
-   - ValidatorEngine executa gates reais;
-   - SENTINEL interpreta somente evidência real de falha e pede correção localizada;
-   - FORGE corrige apenas o step bloqueado;
-   - SHIP prepara publicação quando solicitado.
-3. Persistir cada transição em agent_steps.
-4. Usar context packages MICRO/LOCAL/TASK entre steps.
-5. Escalonar BASE_FREE → EXPERT_PAID somente no step bloqueado.
-6. Retornar automaticamente ao BASE_FREE no step seguinte.
-7. PREMIUM_OVERRIDE deve continuar desabilitado por padrão e exigir confirmação explícita.
-8. Limitar correções automáticas. Sugestão do plano aprovado: execução + 1 correção quando surgir erro novo; nunca loop infinito.
-9. Abort deve cancelar provider e worker.
-10. Atualizar spent_usd do run com invocações reais.
-11. Timeline deve mostrar eventos, modelo, custo, validator e retries sem expor cadeia de pensamento.
-12. Executar benchmark com 30 tarefas reais antes de aumentar autonomia/tentativas.
-
-### Gate
-- Uma tarefa real deve atravessar mais de um agente, falhar em gate, corrigir apenas o step, passar, registrar custo/telemetria e finalizar sem intervenção manual.
+### Ainda falta para gate completo
+1. WebSocket/runtime error evidence acoplado ao SENTINEL.
+2. Correção automática localizada após falha executada, com uma tentativa bounded e revalidação success/fail.
+3. Escalonamento BASE_FREE → EXPERT_PAID somente no step bloqueado, com retorno ao BASE_FREE no step seguinte.
+4. Abort cobrindo provider, worker, runtime relacionado e promises pendentes em teste integrado.
+5. Benchmark real de 30 tarefas com providers reais.
 
 ## B / I — remoção física do snapshot legado
 
-O fluxo operacional já usa persistência canônica normalizada. O snapshot antigo permanece apenas como leitor de bootstrap/migração.
+O fluxo operacional usa persistência canônica normalizada. `forge_sync_snapshots` permanece apenas como leitor de bootstrap/migração.
 
 ### Falta
-1. Validar em ambiente real que todas as contas existentes foram reconciliadas com as tabelas canônicas e Storage.
+1. Validar em ambiente real que todas as contas existentes foram reconciliadas com tabelas canônicas e Storage.
 2. Comparar contagens, ownership, hashes e decryptability de secrets.
-3. Depois da janela de rollback aprovada, remover:
-   - leitura de forge_sync_snapshots;
-   - métodos de snapshot legado no CloudSyncService;
-   - migration/tabela antiga apenas por migration destrutiva versionada e revisada.
-4. Remover testes exclusivamente ligados ao snapshot depois do gate de migração.
+3. Depois da janela de rollback aprovada, remover leitura de snapshot legado e tabela antiga por migration destrutiva versionada.
+4. Remover colunas espelho antigas somente após reconciliação real.
 
-### Gate
-- Banco/Storage canônico reconstruindo a conta completa em runtime limpo sem consultar forge_sync_snapshots.
+## Validação local desta rodada
 
-## B / E / I — colunas espelho antigas
-
-projects.repo_url, projects.branch, projects.provider_id e projects.model_id ainda existem por compatibilidade/migração. Os consumidores GitHub já usam repositories + branches; provider/modelo ativo é por conta/perfil.
-
-### Falta
-1. Fazer backfill/reconciliação final das colunas espelho.
-2. Confirmar zero consumidor operacional.
-3. Remover as colunas apenas via migration segura depois da aceitação dos dados.
-
-## Validação final do Codex
-
-Antes de declarar o pacote concluído:
-
-1. lint/typecheck;
-2. testes Node;
-3. testes HTTP/security;
-4. build;
-5. Playwright/browser real;
-6. runtime framework E2E;
-7. integração GitHub real;
-8. integração Cloudflare real;
-9. benchmark Agent Engine;
-10. confirmar CI verde na main.
+- Suíte direcionada `foundation/http/directPersistence/regression/agentEngine`: 67/67 PASS.
+- Os demais gates devem ser registrados no relatório final da rodada.

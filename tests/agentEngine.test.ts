@@ -4,6 +4,8 @@ import { initializeDatabase, db } from '../server/db/index.js';
 import { AgentEngine, AgentWorkflowEngine } from '../server/agent-engine/agentEngine.js';
 import { RunService } from '../server/services/runService.js';
 import { ModelRouter } from '../server/services/modelRouter.js';
+import { LLMAdapterService } from '../server/services/llmAdapter.js';
+import { SecretService } from '../server/services/secretService.js';
 
 initializeDatabase();
 
@@ -115,3 +117,52 @@ test('agent workflow skips STUDIO for backend-only work and only adds SHIP when 
     db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
   }
 });
+
+
+test('workflow forced FORGE keeps agent_steps and model_invocations agent_key consistent', async (t) => {
+  const unique = Date.now().toString(36) + Math.random().toString(36).slice(2);
+  const userId = `agent-consistency-user-${unique}`;
+  const projectId = `agent-consistency-project-${unique}`;
+  const conversationId = `agent-consistency-conv-${unique}`;
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO providers(id,user_id,provider_key,name,base_url,model_id,is_configured,connection_status,context_limit,created_at) VALUES(?,?,?,?,?,?,1,'connected',128000,?)")
+    .run(`prov-${unique}`, userId, 'omniroute', 'OmniRoute', 'https://example.test/v1', 'auto', now);
+  db.prepare('INSERT INTO model_profiles(id,user_id,profile_key,level,max_attempts,max_cost_usd,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(`profile-${unique}`, userId, 'BASE_FREE', 0, 1, 0.01, 1, now, now);
+  db.prepare('INSERT INTO model_candidates(id,profile_id,provider_key,model_id,priority,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+    .run(`candidate-${unique}`, `profile-${unique}`, 'omniroute', 'auto', 0, 1, now, now);
+  SecretService.saveSecret(userId, 'omniroute', 'secret-for-test');
+  t.mock.method(LLMAdapterService, 'executePrompt', async () => ({
+    replyText: 'ok',
+    mode: 'auto',
+    decisionType: 'change',
+    isDemonstrativeFallback: false,
+    providerUsed: 'OmniRoute',
+    modelUsed: 'auto',
+    proposal: { id: `prop-${unique}`, summary: 'ok', requiresConfirmation: false, files: [{ path: 'index.html', action: 'modify', content: '<html></html>' }], status: 'pending' },
+    build: { summary: 'ok', explanation: 'ok', files: [{ path: 'index.html', action: 'modify', content: '<html></html>' }] },
+    usage: { inputTokens: 1, outputTokens: 1, billedCostUsd: 0.001 },
+  } as any));
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'auto',0.5);
+  try {
+    await AgentWorkflowEngine.executeWorkflow({
+      prompt:'melhore o visual premium desta tela',
+      mode:'auto',projectId,existingFiles:{'index.html':'<html>old</html>'},appliedSkills:[],conversationHistory:[],userId,runId,stepId
+    });
+    const rows = db.prepare(`SELECT s.agent_key step_agent, i.agent_key invocation_agent
+      FROM model_invocations i JOIN agent_steps s ON s.id=i.step_id WHERE i.run_id=?`).all(runId) as any[];
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].step_agent, 'FORGE');
+    assert.equal(rows[0].invocation_agent, 'FORGE');
+  } finally {
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    db.prepare('DELETE FROM model_candidates WHERE profile_id=?').run(`profile-${unique}`);
+    db.prepare('DELETE FROM model_profiles WHERE id=?').run(`profile-${unique}`);
+    db.prepare('DELETE FROM user_secrets WHERE user_id=?').run(userId);
+    db.prepare('DELETE FROM providers WHERE id=?').run(`prov-${unique}`);
+  }
+});
+
+

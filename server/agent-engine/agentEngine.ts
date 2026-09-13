@@ -1,40 +1,177 @@
-import {LLMAdapterService,type AgentMode,type LLMExecutionResult} from '../services/llmAdapter.js';import {ModelRouter,type ProfileKey,type FailureKind} from '../services/modelRouter.js';import {selectAgent} from './agentRegistry.js';import {RunService} from '../services/runService.js';
-type Input={prompt:string;mode:AgentMode;projectId:string;existingFiles:Record<string,string>;appliedSkills:string[];conversationHistory:Array<{sender:string;content:string}>;userId:string;runId:string;stepId:string;signal?:AbortSignal};
-export class AgentEngine{static async execute(x:Input,profile:ProfileKey='BASE_FREE'):Promise<LLMExecutionResult&{agentKey:string;profileKey:ProfileKey}> {const agentKey=selectAgent(x.mode,x.prompt);RunService.assignAgent(x.stepId,agentKey);const available=ModelRouter.candidates(x.userId,profile).filter(c=>LLMAdapterService.getProviderConfig(c.provider_key,x.userId).isConfigured),candidates=available.slice(0,Math.max(1,Number(available[0]?.max_attempts||1)));if(!candidates.length){const fallback=await LLMAdapterService.executePrompt({...x,providerKey:undefined,allowActiveFallback:false});return{...fallback,agentKey,profileKey:profile};}let last:unknown;for(let i=0;i<candidates.length;i++){RunService.recordAttempt(x.stepId);const c=candidates[i],started=Date.now();try{ModelRouter.assertBudget(x.userId,Number(c.max_cost_usd||0),{runId:x.runId});const result=await LLMAdapterService.executePrompt({...x,providerKey:c.provider_key,modelId:c.model_id==='auto'?undefined:c.model_id});if(result.isDemonstrativeFallback||result.hasErrors){const reason=String(result.errorReason||result.errorMessage||'provider_error');const operational=/timeout|network|rate_limit|provider_error|429|5\d\d/i.test(reason);throw Object.assign(Error(result.errorMessage||'Provider indisponível'),{kind:operational?'operational':'incompatible',reason});}ModelRouter.recordCandidateResult(c.id,true);ModelRouter.recordInvocation({userId:x.userId,projectId:x.projectId,runId:x.runId,stepId:x.stepId,agentKey,profileKey:profile,providerKey:c.provider_key,modelId:c.model_id,inputTokens:result.usage?.inputTokens,outputTokens:result.usage?.outputTokens,costUsd:result.usage?.billedCostUsd,latencyMs:Date.now()-started,status:'success',retryIndex:i});return{...result,agentKey,profileKey:profile};}catch(e:any){last=e;const operational=/429|5\d\d|timeout|fetch|network|indispon/i.test(String(e.message));const kind:FailureKind=operational?'operational':'incompatible';ModelRouter.recordCandidateResult(c.id,false,kind);ModelRouter.recordInvocation({userId:x.userId,projectId:x.projectId,runId:x.runId,stepId:x.stepId,agentKey,profileKey:profile,providerKey:c.provider_key,modelId:c.model_id,latencyMs:Date.now()-started,status:'failed',errorCode:kind,retryIndex:i});}}throw last||Error('Nenhum modelo disponível.');}}
+import { LLMAdapterService, type AgentMode, type LLMExecutionResult } from '../services/llmAdapter.js';
+import { ModelRouter, type FailureKind, type ProfileKey } from '../services/modelRouter.js';
+import { RunService } from '../services/runService.js';
+import { selectAgent } from './agentRegistry.js';
 
+type Input = {
+  prompt: string;
+  mode: AgentMode;
+  projectId: string;
+  existingFiles: Record<string, string>;
+  appliedSkills: string[];
+  conversationHistory: Array<{ sender: string; content: string }>;
+  userId: string;
+  runId: string;
+  stepId: string;
+  signal?: AbortSignal;
+};
 
+type ExecuteOptions = { profile?: ProfileKey; forcedAgentKey?: string };
 
-function needsStudio(prompt:string,mode:AgentMode){return mode==='auto'&&/interface|layout|design|visual|tela|css|responsiv|premium|ux|ui/i.test(prompt);}
-function needsShip(prompt:string,mode:AgentMode){return mode==='publish'||/\b(public(?:ar|a|e)|deploy|lançar|release)\b/i.test(prompt);}
+function relevantFiles(files: Record<string, string>, limit: number) {
+  return Object.entries(files).slice(0, limit).map(([file, content]) => ({ file, chars: content.length, preview: content.slice(0, 240) }));
+}
 
-export type WorkflowResult = LLMExecutionResult & {agentKey:string;profileKey:ProfileKey;workflow:{runId:string;steps:string[];status:'completed'|'failed'|'aborted'}};
+function needsStudio(prompt: string, mode: AgentMode) {
+  return mode === 'auto' && /interface|layout|design|visual|tela|css|responsiv|premium|ux|ui/i.test(prompt);
+}
 
-export class AgentWorkflowEngine extends AgentEngine{
- static async executeWorkflow(x:Input):Promise<WorkflowResult>{
-  const steps:string[]=[x.stepId];
-  RunService.assignAgent(x.stepId,'SCOUT');
-  RunService.finishStep(x.stepId,'completed',RunService.context('task',{objective:x.prompt,acceptanceCriteria:['Responder sem estado falso','Preservar preview antes da aplicação definitiva'],snippets:Object.keys(x.existingFiles).slice(0,20)}));
-  let order=1;
-  if(needsStudio(x.prompt,x.mode)){
-    const studio=RunService.createStep(x.runId,'STUDIO','Definir critérios visuais',order++,'local',RunService.context('local',{objective:'Direção visual/UX solicitada',constraints:['Não altera arquivos diretamente']}));
-    steps.push(studio);RunService.finishStep(studio,'completed');
+function needsShip(prompt: string, mode: AgentMode) {
+  return mode === 'publish' || /\b(public(?:ar|a|e)|deploy|lançar|release)\b/i.test(prompt);
+}
+
+export class AgentEngine {
+  static async execute(x: Input, profileOrOptions: ProfileKey | ExecuteOptions = 'BASE_FREE'): Promise<LLMExecutionResult & { agentKey: string; profileKey: ProfileKey }> {
+    const options: ExecuteOptions = typeof profileOrOptions === 'string' ? { profile: profileOrOptions } : profileOrOptions;
+    const profile = options.profile || 'BASE_FREE';
+    const agentKey = options.forcedAgentKey || selectAgent(x.mode, x.prompt);
+    RunService.assignAgent(x.stepId, agentKey);
+    const available = ModelRouter.candidates(x.userId, profile).filter(c => LLMAdapterService.getProviderConfig(c.provider_key, x.userId).isConfigured);
+    const candidates = available.slice(0, Math.max(1, Number(available[0]?.max_attempts || 1)));
+    if (!candidates.length) {
+      const fallback = await LLMAdapterService.executePrompt({ ...x, providerKey: undefined, allowActiveFallback: false });
+      return { ...fallback, agentKey, profileKey: profile };
+    }
+    let last: unknown;
+    for (let i = 0; i < candidates.length; i++) {
+      x.signal?.throwIfAborted();
+      RunService.recordAttempt(x.stepId);
+      const c = candidates[i];
+      const started = Date.now();
+      try {
+        ModelRouter.assertBudget(x.userId, Number(c.max_cost_usd || 0), { runId: x.runId });
+        const result = await LLMAdapterService.executePrompt({ ...x, providerKey: c.provider_key, modelId: c.model_id === 'auto' ? undefined : c.model_id });
+        if (result.isDemonstrativeFallback || result.hasErrors) {
+          const reason = String(result.errorReason || result.errorMessage || 'provider_error');
+          const operational = /timeout|network|rate_limit|provider_error|429|5\d\d/i.test(reason);
+          throw Object.assign(Error(result.errorMessage || 'Provider indisponível'), { kind: operational ? 'operational' : 'incompatible', reason });
+        }
+        ModelRouter.recordCandidateResult(c.id, true);
+        ModelRouter.recordInvocation({
+          userId: x.userId,
+          projectId: x.projectId,
+          runId: x.runId,
+          stepId: x.stepId,
+          agentKey,
+          profileKey: profile,
+          providerKey: c.provider_key,
+          modelId: c.model_id,
+          inputTokens: result.usage?.inputTokens,
+          outputTokens: result.usage?.outputTokens,
+          costUsd: result.usage?.billedCostUsd,
+          latencyMs: Date.now() - started,
+          status: 'success',
+          retryIndex: i,
+        });
+        return { ...result, agentKey, profileKey: profile };
+      } catch (e: any) {
+        last = e;
+        const operational = /429|5\d\d|timeout|fetch|network|indispon/i.test(String(e.message));
+        const kind: FailureKind = operational ? 'operational' : 'incompatible';
+        ModelRouter.recordCandidateResult(c.id, false, kind);
+        ModelRouter.recordInvocation({
+          userId: x.userId,
+          projectId: x.projectId,
+          runId: x.runId,
+          stepId: x.stepId,
+          agentKey,
+          profileKey: profile,
+          providerKey: c.provider_key,
+          modelId: c.model_id,
+          latencyMs: Date.now() - started,
+          status: x.signal?.aborted ? 'aborted' : 'failed',
+          errorCode: x.signal?.aborted ? 'aborted' : kind,
+          retryIndex: i,
+        });
+        if (x.signal?.aborted) throw e;
+      }
+    }
+    throw last || Error('Nenhum modelo disponível.');
   }
-  const forge=RunService.createStep(x.runId,'FORGE','Gerar resposta ou proposta',order++,'local',RunService.context('local',{objective:x.prompt,snippets:Object.keys(x.existingFiles).slice(0,12)}));
-  steps.push(forge);
-  let result:LLMExecutionResult&{agentKey:string;profileKey:ProfileKey};
-  try{result=await AgentEngine.execute({...x,stepId:forge},'BASE_FREE');RunService.assignAgent(forge,'FORGE');RunService.finishStep(forge,result.hasErrors?'failed':'completed',{decisionType:result.decisionType,providerUsed:result.providerUsed,modelUsed:result.modelUsed,files:result.build?.files?.map(f=>f.path)||[]});}
-  catch(error:any){
-    RunService.finishStep(forge,'failed',{error:String(error?.message||error)});
-    const sentinel=RunService.createStep(x.runId,'SENTINEL','Registrar falha com evidência',order++,'micro',RunService.context('micro',{objective:'Diagnosticar falha de provider/modelo',errors:[String(error?.message||error)]}));
-    steps.push(sentinel);RunService.finishStep(sentinel,'completed');
-    throw error;
+}
+
+export type WorkflowResult = LLMExecutionResult & { agentKey: string; profileKey: ProfileKey; workflow: { runId: string; steps: string[]; status: 'completed' | 'failed' | 'aborted' } };
+
+export class AgentWorkflowEngine extends AgentEngine {
+  static async executeWorkflow(x: Input): Promise<WorkflowResult> {
+    const steps: string[] = [x.stepId];
+    RunService.assignAgent(x.stepId, 'SCOUT');
+    RunService.finishStep(x.stepId, 'completed', RunService.context('task', {
+      objective: x.prompt,
+      acceptanceCriteria: ['Sem sucesso falso', 'Preservar preview antes da aplicação definitiva', 'Rodar ValidatorEngine após aplicação real'],
+      snippets: relevantFiles(x.existingFiles, 12),
+      constraints: ['Não carregar projeto inteiro para o agente', 'Não publicar sem solicitação explícita'],
+    }));
+    let order = 1;
+
+    if (needsStudio(x.prompt, x.mode)) {
+      const studio = RunService.createStep(x.runId, 'STUDIO', 'Definir critérios visuais aplicáveis', order++, 'local', RunService.context('local', {
+        objective: 'Transformar solicitação visual em critérios objetivos para o FORGE',
+        acceptanceCriteria: ['Layout coerente', 'Responsividade', 'Hierarquia visual clara'],
+        snippets: relevantFiles(x.existingFiles, 6),
+        constraints: ['STUDIO não modifica arquivos', 'STUDIO não chama provider quando critérios determinísticos bastam'],
+      }));
+      steps.push(studio);
+      RunService.finishStep(studio, 'completed');
+    }
+
+    const forge = RunService.createStep(x.runId, 'FORGE', 'Gerar proposta de código', order++, 'local', RunService.context('local', {
+      objective: x.prompt,
+      snippets: relevantFiles(x.existingFiles, 10),
+      constraints: ['Gerar proposta sem alterar definitivamente o workspace', 'Manter alteração limitada ao objetivo'],
+    }));
+    steps.push(forge);
+
+    let result: LLMExecutionResult & { agentKey: string; profileKey: ProfileKey };
+    try {
+      result = await AgentEngine.execute({ ...x, stepId: forge }, { profile: 'BASE_FREE', forcedAgentKey: 'FORGE' });
+      RunService.finishStep(forge, result.hasErrors ? 'failed' : 'completed', {
+        decisionType: result.decisionType,
+        providerUsed: result.providerUsed,
+        modelUsed: result.modelUsed,
+        profileKey: result.profileKey,
+        files: result.build?.files?.map(f => f.path) || result.proposal?.files?.map(f => f.path) || [],
+      });
+    } catch (error: any) {
+      RunService.finishStep(forge, x.signal?.aborted ? 'aborted' : 'failed', { error: String(error?.message || error) });
+      const sentinel = RunService.createStep(x.runId, 'SENTINEL', 'Diagnosticar falha executável', order++, 'micro', RunService.context('micro', {
+        objective: 'Interpretar falha concreta de provider/modelo',
+        errors: [String(error?.message || error)],
+        constraints: ['Sem revisão genérica', 'Sem segunda tentativa sem evidência nova'],
+      }));
+      steps.push(sentinel);
+      RunService.finishStep(sentinel, x.signal?.aborted ? 'aborted' : 'completed');
+      throw error;
+    }
+
+    const sentinelStatus = RunService.createStep(x.runId, 'SENTINEL', result.proposal ? 'Aguardar aplicação para validar proposta' : 'Registrar ausência de validação aplicável', order++, 'micro', {
+      status: result.proposal ? 'pending_user_apply' : 'not_applicable',
+      reason: result.proposal ? 'Preview antes de aplicar é intencional; ValidatorEngine roda na aplicação definitiva.' : 'Sem proposta de código para validar.',
+      validator: 'ValidatorEngine',
+    });
+    steps.push(sentinelStatus);
+    RunService.finishStep(sentinelStatus, 'completed');
+
+    if (needsShip(x.prompt, x.mode)) {
+      const ship = RunService.createStep(x.runId, 'SHIP', 'Preparar publicação solicitada', order++, 'task', {
+        requested: true,
+        status: 'waiting_for_publish_adapter',
+        constraints: ['SHIP não publica sem adapter/credencial real'],
+      });
+      steps.push(ship);
+      RunService.finishStep(ship, 'completed');
+    }
+
+    return { ...result, workflow: { runId: x.runId, steps, status: result.hasErrors ? 'failed' : 'completed' } };
   }
-  const validate=RunService.createStep(x.runId,'SENTINEL','Preparar verificação da proposta',order++,'micro',{status:result.proposal?'pending_user_apply':'not_applicable',reason:result.proposal?'Preview antes de aplicar é intencional; gates rodam na aplicação definitiva.':'Sem proposta de código para validar.'});
-  steps.push(validate);RunService.finishStep(validate,'completed');
-  if(needsShip(x.prompt,x.mode)){
-    const ship=RunService.createStep(x.runId,'SHIP','Preparar publicação solicitada',order++,'task',{requested:true,status:'delegated_to_publish_adapter'});
-    steps.push(ship);RunService.finishStep(ship,'completed');
-  }
-  return {...result,workflow:{runId:x.runId,steps,status:result.hasErrors?'failed':'completed'}};
- }
 }

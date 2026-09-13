@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SecretService } from './secretService.js';
+import { RuntimeManager } from './runtimeManager.js';
 import { db } from '../db/index.js';
 
 export const integrationFields = {
@@ -112,33 +113,64 @@ export class IntegrationService {
   }
 
 
-  static findPagesArtifact(projectDir: string) {
-    for (const candidate of ['dist', 'build', 'public']) {
-      const full = path.join(projectDir, candidate);
-      if (fs.existsSync(path.join(full, 'index.html'))) return { directory: candidate, fullPath: full };
+  static findPagesArtifact(projectDir: string, framework: string, explicitOutput?: string) {
+    const candidates = explicitOutput ? [explicitOutput] : [framework === 'cra' ? 'build' : framework === 'next' ? 'out' : 'dist'];
+    for (const candidate of candidates) {
+      const normalized = candidate.replace(/\\/g, '/').replace(/^\/+/, '');
+      if (normalized === 'public') continue;
+      const full = path.join(projectDir, normalized);
+      if (fs.existsSync(path.join(full, 'index.html'))) return { directory: normalized, fullPath: full };
     }
     return null;
   }
 
-  static async deployCloudflareDirectUpload(userId: string, projectDir: string, branch = 'main') {
+  private static controlledWrangler() {
+    const bin = process.platform === 'win32' ? 'wrangler.cmd' : 'wrangler';
+    const full = path.join(process.cwd(), 'node_modules', '.bin', bin);
+    if (!fs.existsSync(full)) throw new Error('Wrangler controlado pelo Forge não está instalado. Execute npm install no Forge.');
+    return full;
+  }
+
+  private static async killDeployProcess(child: ChildProcessWithoutNullStreams) {
+    if (!child.pid || child.killed) return;
+    if (process.platform === 'win32') {
+      const { execFile } = await import('node:child_process');
+      await new Promise<void>(resolve => execFile('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true }, () => resolve()));
+      return;
+    }
+    try { process.kill(-child.pid, 'SIGTERM'); } catch { try { child.kill('SIGTERM'); } catch {} }
+    await new Promise(resolve => setTimeout(resolve, 400));
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch {} }
+  }
+
+  static async deployCloudflareDirectUpload(userId: string, projectId: string, branch = 'main', signal?: AbortSignal) {
     const c = this.read(userId, 'cloudflare');
     if (!c.token || !c.accountId || !c.projectName) throw new Error('Configure token, Account ID e nome do projeto Cloudflare Pages.');
-    const artifact = this.findPagesArtifact(projectDir);
-    if (!artifact) throw new Error('Nenhum artefato de build foi encontrado. Gere dist/, build/ ou public/ com index.html antes do Direct Upload.');
+    const build = await RuntimeManager.build(projectId, signal);
+    const projectDir = path.dirname(build.artifactDir || path.join(process.cwd(), 'missing'));
+    if (!build.ok) throw new Error(`Build do projeto falhou antes do Direct Upload. ${build.output.slice(-1000)}`);
+    const artifact = build.artifactDir ? this.findPagesArtifact(projectDir, build.framework, c.outputDir) : null;
+    if (!artifact) throw new Error(`Nenhum artefato compatível foi encontrado após build. Esperado: ${c.outputDir || (build.framework === 'cra' ? 'build' : build.framework === 'next' ? 'out' : 'dist')} com index.html. public/ não é aceito como build.`);
     const env: NodeJS.ProcessEnv = {};
     for (const key of ['PATH','Path','PATHEXT','SYSTEMROOT','SystemRoot','WINDIR','COMSPEC','TEMP','TMP','TMPDIR','HOME','USERPROFILE','APPDATA','LOCALAPPDATA']) if (process.env[key]) env[key]=process.env[key];
     env.CLOUDFLARE_ACCOUNT_ID = c.accountId;
     env.CLOUDFLARE_API_TOKEN = c.token;
-    const args = ['wrangler','pages','deploy',artifact.fullPath,'--project-name',c.projectName,'--branch',branch || 'main'];
+    const args = ['pages','deploy',artifact.fullPath,'--project-name',c.projectName,'--branch',branch || 'main'];
     const started = Date.now();
-    return await new Promise<{success:boolean;status:string;url?:string;output:string;durationMs:number}>((resolve,reject)=>{
-      const child=spawn(process.platform==='win32'?'npx.cmd':'npx',args,{cwd:projectDir,shell:false,windowsHide:true,env});
+    const wrangler = this.controlledWrangler();
+    return await new Promise<{success:boolean;status:string;url?:string;output:string;durationMs:number;build:{framework:string;artifact:string;durationMs:number}}>((resolve,reject)=>{
+      const child=spawn(wrangler,args,{cwd:process.cwd(),shell:false,windowsHide:true,detached:process.platform!=='win32',env});
       let output='';
-      const collect=(b:Buffer)=>{output=(output+b.toString()).replaceAll(c.token,'[redacted]').slice(-12000);};
+      let settled=false;
+      const redact=(text:string)=>text.replaceAll(c.token,'[redacted]').replaceAll(c.accountId,'[account]').slice(-12000);
+      const finish=(fn:()=>void)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);fn();};
+      const collect=(b:Buffer)=>{output=redact(output+b.toString());};
       child.stdout.on('data',collect);child.stderr.on('data',collect);
-      const timer=setTimeout(()=>{try{child.kill();}catch{} reject(new Error('Cloudflare Direct Upload excedeu o tempo limite.'));},180000);
-      child.on('error',e=>{clearTimeout(timer);reject(e);});
-      child.on('close',code=>{clearTimeout(timer);const url=output.match(/https:\/\/[^\s]+\.pages\.dev[^\s]*/i)?.[0];if(code===0)resolve({success:true,status:'active',url,output,durationMs:Date.now()-started});else reject(new Error(`Wrangler recusou o Direct Upload (exit ${code}). ${output.slice(-1000)}`));});
+      const abort=()=>{void this.killDeployProcess(child);};
+      signal?.addEventListener('abort',abort,{once:true});
+      const timer=setTimeout(()=>{void this.killDeployProcess(child);finish(()=>reject(new Error('Cloudflare Direct Upload excedeu o tempo limite.')));},180000);
+      child.on('error',e=>finish(()=>reject(e)));
+      child.on('close',code=>finish(()=>{const url=output.match(/https:\/\/[^\s]+\.pages\.dev[^\s]*/i)?.[0];if(code===0)resolve({success:true,status:'active',url,output,durationMs:Date.now()-started,build:{framework:build.framework,artifact:artifact.directory,durationMs:build.durationMs}});else reject(new Error(`Wrangler recusou o Direct Upload (exit ${code}). ${output.slice(-1000)}`));}));
     });
   }
 

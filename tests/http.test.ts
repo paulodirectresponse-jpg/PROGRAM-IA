@@ -8,6 +8,7 @@ import {AuthService} from '../server/services/authService.js';
 import {LLMAdapterService} from '../server/services/llmAdapter.js';
 import {WorkspaceManager} from '../server/services/workspaceManager.js';
 import {RuntimeManager} from '../server/services/runtimeManager.js';
+import {SecretService} from '../server/services/secretService.js';
 import type {Server} from 'node:http';
 
 let server:Server, base:string, tokenA:string, tokenB:string, userA:string, userB:string;
@@ -196,3 +197,110 @@ test('Cloudflare Direct Upload refuses missing build artifact without false succ
     db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
   }
 });
+
+test('runtime proxy preserves method body query and strips Forge credentials', async () => {
+  const runtimeProject = `runtime-proxy-${Date.now()}`;
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'Runtime proxy','novo',?,?)")
+    .run(runtimeProject,userA,`ws-${userA}`,now,now);
+  WorkspaceManager.writeFile(runtimeProject,'package.json',JSON.stringify({scripts:{dev:'node server.js'}}));
+  WorkspaceManager.writeFile(runtimeProject,'server.js',`
+    const http = require('http');
+    http.createServer((req,res)=>{
+      let body='';
+      req.on('data', chunk => body += chunk);
+      req.on('end', () => {
+        res.setHeader('content-type','application/json');
+        res.end(JSON.stringify({method:req.method,url:req.url,body,authorization:req.headers.authorization||null,cookie:req.headers.cookie||null,custom:req.headers['x-custom']||null}));
+      });
+    }).listen(Number(process.env.PORT), '127.0.0.1');
+  `);
+  try {
+    const status = await fetch(`${base}/projects/${runtimeProject}/preview/status`,{headers:{Authorization:`Bearer ${tokenA}`}});
+    assert.equal(status.status,200);
+    const preview = await fetch(`${base}/preview/${runtimeProject}/api/save?x=1`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'text/plain','X-Custom':'kept'},body:'payload'});
+    assert.equal(preview.status,200);
+    const payload = await preview.json();
+    assert.equal(payload.method,'POST');
+    assert.equal(payload.url,'/api/save?x=1');
+    assert.equal(payload.body,'payload');
+    assert.equal(payload.authorization,null);
+    assert.equal(payload.cookie,null);
+    assert.equal(payload.custom,'kept');
+  } finally {
+    await RuntimeManager.stop(runtimeProject);
+    WorkspaceManager.deleteProject(runtimeProject);
+    db.prepare('DELETE FROM projects WHERE id=?').run(runtimeProject);
+  }
+});
+
+test('runtime dependency install does not execute lifecycle scripts from imported projects', async () => {
+  const runtimeProject = `runtime-install-safe-${Date.now()}`;
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'Runtime install safe','novo',?,?)")
+    .run(runtimeProject,userA,`ws-${userA}`,now,now);
+  WorkspaceManager.writeFile(runtimeProject,'package.json',JSON.stringify({scripts:{postinstall:'node postinstall.js',dev:'node server.js'}}));
+  WorkspaceManager.writeFile(runtimeProject,'postinstall.js','require("fs").writeFileSync("lifecycle-ran.txt","bad")');
+  WorkspaceManager.writeFile(runtimeProject,'server.js','require("http").createServer((req,res)=>res.end("ok")).listen(Number(process.env.PORT), "127.0.0.1")');
+  try {
+    const status = await fetch(`${base}/projects/${runtimeProject}/preview/status`,{headers:{Authorization:`Bearer ${tokenA}`}});
+    assert.equal(status.status,200);
+    assert.equal(WorkspaceManager.readFile(runtimeProject,'lifecycle-ran.txt'),null);
+  } finally {
+    await RuntimeManager.stop(runtimeProject);
+    WorkspaceManager.deleteProject(runtimeProject);
+    db.prepare('DELETE FROM projects WHERE id=?').run(runtimeProject);
+  }
+});
+
+
+test('Cloudflare Direct Upload runs build and persists failed when build fails', async () => {
+  const projectId = `direct-upload-build-fail-${Date.now()}`;
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'Direct upload build fail','novo',?,?)")
+    .run(projectId,userA,`ws-${userA}`,now,now);
+  db.prepare("INSERT INTO integrations(id,user_id,service_name,config_json,status,last_verified_at,created_at) VALUES(?,?,?,'{}','connected',?,?)")
+    .run(`int-${projectId}`,userA,'cloudflare',now,now);
+  SecretService.saveSecret(userA, 'integration:cloudflare', JSON.stringify({token:'cf-token-secret', accountId:'account123', projectName:'forge-pages'}));
+  WorkspaceManager.writeFile(projectId,'package.json',JSON.stringify({scripts:{build:'node -e "process.exit(2)"'}}));
+  try {
+    const response=await fetch(`${base}/projects/${projectId}/deploy/cloudflare/direct`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`}});
+    assert.equal(response.status,400);
+    const body=await response.json();
+    assert.match(body.error,/Build do projeto falhou/i);
+    const row=db.prepare("SELECT status,error_message FROM deployments WHERE project_id=? ORDER BY created_at DESC LIMIT 1").get(projectId) as any;
+    assert.equal(row.status,'failed');
+    assert.doesNotMatch(row.error_message,/cf-token-secret/);
+  } finally {
+    WorkspaceManager.deleteProject(projectId);
+    db.prepare('DELETE FROM deployments WHERE project_id=?').run(projectId);
+    db.prepare('DELETE FROM integrations WHERE user_id=? AND service_name=?').run(userA,'cloudflare');
+    db.prepare('DELETE FROM user_secrets WHERE user_id=? AND service_key=?').run(userA,'integration:cloudflare');
+    db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
+  }
+});
+
+test('Cloudflare Direct Upload does not treat public source folder as build artifact', async () => {
+  const projectId = `direct-upload-public-${Date.now()}`;
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'Direct upload public','novo',?,?)")
+    .run(projectId,userA,`ws-${userA}`,now,now);
+  db.prepare("INSERT INTO integrations(id,user_id,service_name,config_json,status,last_verified_at,created_at) VALUES(?,?,?,'{}','connected',?,?)")
+    .run(`int-${projectId}`,userA,'cloudflare',now,now);
+  SecretService.saveSecret(userA, 'integration:cloudflare', JSON.stringify({token:'cf-token-secret', accountId:'account123', projectName:'forge-pages'}));
+  WorkspaceManager.writeFile(projectId,'package.json',JSON.stringify({scripts:{build:'node build.js'}}));
+  WorkspaceManager.writeFile(projectId,'build.js','const fs=require("fs");fs.mkdirSync("public",{recursive:true});fs.writeFileSync("public/index.html","<html></html>");');
+  try {
+    const response=await fetch(`${base}/projects/${projectId}/deploy/cloudflare/direct`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`}});
+    assert.equal(response.status,400);
+    const body=await response.json();
+    assert.match(body.error,/public\/ não é aceito como build|Nenhum artefato compatível/i);
+  } finally {
+    WorkspaceManager.deleteProject(projectId);
+    db.prepare('DELETE FROM deployments WHERE project_id=?').run(projectId);
+    db.prepare('DELETE FROM integrations WHERE user_id=? AND service_name=?').run(userA,'cloudflare');
+    db.prepare('DELETE FROM user_secrets WHERE user_id=? AND service_key=?').run(userA,'integration:cloudflare');
+    db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
+  }
+});
+

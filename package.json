@@ -40,7 +40,7 @@
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.3",
-    "@playwright/test": "^1.55.0"
+    "@playwright/test": "^1.55.0",
+    "wrangler": "^4.40.2"
   }
 }
-
