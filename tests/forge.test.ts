@@ -5,6 +5,7 @@ import { db, initializeDatabase } from '../server/db/index.js';
 import { AuthService } from '../server/services/authService.js';
 import { SecretService } from '../server/services/secretService.js';
 import { WorkspaceManager } from '../server/services/workspaceManager.js';
+import { ValidatorEngine } from '../server/services/validatorEngine.js';
 import { LLMAdapterService } from '../server/services/llmAdapter.js';
 import { GitHubService } from '../server/services/githubService.js';
 
@@ -485,31 +486,31 @@ Criar API segura
       assert.equal(WorkspaceManager.readFile(testProjectId, 'version.txt'), 'v1.0.0');
     });
 
-    test('6.4: Quality Gate de vazamento de segredos detecta chaves privadas', () => {
-      const leakFile = 'const API_KEY = "example-sensitive-value-12345678901234567890";';
-      WorkspaceManager.writeFile(testProjectId, 'leaked.js', leakFile);
-
+    test('6.4: Validator canônico detecta credencial exposta como falha real', async () => {
+      WorkspaceManager.writeFile(testProjectId, 'leaked.js', 'const API_KEY = "example-sensitive-value-12345678901234567890";');
       const cpId = WorkspaceManager.createCheckpoint(testProjectId, 'Check with leak');
-      const verifications = db.prepare(
-        "SELECT * FROM verifications WHERE project_id = ? AND checkpoint_id = ? AND gate_type = 'security'"
-      ).all(testProjectId, cpId) as any[];
+      const validation = await ValidatorEngine.validate({ projectId: testProjectId, checkpointId: cpId });
 
-      assert.ok(verifications.length > 0);
-      assert.equal(verifications[0].status, 'fail');
-      assert.ok(verifications[0].details_json.includes('Possível chave secreta exposta'));
+      assert.equal(validation.status, 'failed');
+      assert.equal(validation.security.status, 'fail');
+      const verification = db.prepare(
+        "SELECT * FROM verifications WHERE project_id = ? AND checkpoint_id = ? AND gate_type = 'security' ORDER BY created_at DESC LIMIT 1"
+      ).get(testProjectId, cpId) as any;
+      assert.equal(verification.status, 'fail');
     });
 
-    test('6.5: Quality Gate aprova código limpo sem segredos expostos', () => {
+    test('6.5: Validator canônico não reprova código limpo quando nenhum gate executável falha', async () => {
       WorkspaceManager.deleteFile(testProjectId, 'leaked.js');
       WorkspaceManager.writeFile(testProjectId, 'clean.js', 'export const sum = (a, b) => a + b;');
-
       const cpId = WorkspaceManager.createCheckpoint(testProjectId, 'Check clean code');
-      const verifications = db.prepare(
-        "SELECT * FROM verifications WHERE project_id = ? AND checkpoint_id = ? AND gate_type = 'security'"
-      ).all(testProjectId, cpId) as any[];
+      const validation = await ValidatorEngine.validate({ projectId: testProjectId, checkpointId: cpId });
 
-      assert.ok(verifications.length > 0);
-      assert.equal(verifications[0].status, 'pass');
+      assert.equal(validation.security.status, 'pass');
+      assert.notEqual(validation.status, 'failed');
+      const verification = db.prepare(
+        "SELECT * FROM verifications WHERE project_id = ? AND checkpoint_id = ? AND gate_type = 'security' ORDER BY created_at DESC LIMIT 1"
+      ).get(testProjectId, cpId) as any;
+      assert.equal(verification.status, 'pass');
     });
 
     test('6.6: Exportação de projeto como arquivo ZIP gera buffer válido', async () => {
