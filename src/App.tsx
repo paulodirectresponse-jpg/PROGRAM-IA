@@ -79,6 +79,7 @@ export default function App() {
   const [isAccountHydrating,setIsAccountHydrating]=useState(true);
   const [localContinuationApproved,setLocalContinuationApproved]=useState(false);
   const [buildInfo,setBuildInfo]=useState<{version:string;sha:string;agentEngineEnabled?:boolean}|null>(null);
+  const [activeAgentTrace,setActiveAgentTrace]=useState<any[]>([]);
 
   // Abort controller ref
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -221,6 +222,24 @@ export default function App() {
       loadProjectDetails(activeProject.id);
     }
   }, [activeProject, loadProjectDetails]);
+
+  useEffect(() => {
+    if (!isLoading || !activeProject || !buildInfo?.agentEngineEnabled) {
+      setActiveAgentTrace([]);
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/agent-runs?projectId=${encodeURIComponent(activeProject.id)}`);
+        const data = await res.json();
+        if (!cancelled && res.ok) setActiveAgentTrace(Array.isArray(data.runs?.[0]?.trace) ? data.runs[0].trace : []);
+      } catch {}
+    };
+    void poll();
+    const timer = window.setInterval(poll, 800);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [isLoading, activeProject, buildInfo?.agentEngineEnabled]);
 
   // Handle create project
   const handleCreateProject = async (data: {
@@ -587,6 +606,7 @@ export default function App() {
         onRejectProposal={handleRejectProposal}
         activePlan={activePlan}
         isLoading={isLoading}
+        activeAgentTrace={activeAgentTrace}
         onAbort={handleAbort}
         availableSkills={skills}
         canSend={Boolean(activeProject) && !projectLoadError}
