@@ -820,16 +820,17 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
     }
 
     let result = !agentEngineEnabled
-      ? await LLMAdapterService.executePrompt({
-          prompt: buildPrompt,
-          mode: 'build',
+      ? await LLMAdapterService.buildApprovedPlanReliably({
           projectId,
           providerKey: providerConfig.key,
           modelId: providerConfig.modelId,
-          existingFiles,
-          appliedSkills: [],
-          conversationHistory: history,
           userId: req.user!.id,
+          existingFiles,
+          requestedFiles: filesAffected,
+          objective: String(plan.objective || ''),
+          scopeIn: String(plan.scope_in || ''),
+          scopeOut: String(plan.scope_out || ''),
+          acceptanceCriteria,
           signal: controller.signal,
         })
       : await AgentWorkflowEngine.executeWorkflow({
