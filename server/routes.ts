@@ -1165,14 +1165,15 @@ router.get('/projects/:id/github/status', requireAuth, requireProjectOwner, asyn
 router.get('/projects/:id/github/branches', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
-    if (!project || !project.repo_url) {
-      return res.status(400).json({ error: 'RepositÃ³rio GitHub nÃ£o vinculado.' });
-    }
-    const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) return res.status(400).json({ error: 'URL do repositÃ³rio invÃ¡lida.' });
+    if (!project) return res.status(404).json({ error: 'Projeto não encontrado.' });
+    const repoContext = projectRepositoryContext(req.params.id, project);
+    if (!repoContext.repoUrl) return res.status(400).json({ error: 'Repositório GitHub não vinculado.' });
+
+    const parsed = GitHubService.parseRepoUrl(repoContext.repoUrl);
+    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
 
     const result = await GitHubService.listBranches(parsed.owner, parsed.repo, req.user!.id);
-    res.json(result);
+    res.json({ ...result, currentBranch: repoContext.branch });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
