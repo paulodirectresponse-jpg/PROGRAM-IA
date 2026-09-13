@@ -228,8 +228,12 @@ router.post('/providers/test', requireAuth, async (req, res) => {
   try {
     const {providerKey, baseUrl, modelId, apiKey} = req.body;
     const result = await LLMAdapterService.testConnection({providerKey, baseUrl, modelId, apiKey, userId:req.user!.id});
-    db.prepare('UPDATE providers SET connection_status = ?, last_error = ? WHERE user_id = ? AND provider_key = ?').run(result.success?'connected':'error', result.success?null:result.message, req.user!.id, providerKey);
-    res.status(result.success ? 200 : 400).json(result);
+    const checkedAt = new Date().toISOString();
+    db.prepare('UPDATE providers SET connection_status = ?, last_error = ? WHERE user_id = ? AND provider_key = ?')
+      .run(result.success?'connected':'error', result.success?null:result.message, req.user!.id, providerKey);
+    db.prepare('UPDATE user_secrets SET status=?,last_tested_at=?,last_error=?,updated_at=? WHERE user_id=? AND service_key=?')
+      .run(result.success?'connected':'error', checkedAt, result.success?null:result.message, checkedAt, req.user!.id, providerKey);
+    res.status(result.success ? 200 : 400).json({...result,last_verified_at:checkedAt});
   } catch (error: any) { res.status(400).json({success:false,status:'request_error',message:String(error?.message||'Falha ao testar o provedor.').slice(0,300)}); }
 });
 router.get('/model-profiles',requireAuth,(req,res)=>res.json({profiles:ModelRouter.listProfiles(req.user!.id)}));
@@ -1423,7 +1427,13 @@ router.post('/skills/toggle', requireAuth, (req: Request, res: Response) => {
 
 router.get('/providers', requireAuth, (req: Request, res: Response) => {
   try {
-    const providers = db.prepare('SELECT id, provider_key, name, base_url, model_id, is_configured, is_active, connection_status, context_limit, created_at FROM providers WHERE user_id = ?').all(req.user!.id) as any[];
+    const providers = db.prepare(`
+      SELECT p.id,p.provider_key,p.name,p.base_url,p.model_id,p.is_configured,p.is_active,p.connection_status,
+             p.context_limit,p.created_at,s.last_tested_at,s.last_error AS secret_last_error
+      FROM providers p
+      LEFT JOIN user_secrets s ON s.user_id=p.user_id AND s.service_key=p.provider_key AND s.is_active=1
+      WHERE p.user_id=?
+    `).all(req.user!.id) as any[];
 
     // Synchronize is_configured with user's encrypted secret and include masked hint
     const enriched = providers.map((p) => {
@@ -1435,6 +1445,8 @@ router.get('/providers', requireAuth, (req: Request, res: Response) => {
         is_configured: isConfig ? 1 : 0,
         connection_status: isConfig ? (p.connection_status || 'configured') : 'not_configured',
         masked_hint: masked,
+        last_verified_at: p.last_tested_at || null,
+        last_error: p.secret_last_error || null,
       };
     });
 
