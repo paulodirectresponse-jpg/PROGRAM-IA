@@ -87,7 +87,8 @@ export class SupabasePersistenceService {
     const repo=this.repository();
     const tablesToRead:CanonicalTable[]=['forge_profiles','forge_projects','forge_conversations','forge_messages','forge_providers','forge_provider_secrets','forge_integrations','forge_skills','forge_checkpoints','forge_repositories','forge_branches','forge_model_profiles','forge_model_candidates','forge_model_invocations','forge_project_files'];
     const values=await Promise.all(tablesToRead.map(t=>repo.owned(t,firebaseUid))),remote=Object.fromEntries(tablesToRead.map((t,i)=>[t,values[i]]));
-    if(!remote.forge_profiles.length)return{status:'local_only'};
+    // A legacy snapshot-shaped response is not a canonical profile. Let the migration bridge handle it.
+    if(!remote.forge_profiles.length||remote.forge_profiles[0]?.firebase_uid!==firebaseUid)return{status:'local_only'};
     const bool=(x:any)=>x?1:0, string=(x:any)=>JSON.stringify(x??{}), tables:Record<string,any[]>={};
     tables.users=remote.forge_profiles.map((x:any)=>({id:userId,email:x.email||'',name:x.display_name||'',role:'developer',firebase_uid:firebaseUid,created_at:x.created_at,updated_at:x.updated_at}));
     tables.projects=remote.forge_projects.map(({firebase_uid,revision,...x}:any)=>({...x,user_id:userId,revision}));
