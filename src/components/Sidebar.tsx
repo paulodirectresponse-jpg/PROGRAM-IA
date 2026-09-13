@@ -31,6 +31,7 @@ interface SidebarProps {
   onOpenCredentials: () => void;
   onOpenCheckpoints: () => void;
   onOpenAgents: () => void;
+  agentEngineEnabled?: boolean;
   onDuplicateProject?: (id: string) => void;
   onDeleteProject?: (project: Project) => void;
   onExportZip?: (id: string) => void;
@@ -48,6 +49,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenSkills,
   onOpenCheckpoints,
   onOpenAgents,
+  agentEngineEnabled = false,
   onDuplicateProject,
   onDeleteProject,
   onExportZip,
@@ -213,7 +215,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
               Configurações
             </span>
           </button>
-          <button disabled title="Módulo pausado para redefinição do produto" className="w-full text-left px-2.5 py-1.5 rounded-md text-xs flex items-center justify-between text-slate-500 cursor-not-allowed"><span className="flex items-center gap-2"><Bot size={14}/>Agentes & Métricas</span><span className="text-[9px] uppercase border border-slate-700 rounded px-1.5">Pausado</span></button>
+          <button
+            type="button"
+            onClick={agentEngineEnabled ? onOpenAgents : undefined}
+            disabled={!agentEngineEnabled}
+            title={agentEngineEnabled ? 'Abrir agentes, perfis e métricas' : 'Agent Engine desativado neste runtime'}
+            className={`w-full text-left px-2.5 py-1.5 rounded-md text-xs flex items-center justify-between transition ${
+              agentEngineEnabled
+                ? 'text-slate-300 hover:bg-slate-900 hover:text-slate-100 cursor-pointer'
+                : 'text-slate-500 cursor-not-allowed'
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <Bot size={14} className={agentEngineEnabled ? 'text-emerald-400' : ''} />
+              Agentes & Métricas
+            </span>
+            <span className={`text-[9px] uppercase border rounded px-1.5 ${
+              agentEngineEnabled
+                ? 'border-emerald-800/70 bg-emerald-950/30 text-emerald-400'
+                : 'border-slate-700 text-slate-500'
+            }`}>
+              {agentEngineEnabled ? 'Ativo' : 'Pausado'}
+            </span>
+          </button>
         </div>
       </div>
 
