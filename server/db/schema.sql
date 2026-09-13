@@ -234,7 +234,7 @@ CREATE TABLE IF NOT EXISTS deployments (
 -- 20. integrations
 CREATE TABLE IF NOT EXISTS integrations (
   id TEXT PRIMARY KEY,
-  user_id TEXT DEFAULT 'user-default',
+  user_id TEXT,
   service_name TEXT NOT NULL, -- 'github', 'useoneai', 'gemini'
   config_json TEXT,
   status TEXT DEFAULT 'pending_credentials', -- 'connected', 'pending_credentials', 'error'
