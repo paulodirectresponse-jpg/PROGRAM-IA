@@ -18,7 +18,7 @@ jobs:
           node-version: '24'
       - run: npm install --no-audit --no-fund
       - run: npm run lint
-      - run: npx tsx --test --test-concurrency=1 tests/foundation.test.ts tests/http.test.ts tests/directPersistence.test.ts
+      - run: npx tsx --test --test-concurrency=1 tests/foundation.test.ts tests/http.test.ts tests/directPersistence.test.ts tests/regression.test.ts
       - run: npm test
       - run: npm run build
       - run: npx playwright install --with-deps chromium
