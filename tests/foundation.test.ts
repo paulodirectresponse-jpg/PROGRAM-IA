@@ -41,7 +41,7 @@ test('Firebase identity stays bound to uid; email cannot take over an existing a
 });
 test('legacy Firebase identity and owned records migrate to the cross-device stable id',()=>{
   const uid=`legacy-fb-${suffix}`, legacyId=`legacy-${suffix}`, now=new Date().toISOString();
-  db.prepare("INSERT INTO users(id,email,name,role,password_hash,firebase_uid,created_at,updated_at) VALUES(?,?,?,'developer','x',?,?,?)").run(legacyId,`legacy-${suffix}@example.test`,'Legacy',uid,now,now);
+  db.prepare("INSERT INTO users(id,email,name,role,firebase_uid,created_at,updated_at) VALUES(?,?,?,'developer',?,?,?)").run(legacyId,`legacy-${suffix}@example.test`,'Legacy',uid,now,now);
   db.prepare('INSERT INTO workspaces(id,user_id,name,root_path,created_at) VALUES(?,?,?,?,?)').run(`ws-${legacyId}`,legacyId,'Legacy','/legacy',now);
   const migrated=AuthService.firebaseLogin(`legacy-${suffix}@example.test`,'Legacy',uid).user;
   assert.match(migrated.id,/^usr-firebase-[a-f0-9]{32}$/);
