@@ -30,6 +30,7 @@ interface ConversationPanelProps {
   activePlan: Plan | null;
   isLoading: boolean;
   activeAgentTrace?: any[];
+  activeAgentRunStatus?: string | null;
   onAbort: () => void;
   availableSkills: Skill[];
   canSend: boolean;
@@ -46,6 +47,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   activePlan,
   isLoading,
   activeAgentTrace = [],
+  activeAgentRunStatus = null,
   onAbort,
   availableSkills,
   canSend,
@@ -422,12 +424,12 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
         )}
 
         {/* Loading Indicator with Abort Button */}
-        {isLoading && (
+        {(isLoading || activeAgentRunStatus === 'running') && (
           <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 text-xs text-cyan-300 space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
-                <span>Processando no modo {currentModeInfo.label}...</span>
+                <span>{activeAgentRunStatus === 'running' && !isLoading ? 'Execução continua ativa no servidor...' : `Processando no modo ${currentModeInfo.label}...`}</span>
               </div>
               <button
                 type="button"
