@@ -80,6 +80,7 @@ export default function App() {
   const [localContinuationApproved,setLocalContinuationApproved]=useState(false);
   const [buildInfo,setBuildInfo]=useState<{version:string;sha:string;agentEngineEnabled?:boolean}|null>(null);
   const [activeAgentTrace,setActiveAgentTrace]=useState<any[]>([]);
+  const [activeAgentRunStatus,setActiveAgentRunStatus]=useState<string|null>(null);
 
   // Abort controller ref
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -224,8 +225,9 @@ export default function App() {
   }, [activeProject, loadProjectDetails]);
 
   useEffect(() => {
-    if (!isLoading || !activeProject || !buildInfo?.agentEngineEnabled) {
+    if (!activeProject || !buildInfo?.agentEngineEnabled) {
       setActiveAgentTrace([]);
+      setActiveAgentRunStatus(null);
       return;
     }
     let cancelled = false;
@@ -233,13 +235,17 @@ export default function App() {
       try {
         const res = await fetch(`/api/agent-runs?projectId=${encodeURIComponent(activeProject.id)}`);
         const data = await res.json();
-        if (!cancelled && res.ok) setActiveAgentTrace(Array.isArray(data.runs?.[0]?.trace) ? data.runs[0].trace : []);
+        if (!cancelled && res.ok) {
+          const latest = data.runs?.[0];
+          setActiveAgentTrace(Array.isArray(latest?.trace) ? latest.trace : []);
+          setActiveAgentRunStatus(latest?.status || null);
+        }
       } catch {}
     };
     void poll();
     const timer = window.setInterval(poll, 800);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [isLoading, activeProject, buildInfo?.agentEngineEnabled]);
+  }, [activeProject, buildInfo?.agentEngineEnabled]);
 
   // Handle create project
   const handleCreateProject = async (data: {
@@ -611,6 +617,7 @@ export default function App() {
         activePlan={activePlan}
         isLoading={isLoading}
         activeAgentTrace={activeAgentTrace}
+        activeAgentRunStatus={activeAgentRunStatus}
         onAbort={handleAbort}
         availableSkills={skills}
         canSend={Boolean(activeProject) && !projectLoadError}
