@@ -664,11 +664,12 @@ export class LLMAdapterService {
     modelId?: string;
     userId?: string;
     signal?: AbortSignal;
+    allowActiveFallback?: boolean;
   }): Promise<LLMExecutionResult> {
     const { prompt, mode, appliedSkills, existingFiles, conversationHistory, providerKey, modelId, userId } = options;
 
     let providerConfig = providerKey ? this.getProviderConfig(providerKey, userId) : null;
-    if (!providerConfig && !providerKey) {
+    if (!providerConfig && !providerKey && options.allowActiveFallback !== false) {
       providerConfig = this.getActiveProviderConfig(userId);
     }
     if (providerConfig && modelId) {
