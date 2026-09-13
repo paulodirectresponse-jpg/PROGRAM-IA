@@ -93,6 +93,41 @@ test('finds a legacy direct account through the stable Firebase UID', async (t) 
   } finally { restore('SUPABASE_URL', oldUrl); restore('SUPABASE_SECRET_KEY', oldKey); }
 });
 
+test('canonical project deletion removes Storage objects before deleting project row', async (t) => {
+  const oldUrl=process.env.SUPABASE_URL, oldKey=process.env.SUPABASE_SECRET_KEY;
+  process.env.SUPABASE_URL='https://direct.example.test';
+  process.env.SUPABASE_SECRET_KEY='test-service-role';
+  const calls:{url:string;method:string}[]=[];
+  t.mock.method(globalThis,'fetch',async(input:string|URL|Request,init?:RequestInit)=>{
+    const url=String(input), method=String(init?.method||'GET').toUpperCase();
+    calls.push({url,method});
+    if(url.includes('/rest/v1/forge_project_files?')) {
+      return new Response(JSON.stringify([
+        {storage_path:'firebase-1/project-1/src/a.ts'},
+        {storage_path:'firebase-1/project-1/src/b.ts'},
+      ]),{status:200});
+    }
+    if(method==='DELETE'&&url.includes('/storage/v1/object/forge-project-files/')) return new Response(null,{status:204});
+    if(method==='DELETE'&&url.includes('/rest/v1/forge_projects?')) return new Response(null,{status:204});
+    return new Response('[]',{status:200});
+  });
+  try {
+    const result=await SupabasePersistenceService.deleteCanonicalProject('firebase-1','project-1');
+    assert.equal(result.status,'synced');
+    assert.equal(result.deleted,true);
+    assert.equal(result.files,2);
+    const storageDeletes=calls.filter(call=>call.method==='DELETE'&&call.url.includes('/storage/v1/object/forge-project-files/'));
+    assert.equal(storageDeletes.length,2);
+    const projectDeleteIndex=calls.findIndex(call=>call.method==='DELETE'&&call.url.includes('/rest/v1/forge_projects?'));
+    assert.ok(projectDeleteIndex>storageDeletes.map(call=>calls.indexOf(call)).sort((a,b)=>b-a)[0]);
+    assert.ok(calls[projectDeleteIndex].url.includes('firebase_uid=eq.firebase-1'));
+    assert.ok(calls[projectDeleteIndex].url.includes('id=eq.project-1'));
+  } finally {
+    restore('SUPABASE_URL',oldUrl);
+    restore('SUPABASE_SECRET_KEY',oldKey);
+  }
+});
+
 test('canonical persistence writes normalized domains and Storage without legacy snapshot', async (t) => {
   const oldUrl=process.env.SUPABASE_URL,oldKey=process.env.SUPABASE_SECRET_KEY;
   process.env.SUPABASE_URL='https://canonical.example.test';process.env.SUPABASE_SECRET_KEY='server-secret-value';
