@@ -18,6 +18,7 @@ import { GitHubService } from './services/githubService.js';
 import { DesktopService } from './services/desktopService.js';
 import { CloudSyncService } from './services/cloudSyncService.js';
 import { RuntimeManager } from './services/runtimeManager.js';
+import { RequirementLedgerService } from './services/requirementLedgerService.js';
 
 export const router = express.Router();
 const activeProjects = new Set<string>();
@@ -818,22 +819,34 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
       return res.status(409).json({ error: 'Selecione e salve um provedor de IA antes de construir o plano.' });
     }
 
-    const filesAffected = parseStoredList(plan.files_affected_json);
+    const legacyFiles = parseStoredList(plan.files_affected_json);
+    const existingFilesToModify = parseStoredList(plan.existing_files_json);
+    const newFilesToCreate = parseStoredList(plan.new_files_json);
+    const filesToDelete = parseStoredList(plan.files_to_delete_json);
+    const filesAffected = [...new Set([...existingFilesToModify,...newFilesToCreate,...filesToDelete,...legacyFiles])];
     const integrations = parseStoredList(plan.integrations_json);
     const risks = parseStoredList(plan.risks_json);
     const acceptanceCriteria = parseStoredList(plan.acceptance_criteria_json);
+    const planRequirements = (()=>{try{return JSON.parse(plan.requirements_json||'[]')}catch{return[]}})();
+    const taskGraph = (()=>{try{return JSON.parse(plan.task_graph_json||'[]')}catch{return[]}})();
+    const architectureSummary=String(plan.architecture_summary||'').trim();
     const buildPrompt = [
-      'O usuÃ¡rio aprovou este plano tÃ©cnico. Implemente-o agora no workspace atual.',
+      'O usuário aprovou este plano técnico. Implemente-o agora no workspace atual.',
       '',
       `OBJETIVO:\n${plan.objective || ''}`,
-      `ESCOPO INCLUÃDO:\n${plan.scope_in || ''}`,
-      `ESCOPO EXCLUÃDO:\n${plan.scope_out || ''}`,
-      filesAffected.length ? `ARQUIVOS PREVISTOS:\n- ${filesAffected.join('\n- ')}` : '',
-      integrations.length ? `INTEGRAÃ‡Ã•ES:\n- ${integrations.join('\n- ')}` : '',
+      architectureSummary ? `ARQUITETURA APROVADA:\n${architectureSummary}` : '',
+      `ESCOPO INCLUÍDO:\n${plan.scope_in || ''}`,
+      `ESCOPO EXCLUÍDO:\n${plan.scope_out || ''}`,
+      existingFilesToModify.length ? `ARQUIVOS EXISTENTES A MODIFICAR:\n- ${existingFilesToModify.join('\n- ')}` : '',
+      newFilesToCreate.length ? `NOVOS ARQUIVOS A CRIAR:\n- ${newFilesToCreate.join('\n- ')}` : '',
+      filesToDelete.length ? `ARQUIVOS A REMOVER:\n- ${filesToDelete.join('\n- ')}` : '',
+      planRequirements.length ? `REQUISITOS:\n${planRequirements.map((r:any)=>`- ${r.id}: ${r.title||r.description}`).join('\n')}` : '',
+      taskGraph.length ? `GRAFO DE TAREFAS:\n${taskGraph.map((t:any)=>`- ${t.id}: ${t.title} [${(t.requirement_ids||[]).join(', ')}]`).join('\n')}` : '',
+      integrations.length ? `INTEGRAÇÕES:\n- ${integrations.join('\n- ')}` : '',
       risks.length ? `RISCOS:\n- ${risks.join('\n- ')}` : '',
-      acceptanceCriteria.length ? `CRITÃ‰RIOS DE ACEITE:\n- ${acceptanceCriteria.join('\n- ')}` : '',
+      acceptanceCriteria.length ? `CRITÉRIOS DE ACEITE:\n- ${acceptanceCriteria.join('\n- ')}` : '',
       '',
-      'Gere uma proposta concreta de arquivos para cumprir o plano. NÃ£o aplique nada automaticamente; retorne os arquivos estruturados para revisÃ£o e aprovaÃ§Ã£o do usuÃ¡rio.',
+      'Gere uma proposta concreta e multi-arquivo quando a arquitetura exigir. Não aplique nada automaticamente; retorne os arquivos estruturados para revisão do usuário.',
     ].filter(Boolean).join('\n\n');
 
     const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 20')
@@ -843,6 +856,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
 
     if (agentEngineEnabled) {
       execution = RunService.start(req.user!.id, projectId, conversation.id, 'build', .5);
+      RequirementLedgerService.attachRun(projectId,planId,execution.runId);
     }
 
     let result = !agentEngineEnabled
@@ -854,7 +868,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
           existingFiles,
           requestedFiles: filesAffected,
           objective: String(plan.objective || ''),
-          scopeIn: String(plan.scope_in || ''),
+          scopeIn: [architectureSummary ? 'ARQUITETURA: '+architectureSummary : '', String(plan.scope_in || '')].filter(Boolean).join('\n\n'),
           scopeOut: String(plan.scope_out || ''),
           acceptanceCriteria,
           signal: controller.signal,
@@ -873,7 +887,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
           reliableBuild: {
             requestedFiles: filesAffected,
             objective: String(plan.objective || ''),
-            scopeIn: String(plan.scope_in || ''),
+              scopeIn: [architectureSummary ? 'ARQUITETURA: '+architectureSummary : '', String(plan.scope_in || '')].filter(Boolean).join('\n\n'),
             scopeOut: String(plan.scope_out || ''),
             acceptanceCriteria,
           },
@@ -1225,21 +1239,37 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       savedPlanId = 'plan-' + Date.now();
       db.prepare(`
         INSERT INTO plans (
-          id, task_id, project_id, objective, scope_in, scope_out, files_affected_json, integrations_json, risks_json, acceptance_criteria_json, status, created_at, updated_at
-        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+          id, task_id, project_id, objective, scope_in, scope_out,
+          architecture_summary, existing_files_json, new_files_json, files_to_delete_json,
+          files_affected_json, integrations_json, risks_json, acceptance_criteria_json,
+          requirements_json, task_graph_json, status, created_at, updated_at
+        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
       `).run(
         savedPlanId,
         projectId,
         typeof result.plan.objective === 'string' ? result.plan.objective : JSON.stringify(result.plan.objective ?? ''),
         typeof result.plan.scope_in === 'string' ? result.plan.scope_in : JSON.stringify(result.plan.scope_in ?? ''),
         typeof result.plan.scope_out === 'string' ? result.plan.scope_out : JSON.stringify(result.plan.scope_out ?? ''),
+        result.plan.architecture_summary || '',
+        JSON.stringify(result.plan.existing_files_to_modify || []),
+        JSON.stringify(result.plan.new_files_to_create || []),
+        JSON.stringify(result.plan.files_to_delete || []),
         JSON.stringify(result.plan.files_affected || []),
         JSON.stringify(result.plan.integrations || []),
         JSON.stringify(result.plan.risks || []),
         JSON.stringify(result.plan.acceptance_criteria || []),
+        JSON.stringify(result.plan.requirements || []),
+        JSON.stringify(result.plan.task_graph || []),
         now,
         now
       );
+      RequirementLedgerService.syncPlan({
+        projectId,
+        conversationId:conv.id,
+        runId:execution?.runId || null,
+        planId:savedPlanId,
+        requirements:result.plan.requirements || [],
+      });
     }
 
     // Save agent message
