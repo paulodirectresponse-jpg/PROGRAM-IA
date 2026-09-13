@@ -170,7 +170,7 @@ test('approving a draft plan generates a reviewable build proposal without apply
 });
 
 
-test('plan approval retries malformed build formatting only once and preserves review-before-apply',async()=>{
+test('plan approval retries an atomic file once and preserves review-before-apply',async()=>{
   const now=new Date(Date.now()+7000).toISOString();
   const conversation=`plan-repair-conversation-${Date.now()}`;
   const planId=`plan-repair-${Date.now()}`;
@@ -237,7 +237,9 @@ test('plan approval retries malformed build formatting only once and preserves r
     assert.match(WorkspaceManager.readFile(id,'index.html')||'',/ORIGINAL_REPAIR/);
     const message=db.prepare("SELECT metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC LIMIT 1").get(conversation) as any;
     const metadata=JSON.parse(message.metadata_json);
-    assert.equal(metadata.formatRepairAttempted,true);
+    assert.equal(metadata.formatRepairAttempted,false);
+    assert.equal(metadata.buildDiagnostics.strategy,'atomic_file_build');
+    assert.equal(metadata.buildDiagnostics.attempts,2);
   } finally {
     LLMAdapterService.executePrompt=originalExecute;
   }
