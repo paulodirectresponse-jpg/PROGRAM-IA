@@ -26,6 +26,26 @@ import {
   AuthUser,
 } from './types';
 
+async function readApiPayload(res: Response): Promise<any> {
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    try { return await res.json(); } catch {}
+  }
+
+  const raw = await res.text().catch(() => '');
+  const clean = raw
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 260);
+
+  return { error: clean || `Falha HTTP ${res.status}.` };
+}
+
 export default function App() {
   type SyncStatus = 'checking'|'not_configured'|'local_only'|'restoring'|'synced'|'conflict'|'error';
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
@@ -274,12 +294,19 @@ export default function App() {
         }),
       });
 
-      const data = await res.json();
+      const data = await readApiPayload(res);
       if (!res.ok) throw new Error(data.error || 'Não foi possível concluir o pedido.');
       if (data.agentMessage) {
         setMessages((prev) => [...prev, data.agentMessage]);
         if (data.plan) {
           setActivePlan(data.plan);
+        }
+        if (data.success === false) {
+          const metadata = data.agentMessage.metadata || {};
+          setToastMessage({
+            text: metadata.errorMessage || data.error || 'A IA não conseguiu concluir esta etapa com segurança.',
+            type: 'error',
+          });
         }
         // Refresh files and preview
         await loadProjectDetails(activeProject.id);
@@ -305,15 +332,20 @@ export default function App() {
 
   // Handle plan approval
   const handleApprovePlan = async (planId: string) => {
-    if (!activeProject) return;
+    if (!activeProject || isLoading) return;
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     setIsLoading(true);
+
     try {
       const res = await fetch(`/api/conversations/${activeProject.id}/plan/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({ planId }),
       });
-      const data = await res.json();
+      const data = await readApiPayload(res);
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'Não foi possível aprovar e construir o plano.');
       }
@@ -327,10 +359,15 @@ export default function App() {
       await loadProjectDetails(activeProject.id);
       setPreviewNonce(Date.now());
     } catch (err: any) {
-      console.error('Erro ao aprovar plano:', err);
-      setToastMessage({ text: err?.message || 'Erro ao aprovar e construir o plano.', type: 'error' });
+      if (err?.name === 'AbortError') {
+        setToastMessage({ text: 'Construção cancelada. O plano continua disponível para tentar novamente.', type: 'error' });
+      } else {
+        console.error('Erro ao aprovar plano:', err);
+        setToastMessage({ text: err?.message || 'Erro ao aprovar e construir o plano.', type: 'error' });
+      }
     } finally {
       setIsLoading(false);
+      if (abortControllerRef.current === controller) abortControllerRef.current = null;
     }
   };
 
@@ -347,14 +384,16 @@ export default function App() {
           summary: proposal.summary,
         }),
       });
-      const data = await res.json();
+      const data = await readApiPayload(res);
       if (!res.ok) throw new Error(data.error || 'A proposta não pôde ser aplicada.');
       if (data.success) {
         await loadProjectDetails(activeProject.id);
         setPreviewNonce(Date.now());
+        setToastMessage({ text: data.message || 'Alterações aplicadas com sucesso.', type: 'success' });
       }
     } catch (err: any) {
       console.error('Falha ao aplicar proposta:', err);
+      setToastMessage({ text: err?.message || 'A proposta não pôde ser aplicada com segurança.', type: 'error' });
       await loadProjectDetails(activeProject.id);
     } finally {
       setIsLoading(false);
