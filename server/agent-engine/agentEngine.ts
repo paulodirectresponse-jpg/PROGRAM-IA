@@ -53,6 +53,14 @@ export class AgentEngine {
           || /Nenhum modelo disponivel|Nenhum modelo disponível|Nenhum candidate|incompatible|bloqueado|Provider indisponivel|Provider indisponível/i.test(String(error?.message || error))
         );
       if (!canEscalate) throw error;
+      const expertAvailable = ModelRouter.candidates(x.userId, 'EXPERT_PAID')
+        .some(candidate => LLMAdapterService.getProviderConfig(candidate.provider_key, x.userId).isConfigured);
+      if (!expertAvailable) {
+        if (error?.reason === 'no_candidate') {
+          return await this.executeWithProfile(x, profile, { ...options, allowExpertEscalation: false });
+        }
+        throw error;
+      }
       return await this.executeWithProfile(x, 'EXPERT_PAID', { ...options, profile: 'EXPERT_PAID' });
     }
   }
@@ -62,7 +70,12 @@ export class AgentEngine {
     RunService.assignAgent(x.stepId, agentKey);
     const available = ModelRouter.candidates(x.userId, profile).filter(c => LLMAdapterService.getProviderConfig(c.provider_key, x.userId).isConfigured);
     if (!available.length) {
-      if (options.allowExpertEscalation) throw new Error(`Nenhum candidate utilizável no perfil ${profile}.`);
+      if (options.allowExpertEscalation) {
+        throw Object.assign(
+          new Error(`Nenhum candidate utilizável no perfil ${profile}.`),
+          { kind: 'capacity', reason: 'no_candidate' }
+        );
+      }
       const fallback = await LLMAdapterService.executePrompt({ ...x, providerKey: undefined, allowActiveFallback: false });
       return { ...fallback, agentKey, profileKey: profile };
     }
