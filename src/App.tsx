@@ -78,7 +78,7 @@ export default function App() {
   const [syncStatus,setSyncStatus]=useState<SyncStatus>('checking');
   const [isAccountHydrating,setIsAccountHydrating]=useState(true);
   const [localContinuationApproved,setLocalContinuationApproved]=useState(false);
-  const [buildInfo,setBuildInfo]=useState<{version:string;sha:string}|null>(null);
+  const [buildInfo,setBuildInfo]=useState<{version:string;sha:string;agentEngineEnabled?:boolean}|null>(null);
 
   // Abort controller ref
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -568,6 +568,7 @@ export default function App() {
         }}
         onOpenCheckpoints={() => setIsCheckpointsOpen(true)}
         onOpenAgents={() => setIsAgentsOpen(true)}
+        agentEngineEnabled={Boolean(buildInfo?.agentEngineEnabled)}
         onDuplicateProject={handleDuplicateProject}
         onDeleteProject={handleRequestDeleteProject}
         onExportZip={handleExportZip}
