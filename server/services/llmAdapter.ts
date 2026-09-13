@@ -635,6 +635,24 @@ export class LLMAdapterService {
   /**
    * Main Prompt Execution with Support for "auto" mode
    */
+  private static requestTimeoutMs(): number {
+    const configured = Number(process.env.FORGE_LLM_TIMEOUT_MS || 180000);
+    if (!Number.isFinite(configured)) return 180000;
+    return Math.max(15000, Math.min(configured, 600000));
+  }
+
+  private static classifyExecutionError(error: any): string {
+    const name = String(error?.name || '');
+    const message = String(error?.message || error || '');
+    if (name === 'TimeoutError' || /timeout|timed out|tempo limite/i.test(message)) return 'timeout';
+    if (/HTTP\s*429|rate.?limit/i.test(message)) return 'rate_limit';
+    if (/HTTP\s*(401|403)|invalid.?key|unauthor/i.test(message)) return 'invalid_key';
+    if (/HTTP\s*404|invalid.?model|model.*not found/i.test(message)) return 'invalid_model';
+    if (/HTTP\s*5\d\d|upstream/i.test(message)) return 'provider_error';
+    if (/fetch|network|ECONN|ENOTFOUND|EAI_AGAIN/i.test(message)) return 'network_error';
+    return 'provider_error';
+  }
+
   static async executePrompt(options: {
     prompt: string;
     mode: AgentMode;
@@ -685,10 +703,20 @@ export class LLMAdapterService {
           });
         }
       } catch (err: any) {
+        if (options.signal?.aborted) throw err;
         console.error('Erro na chamada do provedor de IA:', err);
-        const fallback = this.generateDemonstrativeFallback(prompt, mode, existingFiles, appliedSkills);
-        fallback.replyText = `⚠️ **Falha na comunicação com ${providerConfig.name} (${providerConfig.modelId})**: ${err.message || 'Erro de conexão'}.\n\n` + fallback.replyText;
-        return fallback;
+        const reason = this.classifyExecutionError(err);
+        return {
+          replyText: `⚠️ **Falha na comunicação com ${providerConfig.name} (${providerConfig.modelId})**: ${err?.message || 'Erro de conexão'}.`,
+          mode,
+          decisionType: 'invalid_response',
+          isDemonstrativeFallback: false,
+          providerUsed: providerConfig.name,
+          modelUsed: providerConfig.modelId,
+          hasErrors: true,
+          errorMessage: String(err?.message || 'Erro de conexão'),
+          errorReason: reason,
+        };
       }
     }
 
@@ -787,7 +815,7 @@ Responda sempre em português claro, elegante e profissional.`;
 
     const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST',
-      signal: context.signal ? AbortSignal.any([context.signal, AbortSignal.timeout(90000)]) : AbortSignal.timeout(90000),
+      signal: context.signal ? AbortSignal.any([context.signal, AbortSignal.timeout(this.requestTimeoutMs())]) : AbortSignal.timeout(this.requestTimeoutMs()),
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
