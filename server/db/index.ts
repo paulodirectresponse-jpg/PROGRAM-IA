@@ -1,7 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 
 // Store the SQLite database in a persistent directory
 const DATA_DIR = path.resolve(process.env.FORGE_DATA_DIR || path.join(process.cwd(), '.data'));
@@ -44,20 +43,19 @@ export function initializeDatabase() {
   }
 
   // Migration 002: Multi-tenant user accounts, sessions, encrypted secrets
-  ensureColumn('users', 'password_hash', "TEXT");
   ensureColumn('users', 'firebase_uid', 'TEXT');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_firebase_uid ON users(firebase_uid)');
   ensureColumn('users', 'avatar_url', "TEXT");
   ensureColumn('users', 'updated_at', "TEXT");
 
-  ensureColumn('workspaces', 'user_id', "TEXT DEFAULT 'user-default'");
-  ensureColumn('projects', 'user_id', "TEXT DEFAULT 'user-default'");
-  ensureColumn('skills', 'user_id', "TEXT DEFAULT 'user-default'");
-  ensureColumn('providers', 'user_id', "TEXT DEFAULT 'user-default'");
+  ensureColumn('workspaces', 'user_id', "TEXT");
+  ensureColumn('projects', 'user_id', "TEXT");
+  ensureColumn('skills', 'user_id', "TEXT");
+  ensureColumn('providers', 'user_id', "TEXT");
   ensureColumn('providers', 'is_active', 'INTEGER DEFAULT 0');
-  ensureColumn('integrations', 'user_id', "TEXT DEFAULT 'user-default'");
-  ensureColumn('attachments', 'user_id', "TEXT DEFAULT 'user-default'");
-  ensureColumn('logs', 'user_id', "TEXT DEFAULT 'user-default'");
+  ensureColumn('integrations', 'user_id', "TEXT");
+  ensureColumn('attachments', 'user_id', "TEXT");
+  ensureColumn('logs', 'user_id', "TEXT");
   ensureColumn('users', 'last_active_project_id', 'TEXT');
   ensureColumn('skills', 'is_custom', "INTEGER DEFAULT 0");
   // Migrate the legacy overloaded provider status into independent activity and health states.
@@ -141,269 +139,11 @@ export function initializeDatabase() {
     );
   }
 
-  // Seed default workspace and user if not exists
-  const salt = 'a1b2c3d4e5f67890';
-  const derivedKey = crypto.scryptSync('ForgeDev#2026', salt, 64, { N: 16384, r: 8, p: 1 });
-  const defaultPasswordHash = `scrypt$${salt}$${derivedKey.toString('hex')}`;
+  // Per-user defaults are provisioned only after verified Firebase authentication.
 
-  const defaultUser = db.prepare('SELECT id, password_hash FROM users WHERE id = ?').get('user-default') as any;
-  if (!defaultUser) {
-    db.prepare('INSERT INTO users (id, email, name, role, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-      'user-default',
-      'developer@forgeagent.dev',
-      'Forge Developer',
-      'developer',
-      defaultPasswordHash,
-      new Date().toISOString(),
-      new Date().toISOString()
-    );
-  } else if (!defaultUser.password_hash) {
-    db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(
-      defaultPasswordHash,
-      new Date().toISOString(),
-      'user-default'
-    );
-  }
+  // No global skills/providers/integrations are seeded; AuthService.seedUserData owns account defaults.
 
-  const defaultWs = db.prepare('SELECT id FROM workspaces WHERE id = ?').get('ws-default');
-  if (!defaultWs) {
-    db.prepare('INSERT INTO workspaces (id, user_id, name, root_path, created_at) VALUES (?, ?, ?, ?, ?)').run(
-      'ws-default',
-      'user-default',
-      'Default Workspace',
-      '/workspace',
-      new Date().toISOString()
-    );
-  }
-
-
-  // Seed standard skills from specification
-  const seedSkills = [
-    {
-      id: 'skill-ts-react',
-      name: 'TypeScript & React',
-      slug: 'typescript-react',
-      description: 'Especialista em React 19, componentes funcionais, hooks estáveis e tipagem estrita com TypeScript.',
-      system_instructions: 'Aplique as melhores práticas do ecossistema React 19 e TypeScript: componentes tipados, hooks puros, sem any, modularidade de arquivos e tratamento resiliente de erros.',
-      scope: 'project',
-    },
-    {
-      id: 'skill-ui-premium',
-      name: 'UI Premium & Design System',
-      slug: 'ui-premium',
-      description: 'Garante layout sofisticado, alto contraste, tipografia elegante, sem cores neon ou clichés de IA slop.',
-      system_instructions: 'Desenvolva interfaces escuras ou neutras profundas com contraste WCAG AA, bordas refinadas de 1px, sem gradientes roxo-azul genéricos, usando espaçamento rítmico consistente e transições suaves.',
-      scope: 'project',
-    },
-    {
-      id: 'skill-security',
-      name: 'Segurança & Secrets Guard',
-      slug: 'seguranca',
-      description: 'Bloqueia exposição de chaves privadas, valida inputs e protege contra injeções de código.',
-      system_instructions: 'Nunca exponha chaves secretas ou credenciais no frontend ou em mensagens. Valide entradas e garanta que secrets fiquem exclusivamente em variáveis de ambiente no servidor.',
-      scope: 'workspace',
-    },
-    {
-      id: 'skill-reviewer-loop',
-      name: 'Reviewer Loop',
-      slug: 'reviewer-loop',
-      description: 'Revisa diffs, checagens de integridade, logs e sugere correções antes de aprovar publicações.',
-      system_instructions: 'Analise o diff completo após cada alteração. Valide se os critérios de aceite foram atendidos, aponte potenciais falhas de runtime e pare para confirmação humana se houver riscos.',
-      scope: 'project',
-    },
-    {
-      id: 'skill-github-workflow',
-      name: 'GitHub Workflow',
-      slug: 'github-workflow',
-      description: 'Gerencia branches, commits semânticos, checagem de pull requests e sincronização de repositórios.',
-      system_instructions: 'Nunca faça push na branch principal sem confirmação. Estruture mensagens de commit no padrão Conventional Commits e valide status do repositório antes de propor alterações remotas.',
-      scope: 'project',
-    },
-    {
-      id: 'skill-accessibility',
-      name: 'Acessibilidade WCAG',
-      slug: 'acessibilidade',
-      description: 'Garante contraste visual, navegação via teclado, roles ARIA e acessibilidade.',
-      system_instructions: 'Certifique-se de que todos os controles interativos possuem rótulos acessíveis, contraste mínimo de 4.5:1, foco visível e compatibilidade com leitores de tela.',
-      scope: 'project',
-    },
-  ];
-
-  for (const skill of seedSkills) {
-    const exists = db.prepare('SELECT id FROM skills WHERE slug = ?').get(skill.slug);
-    if (!exists) {
-      db.prepare(`
-        INSERT INTO skills (id, name, slug, description, system_instructions, scope, is_active, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-      `).run(skill.id, skill.name, skill.slug, skill.description, skill.system_instructions, skill.scope, new Date().toISOString());
-    }
-  }
-
-  // Seed default providers
-  const defaultProviders = [
-    {
-      id: 'prov-useoneai',
-      provider_key: 'useoneai',
-      name: 'UseOneAI (OpenAI-Compatible)',
-      base_url: process.env.OPENAI_BASE_URL || 'https://api.useoneai.app/v1',
-      model_id: process.env.OPENAI_MODEL_ID || 'chatgpt-5.5',
-      is_configured: Boolean(process.env.OPENAI_API_KEY) ? 1 : 0,
-      connection_status: Boolean(process.env.OPENAI_API_KEY) ? 'connected' : 'not_configured',
-      context_limit: 128000,
-    },
-    {
-      id: 'prov-gemini',
-      provider_key: 'gemini',
-      name: 'Google Gemini',
-      base_url: 'https://generativelanguage.googleapis.com',
-      model_id: 'gemini-3.5-flash-lite',
-      is_configured: Boolean(process.env.GEMINI_API_KEY) ? 1 : 0,
-      connection_status: Boolean(process.env.GEMINI_API_KEY) ? 'connected' : 'not_configured',
-      context_limit: 1000000,
-    },
-    {
-      id: 'prov-openai',
-      provider_key: 'openai',
-      name: 'OpenAI Oficial',
-      base_url: 'https://api.openai.com/v1',
-      model_id: 'gpt-4o',
-      is_configured: 0,
-      connection_status: 'not_configured',
-      context_limit: 128000,
-    },
-    {
-      id: 'prov-anthropic',
-      provider_key: 'anthropic',
-      name: 'Anthropic Claude',
-      base_url: 'https://api.anthropic.com/v1',
-      model_id: 'claude-3-7-sonnet',
-      is_configured: 0,
-      connection_status: 'not_configured',
-      context_limit: 200000,
-    },
-    {
-      id: 'prov-deepseek',
-      provider_key: 'deepseek',
-      name: 'DeepSeek AI',
-      base_url: 'https://api.deepseek.com',
-      model_id: 'deepseek-chat',
-      is_configured: 0,
-      connection_status: 'not_configured',
-      context_limit: 64000,
-    },
-    {
-      id: 'prov-groq',
-      provider_key: 'groq',
-      name: 'Groq Cloud LPU',
-      base_url: 'https://api.groq.com/openai/v1',
-      model_id: 'llama-3.3-70b-versatile',
-      is_configured: 0,
-      connection_status: 'not_configured',
-      context_limit: 128000,
-    },
-    {
-      id: 'prov-openrouter',
-      provider_key: 'openrouter',
-      name: 'OpenRouter Multi-Model',
-      base_url: 'https://openrouter.ai/api/v1',
-      model_id: 'anthropic/claude-3.5-sonnet',
-      is_configured: 0,
-      connection_status: 'not_configured',
-      context_limit: 128000,
-    },
-    {
-      id: 'prov-ollama',
-      provider_key: 'ollama',
-      name: 'Ollama (Local / On-Premise)',
-      base_url: 'http://localhost:11434/v1',
-      model_id: 'llama3:latest',
-      is_configured: 0,
-      connection_status: 'not_configured',
-      context_limit: 32000,
-    },
-  ];
-
-  for (const prov of defaultProviders) {
-    const exists = db.prepare('SELECT id FROM providers WHERE provider_key = ?').get(prov.provider_key);
-    if (!exists) {
-      db.prepare(`
-        INSERT INTO providers (
-          id, provider_key, name, base_url, model_id, is_configured, connection_status, context_limit, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        prov.id,
-        prov.provider_key,
-        prov.name,
-        prov.base_url,
-        prov.model_id,
-        prov.is_configured,
-        prov.connection_status,
-        prov.context_limit,
-        new Date().toISOString()
-      );
-    }
-  }
-
-  // Ensure Gemini provider uses gemini-3.5-flash-lite
-  try {
-    db.prepare("UPDATE providers SET model_id = 'gemini-3.5-flash-lite' WHERE provider_key = 'gemini' AND (model_id LIKE '%2.5%' OR model_id = '')").run();
-  } catch {}
-
-  // Seed default integrations (GitHub, UseOneAI, Gemini)
-  const defaultIntegrations = [
-    {
-      id: 'integ-github',
-      service_name: 'github',
-      status: Boolean(process.env.GITHUB_TOKEN) ? 'connected' : 'pending_credentials',
-      config_json: JSON.stringify({
-        has_token: Boolean(process.env.GITHUB_TOKEN),
-        default_owner: process.env.GITHUB_DEFAULT_OWNER || '',
-        note: 'Requer GITHUB_TOKEN no servidor para sincronização de commits e branches.'
-      })
-    },
-    {
-      id: 'integ-useoneai',
-      service_name: 'useoneai',
-      status: Boolean(process.env.OPENAI_API_KEY) ? 'connected' : 'pending_credentials',
-      config_json: JSON.stringify({
-        base_url: process.env.OPENAI_BASE_URL || 'https://api.useoneai.app/v1',
-        model_id: process.env.OPENAI_MODEL_ID || 'chatgpt-5.5',
-        has_key: Boolean(process.env.OPENAI_API_KEY)
-      })
-    },
-    {
-      id: 'integ-gemini',
-      service_name: 'gemini',
-      status: Boolean(process.env.GEMINI_API_KEY) ? 'connected' : 'pending_credentials',
-      config_json: JSON.stringify({
-        has_key: Boolean(process.env.GEMINI_API_KEY),
-        model_id: 'gemini-2.5-flash'
-      })
-    }
-  ];
-
-  for (const integ of defaultIntegrations) {
-    const exists = db.prepare('SELECT id FROM integrations WHERE service_name = ?').get(integ.service_name);
-    if (!exists) {
-      db.prepare(`
-        INSERT INTO integrations (id, service_name, config_json, status, last_verified_at, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(
-        integ.id,
-        integ.service_name,
-        integ.config_json,
-        integ.status,
-        new Date().toISOString(),
-        new Date().toISOString()
-      );
-    }
-  }
-
-  // Seed an initial demo project if database has 0 projects, so user immediately sees a working project
-  const countProjects = db.prepare('SELECT COUNT(*) as c FROM projects').get() as { c: number };
-  if (countProjects.c === 0) {
-    createInitialProject();
-  }
+  // Project creation is explicit and user-owned; no anonymous demo project is created.
 }
 
 function createInitialProject() {
