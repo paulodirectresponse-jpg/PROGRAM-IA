@@ -1,4 +1,7 @@
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { SecretService } from './secretService.js';
 import { db } from '../db/index.js';
 
@@ -106,6 +109,37 @@ export class IntegrationService {
       mark('error');
       throw error;
     }
+  }
+
+
+  static findPagesArtifact(projectDir: string) {
+    for (const candidate of ['dist', 'build', 'public']) {
+      const full = path.join(projectDir, candidate);
+      if (fs.existsSync(path.join(full, 'index.html'))) return { directory: candidate, fullPath: full };
+    }
+    return null;
+  }
+
+  static async deployCloudflareDirectUpload(userId: string, projectDir: string, branch = 'main') {
+    const c = this.read(userId, 'cloudflare');
+    if (!c.token || !c.accountId || !c.projectName) throw new Error('Configure token, Account ID e nome do projeto Cloudflare Pages.');
+    const artifact = this.findPagesArtifact(projectDir);
+    if (!artifact) throw new Error('Nenhum artefato de build foi encontrado. Gere dist/, build/ ou public/ com index.html antes do Direct Upload.');
+    const env: NodeJS.ProcessEnv = {};
+    for (const key of ['PATH','Path','PATHEXT','SYSTEMROOT','SystemRoot','WINDIR','COMSPEC','TEMP','TMP','TMPDIR','HOME','USERPROFILE','APPDATA','LOCALAPPDATA']) if (process.env[key]) env[key]=process.env[key];
+    env.CLOUDFLARE_ACCOUNT_ID = c.accountId;
+    env.CLOUDFLARE_API_TOKEN = c.token;
+    const args = ['wrangler','pages','deploy',artifact.fullPath,'--project-name',c.projectName,'--branch',branch || 'main'];
+    const started = Date.now();
+    return await new Promise<{success:boolean;status:string;url?:string;output:string;durationMs:number}>((resolve,reject)=>{
+      const child=spawn(process.platform==='win32'?'npx.cmd':'npx',args,{cwd:projectDir,shell:false,windowsHide:true,env});
+      let output='';
+      const collect=(b:Buffer)=>{output=(output+b.toString()).replaceAll(c.token,'[redacted]').slice(-12000);};
+      child.stdout.on('data',collect);child.stderr.on('data',collect);
+      const timer=setTimeout(()=>{try{child.kill();}catch{} reject(new Error('Cloudflare Direct Upload excedeu o tempo limite.'));},180000);
+      child.on('error',e=>{clearTimeout(timer);reject(e);});
+      child.on('close',code=>{clearTimeout(timer);const url=output.match(/https:\/\/[^\s]+\.pages\.dev[^\s]*/i)?.[0];if(code===0)resolve({success:true,status:'active',url,output,durationMs:Date.now()-started});else reject(new Error(`Wrangler recusou o Direct Upload (exit ${code}). ${output.slice(-1000)}`));});
+    });
   }
 
   static async deployCloudflarePages(userId: string, branch: string) {

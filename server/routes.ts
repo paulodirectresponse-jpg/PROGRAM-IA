@@ -1607,6 +1607,33 @@ router.post('/projects/:id/deploy/cloudflare', requireAuth, requireProjectOwner,
   }
 });
 
+
+router.post('/projects/:id/deploy/cloudflare/direct', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  const deploymentId = `deploy-${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  try {
+    const project = db.prepare('SELECT * FROM projects WHERE id=?').get(req.params.id) as any;
+    const repoContext = projectRepositoryContext(req.params.id, project);
+    const cloudflare = IntegrationService.summary(req.user!.id, 'cloudflare');
+    if (cloudflare.status !== 'connected') {
+      return res.status(409).json({success:false,error:'Teste e confirme a integração Cloudflare antes de usar Direct Upload.'});
+    }
+    db.prepare('INSERT INTO deployments(id,project_id,target,status,url,error_message,created_at) VALUES(?,?,?,?,NULL,NULL,?)')
+      .run(deploymentId, req.params.id, 'cloudflare_pages_direct_upload', 'pending', now);
+    const result = await IntegrationService.deployCloudflareDirectUpload(req.user!.id, WorkspaceManager.getProjectDir(req.params.id), repoContext.branch || 'main');
+    db.prepare('UPDATE deployments SET status=?,url=?,error_message=NULL WHERE id=?')
+      .run(result.status || 'active', result.url || null, deploymentId);
+    res.json({...result, deploymentId, mode:'direct_upload'});
+  } catch (error:any) {
+    const message = String(error?.message || 'Falha no Direct Upload Cloudflare.');
+    const existing = db.prepare('SELECT id FROM deployments WHERE id=?').get(deploymentId);
+    if (existing) db.prepare("UPDATE deployments SET status='failed',error_message=? WHERE id=?").run(message.slice(0,1000), deploymentId);
+    else db.prepare('INSERT INTO deployments(id,project_id,target,status,url,error_message,created_at) VALUES(?,?,?,?,NULL,?,?)')
+      .run(deploymentId, req.params.id, 'cloudflare_pages_direct_upload', 'failed', message.slice(0,1000), now);
+    res.status(400).json({success:false,error:message,deploymentId,mode:'direct_upload'});
+  }
+});
+
 router.post('/conversations/:projectId/reject-proposal', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const proposalId = String(req.body?.proposalId || '');
   if (!proposalId) return res.status(400).json({ error: 'Identificador da proposta Ã© obrigatÃ³rio.' });

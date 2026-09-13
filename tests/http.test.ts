@@ -170,3 +170,29 @@ test('failed framework start returns error status and leaves no running runtime'
     db.prepare('DELETE FROM projects WHERE id=?').run(runtimeProject);
   }
 });
+
+
+test('Cloudflare Direct Upload refuses missing build artifact without false success', async () => {
+  const projectId = `direct-upload-${Date.now()}`;
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'Direct upload','novo',?,?)")
+    .run(projectId,userA,`ws-${userA}`,now,now);
+  db.prepare("INSERT INTO integrations(id,user_id,service_name,config_json,status,last_verified_at,created_at) VALUES(?,?,?,'{}','connected',?,?)")
+    .run(`int-${projectId}`,userA,'cloudflare',now,now);
+  WorkspaceManager.writeFile(projectId,'index.html','<html><body>source only</body></html>');
+  try {
+    const response=await fetch(`${base}/projects/${projectId}/deploy/cloudflare/direct`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`}});
+    assert.equal(response.status,400);
+    const body=await response.json();
+    assert.equal(body.success,false);
+    assert.match(body.error,/artefato de build|Configure token/i);
+    const row=db.prepare("SELECT status,target FROM deployments WHERE project_id=? ORDER BY created_at DESC LIMIT 1").get(projectId) as any;
+    assert.equal(row.status,'failed');
+    assert.equal(row.target,'cloudflare_pages_direct_upload');
+  } finally {
+    WorkspaceManager.deleteProject(projectId);
+    db.prepare('DELETE FROM deployments WHERE project_id=?').run(projectId);
+    db.prepare('DELETE FROM integrations WHERE user_id=? AND service_name=?').run(userA,'cloudflare');
+    db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
+  }
+});
