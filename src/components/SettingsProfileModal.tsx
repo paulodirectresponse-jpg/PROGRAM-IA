@@ -29,8 +29,8 @@ import {
   SecretSummary,
   Provider,
   GitHubStatus,
-  Project,
-  ConnectionTestResult,
+  Project
+
 } from '../types';
 
 export type SettingsTab = 'profile' | 'providers' | 'integrations' | 'security';
@@ -49,50 +49,6 @@ interface SettingsProfileModalProps {
   onCredentialsUpdated?: () => void;
 }
 
-interface ServiceDef {
-  key: string;
-  name: string;
-  category: 'git' | 'cloud' | 'backend';
-  desc: string;
-  placeholder: string;
-  docsUrl: string;
-}
-
-const SUPPORTED_CREDENTIALS: ServiceDef[] = [
-  {
-    key: 'github',
-    name: 'GitHub Personal Access Token (PAT)',
-    category: 'git',
-    desc: 'Token de autenticação do GitHub com permissão repo para commits, push, branches e pull requests.',
-    placeholder: 'Cole seu token de acesso',
-    docsUrl: 'https://github.com/settings/tokens',
-  },
-  {
-    key: 'firebase',
-    name: 'Firebase / Google Cloud API Key & Project ID',
-    category: 'cloud',
-    desc: 'Credenciais do projeto Firebase (gen-lang-client-... ou Web API Key) para Firestore e Auth.',
-    placeholder: 'Cole a credencial ou ID do projeto',
-    docsUrl: 'https://console.firebase.google.com',
-  },
-  {
-    key: 'cloudflare',
-    name: 'Cloudflare API Token',
-    category: 'cloud',
-    desc: 'Token de API da Cloudflare com permissões de Workers, Pages ou DNS para deploy na borda.',
-    placeholder: 'Token de API Cloudflare...',
-    docsUrl: 'https://dash.cloudflare.com/profile/api-tokens',
-  },
-  {
-    key: 'supabase',
-    name: 'Supabase Project Key / Service Role',
-    category: 'backend',
-    desc: 'Chave de acesso anon ou service_role da sua instância Supabase PostgreSQL.',
-    placeholder: 'Cole a chave do projeto Supabase',
-    docsUrl: 'https://supabase.com/dashboard/project/_/settings/api',
-  },
-];
-
 export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
   isOpen,
   onClose,
@@ -108,14 +64,8 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<SettingsTab>(defaultTab);
 
-  // Secrets State
+  // Encrypted secret summaries are used only for account status and provider refresh.
   const [secrets, setSecrets] = useState<SecretSummary[]>([]);
-  const [loadingSecrets, setLoadingSecrets] = useState(false);
-  const [inputValues, setInputValues] = useState<Record<string, string>>({});
-  const [showPlain, setShowPlain] = useState<Record<string, boolean>>({});
-  const [savingKey, setSavingKey] = useState<string | null>(null);
-  const [testingKey, setTestingKey] = useState<string | null>(null);
-  const [testResults, setTestResults] = useState<Record<string, ConnectionTestResult>>({});
 
   // Providers / AI Models State
   const [selectedProviderKey, setSelectedProviderKey] = useState<string>('');
@@ -150,15 +100,12 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
   }, [selectedProviderKey, activeProv?.provider_key]);
 
   const loadSecrets = async () => {
-    setLoadingSecrets(true);
     try {
       const res = await fetch('/api/secrets');
       const data = await res.json();
       if (data.secrets) setSecrets(data.secrets);
     } catch (err) {
       console.error('Falha ao listar segredos:', err);
-    } finally {
-      setLoadingSecrets(false);
     }
   };
 
@@ -170,79 +117,6 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
       onLogout();
     } catch (err: any) {
       console.error('Erro ao sair:', err);
-    }
-  };
-
-  // Handle Secret Save
-  const handleSaveSecret = async (serviceKey: string) => {
-    const val = inputValues[serviceKey];
-    if (!val || !val.trim()) return;
-
-    setSavingKey(serviceKey);
-    try {
-      const res = await fetch('/api/secrets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          providerKey: serviceKey,
-          secretValue: val.trim(),
-        }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Falha ao criptografar segredo');
-      }
-
-      setInputValues((prev) => ({ ...prev, [serviceKey]: '' }));
-      await loadSecrets();
-      onCredentialsUpdated?.();
-      onRefreshGitHub();
-    } catch (err: any) {
-      alert(`Erro: ${err.message}`);
-    } finally {
-      setSavingKey(null);
-    }
-  };
-
-  const handleDeleteSecret = async (serviceKey: string) => {
-    if (!confirm('Deseja realmente remover esta chave criptografada?')) return;
-    try {
-      await fetch(`/api/secrets/${serviceKey}`, { method: 'DELETE' });
-      await loadSecrets();
-      setTestResults((prev) => {
-        const next = { ...prev };
-        delete next[serviceKey];
-        return next;
-      });
-      onCredentialsUpdated?.();
-      onRefreshGitHub();
-    } catch (err) {
-      console.error('Falha ao deletar chave:', err);
-    }
-  };
-
-  const handleTestSecret = async (serviceKey: string) => {
-    setTestingKey(serviceKey);
-    try {
-      const res = await fetch('/api/secrets/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerKey: serviceKey }),
-      });
-      const data: ConnectionTestResult = await res.json();
-      setTestResults((prev) => ({ ...prev, [serviceKey]: data }));
-    } catch (err: any) {
-      setTestResults((prev) => ({
-        ...prev,
-        [serviceKey]: {
-          success: false,
-          code: 'network_error',
-          message: `Erro na validação: ${err.message}`,
-        },
-      }));
-    } finally {
-      setTestingKey(null);
     }
   };
 
