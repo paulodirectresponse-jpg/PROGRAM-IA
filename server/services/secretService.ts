@@ -212,19 +212,18 @@ export class SecretService {
       );
     }
 
-    // Also update provider/integration is_configured flag if applicable
-    if (serviceKey === 'gemini' || serviceKey === 'useoneai' || serviceKey === 'openai') {
-      db.prepare(`
-        UPDATE providers
-        SET is_configured = 1, connection_status = 'connected'
-        WHERE user_id = ? AND provider_key = ?
-      `).run(userId, serviceKey);
-    } else if (serviceKey === 'github') {
+    // Persisting a credential only proves configuration; connectivity remains untested until a real probe succeeds.
+    db.prepare(`
+      UPDATE providers
+      SET is_configured = 1, connection_status = 'untested', last_error = NULL
+      WHERE user_id = ? AND provider_key = ?
+    `).run(userId, serviceKey);
+    if (serviceKey === 'github') {
       db.prepare(`
         UPDATE integrations
-        SET status = 'connected', last_verified_at = ?
+        SET status = 'pending_credentials', last_verified_at = NULL
         WHERE user_id = ? AND service_name = 'github'
-      `).run(now, userId);
+      `).run(userId);
     }
 
     return {
@@ -250,16 +249,6 @@ export class SecretService {
     `).get(userId, serviceKey) as any;
 
     if (!row || row.is_active === 0) {
-      // Fallback to environment variable if configured (for server host-level admin)
-      if (serviceKey === 'gemini' && process.env.GEMINI_API_KEY) {
-        return process.env.GEMINI_API_KEY;
-      }
-      if (serviceKey === 'useoneai' && process.env.OPENAI_API_KEY) {
-        return process.env.OPENAI_API_KEY;
-      }
-      if (serviceKey === 'github' && process.env.GITHUB_TOKEN) {
-        return process.env.GITHUB_TOKEN;
-      }
       return null;
     }
 
@@ -301,14 +290,13 @@ export class SecretService {
   static deleteSecret(userId: string, serviceKey: string): boolean {
     db.prepare('DELETE FROM user_secrets WHERE user_id = ? AND service_key = ?').run(userId, serviceKey);
 
-    // Update provider state
-    if (serviceKey === 'gemini' || serviceKey === 'useoneai' || serviceKey === 'openai') {
-      db.prepare(`
-        UPDATE providers
-        SET is_configured = 0, is_active = 0, connection_status = 'not_configured'
-        WHERE user_id = ? AND provider_key = ?
-      `).run(userId, serviceKey);
-    } else if (serviceKey === 'github') {
+    // Update matching provider state without relying on a hard-coded provider list.
+    db.prepare(`
+      UPDATE providers
+      SET is_configured = 0, is_active = 0, connection_status = 'not_configured', last_error = NULL
+      WHERE user_id = ? AND provider_key = ?
+    `).run(userId, serviceKey);
+    if (serviceKey === 'github') {
       db.prepare(`
         UPDATE integrations
         SET status = 'pending_credentials'
