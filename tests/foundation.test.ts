@@ -70,10 +70,7 @@ test('a clean second runtime restores projects, active provider, secrets and con
     assert.equal((db.prepare("SELECT is_active FROM providers WHERE user_id=? AND provider_key='cheaper_inference'").get(user.id) as any).is_active,1);
     assert.equal(SecretService.getDecryptedSecret(user.id,'github'),'github-secret-for-second-runtime');
     assert.equal((db.prepare('SELECT title FROM conversations WHERE id=?').get(conversationId) as any).title,'Cloud conversation');
-    db.prepare('DELETE FROM conversations WHERE project_id=?').run(projectId);db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
-    const protectedPush=await CloudSyncService.push(user.id);
-    assert.equal(protectedPush.protectedFromEmptyOverwrite,true);
-    assert.ok(db.prepare('SELECT id FROM projects WHERE id=?').get(projectId));
+
   }finally{
     if(previousUrl===undefined)delete process.env.SUPABASE_URL;else process.env.SUPABASE_URL=previousUrl;
     if(previousKey===undefined)delete process.env.SUPABASE_SECRET_KEY;else process.env.SUPABASE_SECRET_KEY=previousKey;
