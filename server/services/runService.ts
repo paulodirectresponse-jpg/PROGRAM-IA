@@ -31,8 +31,21 @@ export class RunService{
     if(finish) db.prepare('UPDATE agent_runs SET status=?,finished_at=? WHERE id=?').run(status,now,runId);
     else db.prepare('UPDATE agent_runs SET status=?,finished_at=NULL WHERE id=?').run(status,runId);
   }
-  static waitForApproval(runId:string){this.setStatus(runId,'waiting_approval',false);}
-  static resume(runId:string){this.setStatus(runId,'running',false);}
+  static closeDanglingSteps(runId:string,status:StepStatus='aborted'){
+    const now=new Date().toISOString();
+    db.prepare("UPDATE agent_steps SET status=?,finished_at=? WHERE run_id=? AND status='running'").run(status,now,runId);
+  }
+  static waitForApproval(runId:string){
+    // A run cannot be waiting for approval while an old step remains "running".
+    this.closeDanglingSteps(runId,'aborted');
+    this.setStatus(runId,'waiting_approval',false);
+  }
+  static resume(runId:string){
+    // Resume always starts a fresh step. Any unfinished prior step is historical
+    // evidence, not an active worker.
+    this.closeDanglingSteps(runId,'aborted');
+    this.setStatus(runId,'running',false);
+  }
   static finish(runId:string,stepId:string,status:RunStatus){
     const now=new Date().toISOString();
     const stepStatus:StepStatus=status==='rejected'?'rejected':status==='completed'?'completed':status==='aborted'?'aborted':'failed';
