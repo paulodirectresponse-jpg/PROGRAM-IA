@@ -65,15 +65,24 @@ end $$;
 
 do $$
 begin
-  if not exists (
+  if exists (
     select 1 from pg_constraint
     where conrelid = 'public.forge_project_files'::regclass
       and conname = 'forge_project_files_project_id_fkey'
   ) then
     alter table public.forge_project_files
-      add constraint forge_project_files_project_id_fkey
-      foreign key (project_id)
-      references public.forge_projects(id)
+      drop constraint forge_project_files_project_id_fkey;
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.forge_project_files'::regclass
+      and conname = 'forge_project_files_project_owner_fkey'
+  ) then
+    alter table public.forge_project_files
+      add constraint forge_project_files_project_owner_fkey
+      foreign key (firebase_uid, project_id)
+      references public.forge_projects(firebase_uid, id)
       on delete cascade
       not valid;
   end if;

@@ -1,6 +1,7 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { SupabasePersistenceService } from '../server/services/supabasePersistenceService.js';
 import { CloudSyncService } from '../server/services/cloudSyncService.js';
 import { compareSnapshots } from '../server/services/persistenceMigrationService.js';
@@ -167,6 +168,14 @@ test('canonical pull still restores project files by firebase uid', async (t) =>
     assert.equal(result.snapshot?.files.p1['index.html'],content.toString('base64'));
     assert.ok(reads.some((url)=>url.includes('/forge_project_files?firebase_uid=eq.fb1&select=*')));
   }finally{restore('SUPABASE_URL',oldUrl);restore('SUPABASE_SECRET_KEY',oldKey);}
+});
+
+test('project files migration enforces composite firebase/project ownership', () => {
+  const migration = fs.readFileSync('supabase/migrations/20260913120000_canonical_project_files_ownership.sql','utf8').replace(/\s+/g,' ');
+  assert.match(migration,/foreign key \(firebase_uid, project_id\) references public\.forge_projects\(firebase_uid, id\)/i);
+  assert.match(migration,/forge_project_files_project_owner_fkey/i);
+  assert.match(migration,/drop constraint forge_project_files_project_id_fkey/i);
+  assert.doesNotMatch(migration,/add constraint forge_project_files_project_id_fkey\s+foreign key \(project_id\)\s+references public\.forge_projects\(id\)/i);
 });
 
 test('canonical model routing mapper preserves legacy profile, candidate and invocation fields', async (t)=>{
