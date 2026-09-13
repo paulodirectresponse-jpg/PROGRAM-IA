@@ -14,6 +14,13 @@ type Input = {
   runId: string;
   stepId: string;
   signal?: AbortSignal;
+  reliableBuild?: {
+    requestedFiles: string[];
+    objective: string;
+    scopeIn?: string;
+    scopeOut?: string;
+    acceptanceCriteria?: string[];
+  };
 };
 
 type ExecuteOptions = { profile?: ProfileKey; forcedAgentKey?: string; allowExpertEscalation?: boolean; repair?: boolean };
@@ -37,7 +44,14 @@ export class AgentEngine {
     try {
       return await this.executeWithProfile(x, profile, options);
     } catch (error: any) {
-      const canEscalate = options.allowExpertEscalation && profile === 'BASE_FREE' && !x.signal?.aborted && /Nenhum modelo disponivel|Nenhum modelo disponível|Nenhum candidate|incompatible|bloqueado|Provider indisponivel|Provider indisponível/i.test(String(error?.message || error));
+      const canEscalate = options.allowExpertEscalation
+        && profile === 'BASE_FREE'
+        && !x.signal?.aborted
+        && (
+          error?.kind === 'incompatible'
+          || error?.kind === 'operational'
+          || /Nenhum modelo disponivel|Nenhum modelo disponível|Nenhum candidate|incompatible|bloqueado|Provider indisponivel|Provider indisponível/i.test(String(error?.message || error))
+        );
       if (!canEscalate) throw error;
       return await this.executeWithProfile(x, 'EXPERT_PAID', { ...options, profile: 'EXPERT_PAID' });
     }
@@ -61,7 +75,25 @@ export class AgentEngine {
       const started = Date.now();
       try {
         ModelRouter.assertBudget(x.userId, Number(c.max_cost_usd || 0), { runId: x.runId });
-        const result = await LLMAdapterService.executePrompt({ ...x, providerKey: c.provider_key, modelId: c.model_id === 'auto' ? undefined : c.model_id });
+        const result = x.reliableBuild && x.mode === 'build'
+          ? await LLMAdapterService.buildApprovedPlanReliably({
+              projectId: x.projectId,
+              providerKey: c.provider_key,
+              modelId: c.model_id,
+              userId: x.userId,
+              existingFiles: x.existingFiles,
+              requestedFiles: x.reliableBuild.requestedFiles,
+              objective: x.reliableBuild.objective,
+              scopeIn: x.reliableBuild.scopeIn,
+              scopeOut: x.reliableBuild.scopeOut,
+              acceptanceCriteria: x.reliableBuild.acceptanceCriteria,
+              signal: x.signal,
+            })
+          : await LLMAdapterService.executePrompt({
+              ...x,
+              providerKey: c.provider_key,
+              modelId: c.model_id === 'auto' ? undefined : c.model_id,
+            });
         if (result.isDemonstrativeFallback || result.hasErrors) {
           const reason = String(result.errorReason || result.errorMessage || 'provider_error');
           const operational = /timeout|network|rate_limit|provider_error|429|5\d\d/i.test(reason);
@@ -145,7 +177,10 @@ export class AgentWorkflowEngine extends AgentEngine {
 
     let result: LLMExecutionResult & { agentKey: string; profileKey: ProfileKey };
     try {
-      result = await AgentEngine.execute({ ...x, stepId: forge }, { profile: 'BASE_FREE', forcedAgentKey: 'FORGE' });
+      result = await AgentEngine.execute(
+        { ...x, stepId: forge },
+        { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true }
+      );
       RunService.finishStep(forge, result.hasErrors ? 'failed' : 'completed', {
         decisionType: result.decisionType,
         providerUsed: result.providerUsed,
@@ -165,14 +200,23 @@ export class AgentWorkflowEngine extends AgentEngine {
       throw error;
     }
 
-    const sentinelStatus = RunService.createStep(x.runId, 'SENTINEL', result.proposal ? 'Aguardar aplicação para validar proposta' : 'Registrar ausência de validação aplicável', order++, 'micro', {
-      status: result.proposal ? 'pending_user_apply' : 'not_applicable',
-      reason: result.proposal ? 'Preview antes de aplicar é intencional; ValidatorEngine roda na aplicação definitiva.' : 'Sem proposta de código para validar.',
+    const hasReviewableChanges = Boolean(result.proposal?.files?.length || result.build?.files?.length);
+    const sentinelStatus = RunService.createStep(x.runId, 'SENTINEL', hasReviewableChanges ? 'Aguardar aplicação para validar proposta' : 'Registrar ausência de validação aplicável', order++, 'micro', {
+      status: hasReviewableChanges ? 'pending_user_apply' : 'not_applicable',
+      reason: hasReviewableChanges ? 'Preview antes de aplicar é intencional; ValidatorEngine roda na aplicação definitiva.' : 'Sem proposta de código para validar.',
       validator: 'ValidatorEngine',
     });
     steps.push(sentinelStatus);
     RunService.finishStep(sentinelStatus, 'completed');
 
-    return { ...result, workflow: { runId: x.runId, steps, status: result.hasErrors ? 'failed' : result.proposal ? 'waiting_approval' : 'completed', shipRequested: needsShip(x.prompt, x.mode) } };
+    return {
+      ...result,
+      workflow: {
+        runId: x.runId,
+        steps,
+        status: result.hasErrors ? 'failed' : hasReviewableChanges ? 'waiting_approval' : 'completed',
+        shipRequested: needsShip(x.prompt, x.mode),
+      },
+    };
   }
 }
