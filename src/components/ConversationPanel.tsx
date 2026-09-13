@@ -31,6 +31,7 @@ interface ConversationPanelProps {
   isLoading: boolean;
   activeAgentTrace?: any[];
   activeAgentRunStatus?: string | null;
+  onContinueRun?: () => void;
   onAbort: () => void;
   availableSkills: Skill[];
   canSend: boolean;
@@ -48,6 +49,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   isLoading,
   activeAgentTrace = [],
   activeAgentRunStatus = null,
+  onContinueRun,
   onAbort,
   availableSkills,
   canSend,
@@ -424,22 +426,41 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
         )}
 
         {/* Loading Indicator with Abort Button */}
-        {(isLoading || activeAgentRunStatus === 'running') && (
+        {(isLoading || activeAgentRunStatus === 'running' || ((activeAgentRunStatus === 'failed' || activeAgentRunStatus === 'aborted') && activeAgentTrace.length > 0)) && (
           <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 text-xs text-cyan-300 space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
-                <span>{activeAgentRunStatus === 'running' && !isLoading ? 'Execução continua ativa no servidor...' : `Processando no modo ${currentModeInfo.label}...`}</span>
+                <span>{
+                  activeAgentRunStatus === 'running' && !isLoading
+                    ? 'Execução continua ativa no servidor...'
+                    : activeAgentRunStatus === 'failed'
+                      ? 'A execução parou com erro. O progresso concluído foi preservado.'
+                      : activeAgentRunStatus === 'aborted'
+                        ? 'A execução foi interrompida. O progresso concluído foi preservado.'
+                        : `Processando no modo ${currentModeInfo.label}...`
+                }</span>
               </div>
-              <button
-                type="button"
-                id="btn-abort-request"
-                onClick={onAbort}
-                className="p-1 text-slate-400 hover:text-rose-400 rounded transition cursor-pointer"
-                title="Interromper geração"
-              >
-                <Square size={13} fill="currentColor" />
-              </button>
+              {activeAgentRunStatus === 'running' || isLoading ? (
+                <button
+                  type="button"
+                  id="btn-abort-request"
+                  onClick={onAbort}
+                  className="p-1 text-slate-400 hover:text-rose-400 rounded transition cursor-pointer"
+                  title="Interromper geração"
+                >
+                  <Square size={13} fill="currentColor" />
+                </button>
+              ) : (activeAgentRunStatus === 'failed' || activeAgentRunStatus === 'aborted') && onContinueRun ? (
+                <button
+                  type="button"
+                  onClick={onContinueRun}
+                  className="rounded-md border border-cyan-800 bg-cyan-950/40 px-2 py-1 text-[10px] font-semibold text-cyan-300 hover:bg-cyan-950/70"
+                  title="Continuar a partir das etapas já concluídas"
+                >
+                  Continuar
+                </button>
+              ) : null}
             </div>
             {Array.isArray(activeAgentTrace) && activeAgentTrace.length > 0 && (
               <div className="flex flex-wrap gap-1">
