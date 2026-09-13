@@ -403,6 +403,34 @@ Criar API segura
       assert.ok(plan.objective.includes('Criar API segura'));
       assert.ok(plan.acceptance_criteria.length >= 2);
     });
+
+    test('4.9: Planos estruturados normalizam arrays e objetos antes de persistir no SQLite', () => {
+      const planText = `\`\`\`json
+{
+  "type": "plan",
+  "plan": {
+    "objective": { "title": "Administrar fluxo de caixa" },
+    "scope_in": ["Dashboard financeiro", "Fluxo de caixa", { "feature": "Relatórios" }],
+    "scope_out": ["E-commerce"],
+    "files_affected": "src/App.tsx",
+    "integrations": null,
+    "risks": "Dados financeiros incorretos",
+    "acceptance_criteria": [{ "item": "Saldo correto" }, "Persistência validada"]
+  }
+}
+\`\`\``;
+
+      const plan = LLMAdapterService.extractPlan(planText);
+      assert.ok(plan);
+      assert.equal(typeof plan.objective, 'string');
+      assert.equal(typeof plan.scope_in, 'string');
+      assert.ok(plan.objective.includes('Administrar fluxo de caixa'));
+      assert.ok(plan.scope_in.includes('Dashboard financeiro'));
+      assert.ok(plan.scope_in.includes('Relatórios'));
+      assert.deepEqual(plan.files_affected, ['src/App.tsx']);
+      assert.deepEqual(plan.risks, ['Dados financeiros incorretos']);
+      assert.equal(plan.acceptance_criteria.length, 2);
+    });
   });
 
   // =========================================================================
