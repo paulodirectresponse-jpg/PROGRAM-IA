@@ -493,6 +493,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
               <div className="space-y-1.5">
                 {activeAgentTrace.map((step:any,index:number) => {
                   const files=Array.isArray(step.context?.files)?step.context.files:[];
+                  const events=Array.isArray(step.context?.events)?step.context.events:[];
                   const running=step.status==='running';
                   return <div key={step.id} className={`rounded-lg border px-2 py-1.5 ${
                     step.status === 'completed'
@@ -520,6 +521,17 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                         {Number.isFinite(Number(inv.latency_ms))?` · ${Math.round(Number(inv.latency_ms)/1000)}s`:''}
                         {inv.error_code?` · ${inv.error_code}`:''}
                       </div>)}
+                    </div>}
+                    {events.length>0&&<div className="mt-1.5 space-y-0.5 border-t border-slate-800/70 pt-1">
+                      {events.slice(-12).map((event:any,eventIndex:number)=>{
+                        const symbol=event.type==='file_completed'?'+':event.type==='file_failed'?'!':event.type==='file_retry'?'↻':'…';
+                        const tone=event.type==='file_completed'?'text-emerald-400':event.type==='file_failed'?'text-rose-400':event.type==='file_retry'?'text-amber-400':'text-cyan-400';
+                        return <div key={`${event.type}-${event.path}-${eventIndex}`} className="flex items-center gap-1.5 text-[9px] font-mono">
+                          <span className={tone}>{symbol}</span>
+                          <span className="truncate text-slate-400">{event.path}</span>
+                          {event.total>0&&<span className="ml-auto shrink-0 text-slate-600">{event.index}/{event.total}</span>}
+                        </div>;
+                      })}
                     </div>}
                     {files.length>0&&<div className="mt-1 flex flex-wrap gap-1">
                       {files.map((file:string)=><span key={file} className="inline-flex items-center gap-1 rounded border border-slate-800 bg-slate-950 px-1 py-0.5 text-[9px] font-mono text-cyan-400"><FileCode2 size={9}/>{file}</span>)}
