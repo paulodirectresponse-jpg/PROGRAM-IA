@@ -460,6 +460,61 @@ Criar API segura
       assert.equal(parsed.build.files[0].path, 'index.html');
       assert.match(parsed.build.files[0].content, /Dashboard/);
     });
+
+    test('4.11: OmniRoute usa streaming e agrega SSE em builds longos', async () => {
+      const originalFetch = globalThis.fetch;
+      let requestBody: any = null;
+      const encoder = new TextEncoder();
+
+      globalThis.fetch = (async (_url: any, init?: any) => {
+        requestBody = JSON.parse(String(init?.body || '{}'));
+        const chunks = [
+          'data: ' + JSON.stringify({ choices: [{ delta: { content: '{"summary":"Teste","files":[{"path":"index.html","action":"modify","content":"' } }] }) + '\n\n',
+          'data: ' + JSON.stringify({ choices: [{ delta: { content: '<html><body>STREAM_OK</body></html>"}]}' } }] }) + '\n\n',
+          'data: ' + JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 20 } }) + '\n\n',
+          'data: [DONE]\n\n',
+        ];
+        const body = new ReadableStream({
+          start(controller) {
+            for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+            controller.close();
+          },
+        });
+        return new Response(body, {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      }) as typeof fetch;
+
+      try {
+        const result = await (LLMAdapterService as any).callOpenAICompatible(
+          {
+            apiKey: 'test-key',
+            baseUrl: 'https://example.trycloudflare.com/v1',
+            modelId: 'auto',
+            name: 'OmniRoute (Free Pool)',
+          },
+          {
+            mode: 'build',
+            skillsText: '',
+            filesList: ['index.html'],
+            existingFiles: { 'index.html': '<html><body>OLD</body></html>' },
+            conversationHistory: [],
+            prompt: 'Atualize o arquivo',
+          }
+        );
+
+        assert.equal(requestBody.stream, true);
+        assert.equal(requestBody.stream_options.include_usage, true);
+        assert.equal(result.hasErrors, false);
+        assert.equal(result.build.files.length, 1);
+        assert.match(result.build.files[0].content, /STREAM_OK/);
+        assert.equal(result.usage.inputTokens, 10);
+        assert.equal(result.usage.outputTokens, 20);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
   });
 
   // =========================================================================
