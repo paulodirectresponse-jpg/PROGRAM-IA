@@ -45,6 +45,42 @@ test('cookie mutations require a CSRF header',async()=>{
 });
 test('cloud sync reports not-configured when Supabase is not configured',async()=>{const r=await fetch(`${base}/sync/status`,{headers:{Authorization:`Bearer ${tokenA}`}});assert.equal(r.status,200);const body=await r.json();assert.equal(body.configured,false);assert.equal(body.status,'not_configured');});
 test('proposal preview serves temporary files without changing the workspace',async()=>{const now=new Date().toISOString(),conversation=`preview-conversation-${Date.now()}`,proposal=`preview-proposal-${Date.now()}`;WorkspaceManager.writeFile(id,'index.html','<html><body>ORIGINAL</body></html>');db.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)').run(conversation,id,'Preview',now,now);db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent','proposal',?,?)").run(`preview-message-${Date.now()}`,conversation,JSON.stringify({proposal:{id:proposal,status:'pending',files:[{path:'index.html',action:'modify',content:'<html><body>CALCULADORA</body></html>'}]}}),now);const preview=await fetch(`${base}/preview-proposal/${id}/${proposal}/index.html`,{headers:{Authorization:`Bearer ${tokenA}`}});assert.equal(preview.status,200);assert.match(preview.headers.get('content-security-policy') || '', /connect-src 'self' https: wss:/);assert.match(await preview.text(),/CALCULADORA/);assert.match(WorkspaceManager.readFile(id,'index.html')||'',/ORIGINAL/);});
+test('failed executed validation rolls an applied proposal back to the exact previous workspace',async()=>{
+  const now=new Date(Date.now()+1000).toISOString();
+  const conversation=`rollback-conversation-${Date.now()}`;
+  const proposal=`rollback-proposal-${Date.now()}`;
+  WorkspaceManager.writeFile(id,'index.html','<html><body>ROLLBACK_ORIGINAL</body></html>');
+  WorkspaceManager.deleteFile(id,'package.json');
+  db.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)')
+    .run(conversation,id,'Rollback validation',now,now);
+  db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent','proposal',?,?)")
+    .run(
+      `rollback-message-${Date.now()}`,
+      conversation,
+      JSON.stringify({proposal:{
+        id:proposal,
+        status:'pending',
+        files:[
+          {path:'index.html',action:'modify',content:'<html><body>SHOULD_BE_REVERTED</body></html>'},
+          {path:'package.json',action:'create',content:JSON.stringify({scripts:{build:'node -e "process.exit(1)"'}})}
+        ]
+      }}),
+      now
+    );
+
+  const response=await fetch(`${base}/conversations/${id}/apply-proposal`,{
+    method:'POST',
+    headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
+    body:JSON.stringify({proposalId:proposal,summary:'Rollback real'})
+  });
+  assert.equal(response.status,422);
+  assert.match(WorkspaceManager.readFile(id,'index.html')||'',/ROLLBACK_ORIGINAL/);
+  assert.equal(WorkspaceManager.readFile(id,'package.json'),null);
+  const metadata=JSON.parse((db.prepare('SELECT metadata_json FROM messages WHERE conversation_id=? AND sender=\'agent\' ORDER BY created_at DESC LIMIT 1').get(conversation) as any).metadata_json);
+  assert.equal(metadata.proposal.status,'failed_validation');
+  assert.equal(metadata.validation.status,'failed');
+});
+
 test('changing model configuration does not mutate another user',async()=>{
   const r=await fetch(`${base}/providers/update`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({providerKey:'useoneai',modelId:'my-model'})});
   assert.equal(r.status,200);
