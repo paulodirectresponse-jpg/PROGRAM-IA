@@ -80,6 +80,16 @@ Ainda faltam correção automática localizada com revalidação, escalonamento 
 - Firestore operacional removido;
 - remoções destrutivas de snapshot/colunas espelho continuam bloqueadas por reconciliação real.
 
+### Fase 1 — Context Engine V2 core
+- ProjectFileIndex incremental por hash implementado;
+- Architecture Graph persistente implementado;
+- Context Commit durável implementado;
+- Context Scopes MICRO/LOCAL/TASK/PROJECT implementados;
+- Context Compiler V2 + ContextPack + telemetria implementados;
+- APIs de sync/snapshot/compile/commit/telemetry implementadas;
+- nenhum limite lógico de quantidade de arquivos foi introduzido;
+- integração profunda de agentes, continue, repair, imports e checkpoints permanece para o Codex conforme `PHASE1_CODEX_HANDOFF.md`.
+
 ## Pendências que bloqueiam “release completa”
 
 Ver `CODEX_HANDOFF.md`: WebSocket/HMR, E2E externo real, Agent Engine com repair bounded, benchmark real e remoção destrutiva pós-reconciliação.
