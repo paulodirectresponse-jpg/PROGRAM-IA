@@ -242,8 +242,24 @@ router.put('/model-profiles/:profileKey/candidates',requireAuth,(req,res)=>{try{
 router.patch('/model-candidates/:id',requireAuth,(req,res)=>{try{res.json({profiles:ModelRouter.updateCandidate(req.user!.id,req.params.id,req.body)});}catch(e:any){res.status(400).json({error:e.message});}});
 router.delete('/model-candidates/:id',requireAuth,(req,res)=>{try{res.json({profiles:ModelRouter.deleteCandidate(req.user!.id,req.params.id)});}catch(e:any){res.status(400).json({error:e.message});}});
 router.get('/telemetry/summary',requireAuth,(req,res)=>{const since=String(req.query.since||new Date(Date.now()-2592000000).toISOString());const rows=db.prepare(`SELECT profile_key,provider_key,model_id,COUNT(*) calls,COALESCE(SUM(cost_usd),0) cost_usd,ROUND(AVG(latency_ms)) avg_latency_ms,SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) successes FROM model_invocations WHERE user_id=? AND created_at>=? GROUP BY profile_key,provider_key,model_id`).all(req.user!.id,since);res.json({since,rows});});
-router.get('/agents',requireAuth,(req,res)=>{const metrics=db.prepare(`SELECT agent_key,COUNT(*) calls,COALESCE(SUM(cost_usd),0) cost_usd,SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) successes FROM model_invocations WHERE user_id=? GROUP BY agent_key`).all(req.user!.id) as any[];res.json({agents:Object.entries(AGENTS).map(([key,value])=>({key,label:value.role,profile:value.defaultProfile,tools:value.tools,metrics:metrics.find(m=>m.agent_key===key)||{calls:0,cost_usd:0,successes:0}}))});});
-router.get('/agent-runs',requireAuth,(req,res)=>{const projectId=String(req.query.projectId||'');const runs=projectId?db.prepare('SELECT * FROM agent_runs WHERE user_id=? AND project_id=? ORDER BY created_at DESC LIMIT 30').all(req.user!.id,projectId):db.prepare('SELECT * FROM agent_runs WHERE user_id=? ORDER BY created_at DESC LIMIT 30').all(req.user!.id);res.json({runs});});
+router.get('/agents',requireAuth,(req,res)=>{
+  const invocationMetrics=db.prepare(`SELECT agent_key,COUNT(*) calls,COALESCE(SUM(cost_usd),0) cost_usd,SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) successes
+    FROM model_invocations WHERE user_id=? GROUP BY agent_key`).all(req.user!.id) as any[];
+  const executionMetrics=db.prepare(`SELECT s.agent_key,COUNT(*) executions,SUM(CASE WHEN s.status='completed' THEN 1 ELSE 0 END) completed
+    FROM agent_steps s JOIN agent_runs r ON r.id=s.run_id WHERE r.user_id=? GROUP BY s.agent_key`).all(req.user!.id) as any[];
+  res.json({agents:Object.entries(AGENTS).map(([key,value])=>{
+    const inv=invocationMetrics.find(m=>m.agent_key===key)||{calls:0,cost_usd:0,successes:0};
+    const exec=executionMetrics.find(m=>m.agent_key===key)||{executions:0,completed:0};
+    return {key,label:value.role,profile:value.defaultProfile,tools:value.tools,metrics:{...inv,...exec}};
+  })});
+});
+router.get('/agent-runs',requireAuth,(req,res)=>{
+  const projectId=String(req.query.projectId||'');
+  const runs=(projectId
+    ? db.prepare('SELECT * FROM agent_runs WHERE user_id=? AND project_id=? ORDER BY created_at DESC LIMIT 30').all(req.user!.id,projectId)
+    : db.prepare('SELECT * FROM agent_runs WHERE user_id=? ORDER BY created_at DESC LIMIT 30').all(req.user!.id)) as any[];
+  res.json({runs:runs.map(run=>({...run,trace:RunService.trace(run.id)}))});
+});
 
 router.get('/secrets', requireAuth, (req: Request, res: Response) => {
   try {
@@ -997,10 +1013,17 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
     const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oÃ³]rio|remoto)\b|\b(github|reposit[oÃ³]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(content);
     if(requestsGitHubPublish){
+      if (execution) RunService.assignAgent(execution.stepId, 'SHIP');
       const repoContext=projectRepositoryContext(projectId,project);
-      if(!repoContext.repoUrl)return res.status(409).json({error:'Vincule ou crie um repositório na aba Publicar antes de enviar o projeto ao GitHub.'});
+      if(!repoContext.repoUrl){
+        if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+        return res.status(409).json({error:'Vincule ou crie um repositório na aba Publicar antes de enviar o projeto ao GitHub.'});
+      }
       const parsed=GitHubService.parseRepoUrl(repoContext.repoUrl);
-      if(!parsed)return res.status(400).json({error:'A URL do repositório vinculado é inválida.'});
+      if(!parsed){
+        if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+        return res.status(400).json({error:'A URL do repositório vinculado é inválida.'});
+      }
 
       const binaryFiles:Record<string,Buffer>={};
       for(const file of WorkspaceManager.getFiles(projectId)){
@@ -1018,7 +1041,10 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
         files:existingFiles,
         binaryFiles,
       });
-      if(!pushed.success)return res.status(400).json({error:pushed.error||'O GitHub recusou a publicação.'});
+      if(!pushed.success){
+        if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+        return res.status(400).json({error:pushed.error||'O GitHub recusou a publicação.'});
+      }
       if(pushed.commitSha){
         db.prepare('UPDATE branches SET head_commit_hash=? WHERE project_id=? AND name=?')
           .run(pushed.commitSha,projectId,repoContext.branch);
@@ -1027,12 +1053,17 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       const agentMsgId='msg-agent-'+Date.now();
       const commitUrl=`https://github.com/${parsed.owner}/${parsed.repo}/commit/${pushed.commitSha}`;
       const replyText=`Publicação concluída no GitHub.\n\nCommit: ${pushed.commitSha}\n${commitUrl}`;
+      if (execution) RunService.finish(execution.runId, execution.stepId, 'completed');
       const metadata={
         mode,
         decisionType:'publish',
         providerUsed:'GitHub',
         modelUsed:'ferramenta-direta',
         filesAffected:[...Object.keys(existingFiles),...Object.keys(binaryFiles)],
+        runId:execution?.runId,
+        executionType:execution?'agent_engine':'direct_tool',
+        agentKey:execution?'SHIP':undefined,
+        workflow:execution?{runId:execution.runId,status:'completed',steps:[execution.stepId],shipRequested:true,trace:RunService.trace(execution.runId)}:undefined,
         github:{owner:parsed.owner,repo:parsed.repo,branch:repoContext.branch,commitSha:pushed.commitSha,commitUrl}
       };
       db.prepare("INSERT INTO messages (id,conversation_id,sender,content,metadata_json,created_at) VALUES (?,?,'agent',?,?,?)")
@@ -1040,7 +1071,10 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       return res.json({success:true,agentMessage:{id:agentMsgId,sender:'agent',content:replyText,metadata,created_at:now},github:metadata.github});
     }
     const providerConfig = LLMAdapterService.getActiveProviderConfig(req.user!.id);
-    if (!providerConfig) return res.status(409).json({error:'Selecione e salve um provedor de IA antes de enviar mensagens.'});
+    if (!providerConfig) {
+      if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+      return res.status(409).json({error:'Selecione e salve um provedor de IA antes de enviar mensagens.'});
+    }
     const providerKey = providerConfig.key;
     const modelId = providerConfig.modelId;
 
@@ -1103,7 +1137,8 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     }
 
     if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
-      return res.status(409).json({error:'Os arquivos mudaram durante a revisÃ£o. Envie novamente para usar a versÃ£o atual.'});
+      if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+      return res.status(409).json({error:'Os arquivos mudaram durante a revisão. Envie novamente para usar a versão atual.'});
     }
 
     let checkpointCreatedId: string | null = null;
