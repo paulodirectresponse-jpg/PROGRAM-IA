@@ -19,6 +19,7 @@ import { DesktopService } from './services/desktopService.js';
 import { CloudSyncService } from './services/cloudSyncService.js';
 import { RuntimeManager } from './services/runtimeManager.js';
 import { RequirementLedgerService } from './services/requirementLedgerService.js';
+import { ContextEngineV2, ContextCommitService, ContextCompiler } from './context-engine/contextEngine.js';
 
 export const router = express.Router();
 const activeProjects = new Set<string>();
@@ -519,6 +520,99 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+// ==========================================
+// PHASE 1 — CONTEXT ENGINE V2 CORE API
+// ==========================================
+
+router.post('/projects/:projectId/context/sync', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    const projectId = req.params.projectId;
+    const files = WorkspaceManager.getAllFilesContent(projectId);
+    const result = ContextEngineV2.syncProject({ projectId, files });
+    res.json({ success:true, ...result });
+  } catch (err:any) {
+    res.status(500).json({ error:String(err?.message || err) });
+  }
+});
+
+router.get('/projects/:projectId/context', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    res.json({ success:true, ...ContextEngineV2.snapshot(req.params.projectId) });
+  } catch (err:any) {
+    res.status(500).json({ error:String(err?.message || err) });
+  }
+});
+
+router.post('/projects/:projectId/context/compile', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    const projectId = req.params.projectId;
+    const scope = String(req.body?.scope || 'TASK').toUpperCase();
+    if (!['MICRO','LOCAL','TASK','PROJECT'].includes(scope)) {
+      return res.status(400).json({ error:'Context scope inválido.' });
+    }
+    const task = typeof req.body?.task === 'string' ? { objective:req.body.task } : req.body?.task;
+    if (!task?.objective || typeof task.objective !== 'string') {
+      return res.status(400).json({ error:'task.objective é obrigatório.' });
+    }
+    if (req.body?.sync !== false) {
+      ContextEngineV2.syncProject({ projectId, files:WorkspaceManager.getAllFilesContent(projectId) });
+    }
+    const pack = ContextEngineV2.compile({
+      projectId,
+      agentKey:String(req.body?.agentKey || 'FORGE'),
+      scope:scope as any,
+      task,
+      requirementIds:Array.isArray(req.body?.requirementIds) ? req.body.requirementIds.map(String) : [],
+      runId:req.body?.runId ? String(req.body.runId) : null,
+      stepId:req.body?.stepId ? String(req.body.stepId) : null,
+      focusPaths:Array.isArray(req.body?.focusPaths) ? req.body.focusPaths.map(String) : [],
+      tokenBudget:Number.isFinite(Number(req.body?.tokenBudget)) ? Number(req.body.tokenBudget) : undefined,
+    });
+    res.json({ success:true, pack });
+  } catch (err:any) {
+    res.status(500).json({ error:String(err?.message || err) });
+  }
+});
+
+router.post('/projects/:projectId/context/commits', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    const projectId = req.params.projectId;
+    if (!req.body?.task || typeof req.body.task !== 'string') {
+      return res.status(400).json({ error:'task é obrigatório.' });
+    }
+    const record = ContextEngineV2.recordCommit({
+      projectId,
+      runId:req.body.runId ? String(req.body.runId) : null,
+      taskId:req.body.taskId ? String(req.body.taskId) : null,
+      agentKey:req.body.agentKey ? String(req.body.agentKey) : null,
+      scope:['MICRO','LOCAL','TASK','PROJECT'].includes(String(req.body.scope || '').toUpperCase()) ? String(req.body.scope).toUpperCase() as any : 'TASK',
+      task:String(req.body.task),
+      decisions:Array.isArray(req.body.decisions) ? req.body.decisions.map(String) : [],
+      changedFiles:Array.isArray(req.body.changedFiles) ? req.body.changedFiles.map(String) : [],
+      requirementIds:Array.isArray(req.body.requirementIds) ? req.body.requirementIds.map(String) : [],
+      validation:req.body.validation ?? null,
+      blockers:Array.isArray(req.body.blockers) ? req.body.blockers.map(String) : [],
+      nextState:req.body.nextState ?? null,
+    });
+    res.json({ success:true, commit:record });
+  } catch (err:any) {
+    res.status(500).json({ error:String(err?.message || err) });
+  }
+});
+
+router.get('/projects/:projectId/context/telemetry', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    const limit = Number(req.query.limit || 50);
+    res.json({
+      success:true,
+      telemetry:ContextCompiler.listTelemetry(req.params.projectId, Number.isFinite(limit) ? limit : 50),
+      commits:ContextCommitService.listRecent(req.params.projectId, Number.isFinite(limit) ? limit : 50),
+    });
+  } catch (err:any) {
+    res.status(500).json({ error:String(err?.message || err) });
+  }
+});
+
 router.get('/projects/:id', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   try {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
@@ -560,6 +654,10 @@ router.delete('/projects/:id', requireAuth, requireProjectOwner, async (req: Req
 
     // 3. Delete execution/planning children before the project itself.
     db.prepare('DELETE FROM requirements WHERE project_id = ?').run(projectId);
+    db.prepare('DELETE FROM context_packs WHERE project_id = ?').run(projectId);
+    db.prepare('DELETE FROM context_commits WHERE project_id = ?').run(projectId);
+    db.prepare('DELETE FROM context_architecture_graphs WHERE project_id = ?').run(projectId);
+    db.prepare('DELETE FROM context_project_files WHERE project_id = ?').run(projectId);
     const runIds = db.prepare('SELECT id FROM agent_runs WHERE project_id = ?').all(projectId) as {id:string}[];
     for (const run of runIds) {
       db.prepare('DELETE FROM model_invocations WHERE run_id = ?').run(run.id);

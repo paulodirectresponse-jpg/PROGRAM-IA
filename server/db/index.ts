@@ -112,6 +112,48 @@ export function initializeDatabase() {
     );
   }
 
+  // Migration 004: Context Engine V2 core persistence.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS context_project_files (
+      project_id TEXT NOT NULL,path TEXT NOT NULL,hash TEXT NOT NULL,size_bytes INTEGER NOT NULL,
+      language TEXT NOT NULL,summary TEXT NOT NULL DEFAULT '',symbols_json TEXT NOT NULL DEFAULT '[]',
+      imports_json TEXT NOT NULL DEFAULT '[]',exports_json TEXT NOT NULL DEFAULT '[]',
+      module_key TEXT NOT NULL DEFAULT 'root',updated_at TEXT NOT NULL,PRIMARY KEY(project_id,path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_context_project_files_hash ON context_project_files(project_id,hash);
+    CREATE INDEX IF NOT EXISTS idx_context_project_files_module ON context_project_files(project_id,module_key);
+    CREATE TABLE IF NOT EXISTS context_architecture_graphs (
+      id TEXT PRIMARY KEY,project_id TEXT NOT NULL,graph_hash TEXT NOT NULL,graph_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,UNIQUE(project_id,graph_hash)
+    );
+    CREATE INDEX IF NOT EXISTS idx_context_architecture_project ON context_architecture_graphs(project_id,created_at);
+    CREATE TABLE IF NOT EXISTS context_commits (
+      id TEXT PRIMARY KEY,project_id TEXT NOT NULL,run_id TEXT,task_id TEXT,agent_key TEXT,
+      scope TEXT NOT NULL DEFAULT 'TASK',task TEXT NOT NULL,decisions_json TEXT NOT NULL DEFAULT '[]',
+      changed_files_json TEXT NOT NULL DEFAULT '[]',requirement_ids_json TEXT NOT NULL DEFAULT '[]',
+      validation_json TEXT NOT NULL DEFAULT 'null',blockers_json TEXT NOT NULL DEFAULT '[]',
+      next_state_json TEXT NOT NULL DEFAULT 'null',created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_context_commits_project ON context_commits(project_id,created_at);
+    CREATE INDEX IF NOT EXISTS idx_context_commits_run ON context_commits(run_id,created_at);
+    CREATE TABLE IF NOT EXISTS context_packs (
+      id TEXT PRIMARY KEY,project_id TEXT NOT NULL,run_id TEXT,step_id TEXT,agent_key TEXT NOT NULL,
+      scope TEXT NOT NULL,project_hash TEXT NOT NULL,token_budget INTEGER NOT NULL,estimated_tokens INTEGER NOT NULL,
+      selected_files_json TEXT NOT NULL DEFAULT '[]',omitted_files_json TEXT NOT NULL DEFAULT '[]',
+      pack_json TEXT NOT NULL,created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_context_packs_project ON context_packs(project_id,created_at);
+    CREATE INDEX IF NOT EXISTS idx_context_packs_run ON context_packs(run_id,created_at);
+  `);
+  const migration4Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 4').get() as { version: number } | undefined;
+  if (!migration4Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      4,
+      '004_context_engine_v2_core',
+      new Date().toISOString()
+    );
+  }
+
     // Replace legacy global uniqueness with per-user uniqueness, preserving records.
   for (const [table, key] of [['providers', 'provider_key'], ['skills', 'slug']]) {
     const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table) as {sql:string};
