@@ -847,6 +847,39 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
 
     controller.signal.throwIfAborted();
 
+    let formatRepairAttempted = false;
+    const needsFormatRepair =
+      !agentEngineEnabled &&
+      result.invalidResponse === true &&
+      /nÃ£o retornou arquivos vÃ¡lidos|arquivos vÃ¡lidos ou estruturados/i.test(String(result.errorReason || result.errorMessage || ''));
+
+    if (needsFormatRepair) {
+      formatRepairAttempted = true;
+      const repairPrompt = [
+        'Sua resposta anterior nÃ£o veio no formato de arquivos exigido pelo workspace.',
+        'Reformate a implementaÃ§Ã£o abaixo SEM mudar o objetivo e responda SOMENTE com um JSON vÃ¡lido neste formato:',
+        '{"summary":"...","explanation":"...","files":[{"path":"index.html","action":"create|modify|delete","content":"conteÃºdo completo do arquivo"}]}',
+        'NÃ£o use markdown fora do JSON. Cada arquivo nÃ£o deletado deve conter o conteÃºdo COMPLETO.',
+        '',
+        'RESPOSTA ANTERIOR:',
+        String(result.replyText || '').slice(0, 120000),
+      ].join('\n\n');
+
+      result = await LLMAdapterService.executePrompt({
+        prompt: repairPrompt,
+        mode: 'build',
+        projectId,
+        providerKey: providerConfig.key,
+        modelId: providerConfig.modelId,
+        existingFiles,
+        appliedSkills: [],
+        conversationHistory: [],
+        userId: req.user!.id,
+        signal: controller.signal,
+      });
+      controller.signal.throwIfAborted();
+    }
+
     if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
       return res.status(409).json({ error: 'Os arquivos mudaram durante a construÃ§Ã£o. Aprove o plano novamente para usar a versÃ£o atual.' });
     }
@@ -886,6 +919,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
       agentKey: agentEngineEnabled ? ((result as any).agentKey || 'PROGRAM') : undefined,
       profileKey: (result as any).profileKey,
       workflow: (result as any).workflow,
+      formatRepairAttempted,
     };
 
     db.exec('BEGIN IMMEDIATE');
