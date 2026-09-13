@@ -850,8 +850,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
     let formatRepairAttempted = false;
     const needsFormatRepair =
       !agentEngineEnabled &&
-      result.invalidResponse === true &&
-      /nÃ£o retornou arquivos vÃ¡lidos|arquivos vÃ¡lidos ou estruturados/i.test(String(result.errorReason || result.errorMessage || ''));
+      result.invalidResponse === true;
 
     if (needsFormatRepair) {
       formatRepairAttempted = true;
