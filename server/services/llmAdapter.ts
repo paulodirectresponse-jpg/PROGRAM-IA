@@ -860,6 +860,7 @@ export class LLMAdapterService {
 
     const generated: FileChangeProposal[] = [];
     const failures: string[] = [];
+    const workingFiles: Record<string, string> = { ...options.existingFiles };
     let inputTokens = 0;
     let outputTokens = 0;
     let billedCostUsd = 0;
@@ -869,9 +870,9 @@ export class LLMAdapterService {
 
     for (const targetPath of targets) {
       options.signal?.throwIfAborted();
-      const current = options.existingFiles[targetPath];
+      const current = workingFiles[targetPath];
       const action: 'create' | 'modify' = current === undefined ? 'create' : 'modify';
-      const contextFiles = this.contextForBuildTarget(options.existingFiles, targetPath);
+      const contextFiles = this.contextForBuildTarget(workingFiles, targetPath);
       let accepted: FileChangeProposal | null = null;
       let lastRaw = '';
 
@@ -926,8 +927,12 @@ export class LLMAdapterService {
         if (!accepted && result.errorReason && ['invalid_key', 'invalid_model', 'rate_limit'].includes(result.errorReason)) break;
       }
 
-      if (accepted) generated.push(accepted);
-      else failures.push(targetPath + (lastRaw ? ' (resposta incompatível)' : ' (sem resposta utilizável)'));
+      if (accepted) {
+        generated.push(accepted);
+        workingFiles[targetPath] = accepted.content;
+      } else {
+        failures.push(targetPath + (lastRaw ? ' (resposta incompatível)' : ' (sem resposta utilizável)'));
+      }
     }
 
     if (generated.length === 0) {
