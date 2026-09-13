@@ -2,9 +2,31 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { SupabasePersistenceService } from '../server/services/supabasePersistenceService.js';
+import { compareSnapshots } from '../server/services/persistenceMigrationService.js';
 
 function restore(name: 'SUPABASE_URL' | 'SUPABASE_SECRET_KEY', value: string | undefined) {
   if (value === undefined) delete process.env[name]; else process.env[name] = value;
+}
+
+const stamp='2026-09-12T00:00:00.000Z';
+function fullSnapshot(){
+  const file=Buffer.from('<!doctype html><h1>ok</h1>').toString('base64');
+  return {schemaVersion:1 as const,userId:'u1',deviceId:'fixture-A',createdAt:stamp,tables:{
+    users:[{id:'u1',email:'a@example.test',name:'A',firebase_uid:'fb1',created_at:stamp,updated_at:stamp}],
+    projects:[{id:'p1',user_id:'u1',workspace_id:'ws1',name:'P',description:'D',origin:'scratch',status:'active',current_checkpoint_id:'cp1',revision:7,created_at:stamp,updated_at:stamp}],
+    providers:[{id:'prov1',user_id:'u1',provider_key:'cheaper',name:'Cheaper',base_url:'https://api.example.test/v1',model_id:'gpt-5.6-luna',extra_headers_json:'{"x":"y"}',is_configured:1,is_active:1,connection_status:'connected',last_error:null,created_at:stamp,updated_at:stamp}],
+    user_secrets:[{id:'sec1',user_id:'u1',service_key:'cheaper:api_key',encrypted_value:'cipher',iv:'iv',tag:'tag',masked_hint:'sk-...abc',status:'configured',is_default:1,is_active:1,last_tested_at:stamp,last_error:null,created_at:stamp,updated_at:stamp}],
+    integrations:[{id:'int1',user_id:'u1',service_name:'github',config_json:'{"owner":"paulo"}',status:'connected',last_verified_at:stamp,created_at:stamp,updated_at:stamp}],
+    skills:[{id:'skill1',user_id:'u1',project_id:'p1',name:'UI',slug:'ui',description:'Visual',system_instructions:'Polish UI',scope:'project',is_active:1,created_at:stamp,updated_at:stamp}],
+    conversations:[{id:'conv1',project_id:'p1',title:'Chat',mode:'build',created_at:stamp,updated_at:stamp}],
+    messages:[{id:'msg1',conversation_id:'conv1',sender:'user',content:'faz',metadata_json:'{"kind":"prompt"}',created_at:stamp}],
+    checkpoints:[{id:'cp1',project_id:'p1',title:'v1',description:'initial',parent_id:null,files_snapshot_json:'{"index.html":"ok"}',created_at:stamp}],
+    repositories:[{id:'repo1',project_id:'p1',remote_url:'https://github.com/a/b',default_branch:'main',visibility:'private',is_connected:1,created_at:stamp,updated_at:stamp}],
+    branches:[{id:'br1',project_id:'p1',name:'main',is_current:1,head_commit_hash:'abc123',created_at:stamp,updated_at:stamp}],
+    model_profiles:[{id:'mp1',user_id:'u1',profile_key:'base_free',level:1,max_attempts:3,max_cost_usd:.25,enabled:1,created_at:stamp,updated_at:stamp}],
+    model_candidates:[{id:'mc1',profile_id:'mp1',provider_key:'cheaper',model_id:'gpt-5.6-luna',priority:1,enabled:1,health_state:'degraded',consecutive_failures:1,circuit_open_until:'2026-09-12T00:05:00.000Z',created_at:stamp,updated_at:stamp}],
+    model_invocations:[{id:'mi1',user_id:'u1',project_id:'p1',run_id:'run1',step_id:'step1',agent_key:'forja',profile_key:'base_free',provider_key:'cheaper',model_id:'gpt-5.6-luna',input_tokens:11,output_tokens:22,cost_usd:.01,latency_ms:333,status:'success',error_code:null,retry_index:0,created_at:stamp}],
+  },files:{p1:{'index.html':file}}};
 }
 
 test('restores normalized entities and hash-verified Storage files', async (t) => {
@@ -71,4 +93,48 @@ test('canonical persistence writes normalized domains and Storage without legacy
   const urls:string[]=[];t.mock.method(globalThis,'fetch',async(input:string|URL|Request)=>{urls.push(String(input));return new Response('{}',{status:201});});
   try{const result=await SupabasePersistenceService.pushCanonical('u1','fb1',{schemaVersion:1,userId:'u1',deviceId:'A',createdAt:'2026-09-12T00:00:00.000Z',tables:{users:[{id:'u1',email:'a@example.test',name:'A'}],projects:[{id:'p1',user_id:'u1',name:'P',origin:'novo',status:'active'}],providers:[],user_secrets:[],integrations:[],skills:[],conversations:[],messages:[],checkpoints:[],repositories:[],branches:[],model_profiles:[],model_candidates:[],model_invocations:[]},files:{p1:{'index.html':Buffer.from('<h1>A</h1>').toString('base64')}}});assert.equal(result.status,'synced');assert.ok(urls.some(x=>x.includes('/forge_profiles?')));assert.ok(urls.some(x=>x.includes('/forge_projects?')));assert.ok(urls.some(x=>x.includes('/forge_project_files?')));assert.equal(urls.some(x=>x.includes('forge_sync_snapshots')),false);assert.equal(urls.some(x=>x.includes('forge_entities')),false);}
   finally{restore('SUPABASE_URL',oldUrl);restore('SUPABASE_SECRET_KEY',oldKey);}
+});
+
+test('canonical model routing mapper preserves legacy profile, candidate and invocation fields', async (t)=>{
+  const oldUrl=process.env.SUPABASE_URL,oldKey=process.env.SUPABASE_SECRET_KEY;
+  process.env.SUPABASE_URL='https://canonical.example.test';process.env.SUPABASE_SECRET_KEY='server-secret-value';
+  const writes:Record<string,any[]>={};
+  t.mock.method(globalThis,'fetch',async(input:string|URL|Request,init?:RequestInit)=>{
+    const url=String(input);
+    const table=url.match(/\/rest\/v1\/([^?]+)/)?.[1];
+    if(table&&init?.body)writes[table]=[...(writes[table]||[]),...JSON.parse(String(init.body))];
+    return new Response('{}',{status:201});
+  });
+  try{
+    const result=await SupabasePersistenceService.pushCanonical('u1','fb1',fullSnapshot());
+    assert.equal(result.status,'synced');
+    assert.deepEqual(Object.keys(writes).sort(),['forge_branches','forge_checkpoints','forge_conversations','forge_integrations','forge_messages','forge_model_candidates','forge_model_invocations','forge_model_profiles','forge_profiles','forge_project_files','forge_projects','forge_provider_secrets','forge_providers','forge_repositories','forge_skills'].sort());
+    assert.equal(writes.forge_model_profiles[0].profile_key,'base_free');
+    assert.equal(writes.forge_model_profiles[0].level,1);
+    assert.equal(writes.forge_model_profiles[0].max_attempts,3);
+    assert.equal(writes.forge_model_profiles[0].active,true);
+    assert.equal(Object.values(writes.forge_model_profiles[0]).includes(undefined),false);
+    assert.equal(writes.forge_model_candidates[0].provider_key,'cheaper');
+    assert.equal(writes.forge_model_candidates[0].health_state,'degraded');
+    assert.equal(writes.forge_model_candidates[0].consecutive_failures,1);
+    assert.equal(writes.forge_model_candidates[0].circuit_open_until,'2026-09-12T00:05:00.000Z');
+    assert.equal(writes.forge_model_invocations[0].run_id,'run1');
+    assert.equal(writes.forge_model_invocations[0].agent_key,'forja');
+    assert.equal(writes.forge_model_invocations[0].tokens_input,11);
+    assert.equal(writes.forge_model_invocations[0].tokens_output,22);
+    assert.equal(writes.forge_model_invocations[0].latency_ms,333);
+  }finally{restore('SUPABASE_URL',oldUrl);restore('SUPABASE_SECRET_KEY',oldKey);}
+});
+
+test('migration reconciliation blocks count and file hash divergences',()=>{
+  const local=fullSnapshot();
+  const missingSkill=fullSnapshot();
+  missingSkill.tables.skills=[];
+  const changedFile=fullSnapshot();
+  changedFile.files.p1['index.html']=Buffer.from('<h1>changed</h1>').toString('base64');
+  const divergences=compareSnapshots(local,missingSkill,'u1');
+  assert.ok(divergences.some((x)=>x.includes('skills: contagem local=1, remoto=0')));
+  assert.ok(divergences.some((x)=>x.includes('skill1 ausente')));
+  const fileDivergences=compareSnapshots(local,changedFile,'u1');
+  assert.ok(fileDivergences.some((x)=>x.includes('files:p1/index.html hash')));
 });
