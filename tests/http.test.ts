@@ -106,6 +106,70 @@ test('testing a provider never changes the active provider',async()=>{
 });
 
 
+test('approving a draft plan generates a reviewable build proposal without applying files',async()=>{
+  const now=new Date(Date.now()+5000).toISOString();
+  const conversation=`plan-approve-conversation-${Date.now()}`;
+  const planId=`plan-approve-${Date.now()}`;
+
+  db.prepare('INSERT INTO conversations(id,project_id,title,mode,created_at,updated_at) VALUES(?,?,?,?,?,?)')
+    .run(conversation,id,'Plan approval','plan',now,now);
+  db.prepare(`INSERT INTO plans(
+    id,task_id,project_id,objective,scope_in,scope_out,files_affected_json,integrations_json,risks_json,acceptance_criteria_json,status,created_at,updated_at
+  ) VALUES(?,NULL,?,?,?,?,?,?,?,?,'draft',?,?)`)
+    .run(
+      planId,id,'Criar dashboard financeiro','Dashboard e fluxo de caixa','Deploy externo',
+      JSON.stringify(['index.html']),JSON.stringify([]),JSON.stringify([]),JSON.stringify(['Dashboard funcional']),now,now
+    );
+
+  WorkspaceManager.writeFile(id,'index.html','<html><body>ORIGINAL_PLAN_APPROVAL</body></html>');
+  SecretService.saveSecret(userA,'omniroute','test-omniroute-key-plan-approval');
+  db.prepare('UPDATE providers SET is_active=0 WHERE user_id=?').run(userA);
+  db.prepare("UPDATE providers SET is_active=1,is_configured=1,connection_status='connected',model_id='auto' WHERE user_id=? AND provider_key='omniroute'")
+    .run(userA);
+
+  const originalExecute=LLMAdapterService.executePrompt;
+  LLMAdapterService.executePrompt=async()=>({
+    replyText:'Proposta gerada a partir do plano aprovado.',
+    mode:'build',
+    decisionType:'change',
+    isDemonstrativeFallback:false,
+    providerUsed:'OmniRoute (Free Pool)',
+    modelUsed:'auto',
+    hasErrors:false,
+    build:{
+      summary:'Construir dashboard financeiro',
+      explanation:'Implementação proposta',
+      files:[{path:'index.html',action:'modify',content:'<html><body>DASHBOARD_PROPOSTO</body></html>'}]
+    }
+  } as any);
+
+  try {
+    const response=await fetch(`${base}/conversations/${id}/plan/approve`,{
+      method:'POST',
+      headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
+      body:JSON.stringify({planId})
+    });
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.equal(body.success,true);
+    assert.equal(body.proposal.status,'pending');
+    assert.equal(body.proposal.files.length,1);
+    assert.match(WorkspaceManager.readFile(id,'index.html')||'',/ORIGINAL_PLAN_APPROVAL/);
+
+    const plan=db.prepare('SELECT status FROM plans WHERE id=?').get(planId) as any;
+    assert.equal(plan.status,'approved');
+    const conv=db.prepare('SELECT mode FROM conversations WHERE id=?').get(conversation) as any;
+    assert.equal(conv.mode,'build');
+    const message=db.prepare("SELECT metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC LIMIT 1").get(conversation) as any;
+    const metadata=JSON.parse(message.metadata_json);
+    assert.equal(metadata.planId,planId);
+    assert.equal(metadata.proposal.status,'pending');
+  } finally {
+    LLMAdapterService.executePrompt=originalExecute;
+  }
+});
+
+
 
 test('framework runtime starts, proxies preview, filters Forge secrets and stops cleanly', async () => {
   const runtimeProject = `runtime-project-${Date.now()}`;
