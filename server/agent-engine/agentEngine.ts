@@ -136,6 +136,7 @@ export class AgentEngine {
               scopeOut: attemptInput.reliableBuild.scopeOut,
               acceptanceCriteria: attemptInput.reliableBuild.acceptanceCriteria,
               signal: attemptInput.signal,
+              onProgress:(event)=>RunService.appendProgressEvent(attemptInput.stepId,event),
             })
           : await LLMAdapterService.executePrompt({
               ...attemptInput,
