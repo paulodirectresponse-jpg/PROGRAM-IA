@@ -53,6 +53,21 @@ export class RunService{
     db.prepare('UPDATE agent_steps SET status=?,finished_at=? WHERE run_id=? AND status=\'running\'').run(stepStatus,now,runId);
     db.prepare('UPDATE agent_runs SET status=?,finished_at=? WHERE id=?').run(status,now,runId);
   }
+  static appendProgressEvent(stepId:string,event:Record<string,unknown>){
+    const row=db.prepare('SELECT context_json FROM agent_steps WHERE id=?').get(stepId) as {context_json?:string}|undefined;
+    if(!row)return;
+    let context:any={};
+    try{context=row.context_json?JSON.parse(row.context_json):{};}catch{context={};}
+    const events=Array.isArray(context.events)?context.events:[];
+    events.push({...event,at:new Date().toISOString()});
+    context.events=events;
+    if((event.type==='file_completed'||event.type==='file_created'||event.type==='file_updated')&&typeof event.path==='string'){
+      const files=Array.isArray(context.files)?context.files:[];
+      if(!files.includes(event.path))files.push(event.path);
+      context.files=files;
+    }
+    db.prepare('UPDATE agent_steps SET context_json=? WHERE id=?').run(JSON.stringify(context),stepId);
+  }
   static trace(runId:string){
     const steps=db.prepare(`SELECT id,agent_key,title,status,order_index,scope_level,attempt_count,context_json,created_at,finished_at
       FROM agent_steps WHERE run_id=? ORDER BY order_index ASC, created_at ASC`).all(runId) as any[];
