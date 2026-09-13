@@ -1130,26 +1130,29 @@ router.post('/projects/:id/github/push', requireAuth, requireProjectOwner, async
 router.get('/projects/:id/github/status', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
-    if (!project || !project.repo_url) {
-      return res.json({ connected: false, message: 'RepositÃ³rio GitHub nÃ£o vinculado.' });
+    if (!project) return res.json({ connected: false, message: 'Projeto não encontrado.' });
+
+    const repoContext = projectRepositoryContext(req.params.id, project);
+    if (!repoContext.repoUrl) {
+      return res.json({ connected: false, message: 'Repositório GitHub não vinculado.' });
     }
-    const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) {
-      return res.json({ connected: false, message: 'URL do repositÃ³rio invÃ¡lida.' });
-    }
+
+    const parsed = GitHubService.parseRepoUrl(repoContext.repoUrl);
+    if (!parsed) return res.json({ connected: false, message: 'URL do repositório inválida.' });
 
     const syncRes = await GitHubService.getSyncStatus({
       userId: req.user!.id,
       projectId: req.params.id,
       owner: parsed.owner,
       repo: parsed.repo,
-      branch: project.branch || 'main',
+      branch: repoContext.branch,
+      localHeadSha: repoContext.headSha || undefined,
     });
 
     res.json({
       connected: true,
-      repoUrl: project.repo_url,
-      branch: project.branch || 'main',
+      repoUrl: repoContext.repoUrl,
+      branch: repoContext.branch,
       owner: parsed.owner,
       repo: parsed.repo,
       ...syncRes,
