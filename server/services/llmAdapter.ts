@@ -880,6 +880,7 @@ Responda sempre em português claro, elegante e profissional.`;
     context: any
   ): Promise<LLMExecutionResult> {
     const systemPrompt = this.buildSystemPrompt(context.mode, context.skillsText, context.filesList, context.existingFiles);
+    const useStreaming = /omniroute/i.test(config.name);
 
     const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST',
@@ -899,20 +900,84 @@ Responda sempre em português claro, elegante e profissional.`;
           { role: 'user', content: context.prompt },
         ],
         temperature: 0.2,
+        ...(useStreaming ? { stream: true, stream_options: { include_usage: true } } : {}),
       }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
+      if (response.status === 524 && useStreaming) {
+        throw new Error('OmniRoute excedeu o tempo limite do túnel Cloudflare (HTTP 524). Tente novamente ou use um modelo/provider mais rápido para esta etapa.');
+      }
       throw new Error(`API retornou HTTP ${response.status}: ${errText.substring(0, 300)}`);
     }
 
-    const data = await response.json() as any;
-    const rawContent = data.choices?.[0]?.message?.content;
-    const textContent = this.extractContentText(rawContent);
+    let textContent = '';
+    let usage: any = null;
+    const contentType = response.headers.get('content-type') || '';
 
-    const parsed=this.parseLLMResponse(textContent, context.mode, config.name, config.modelId, context.existingFiles);
-    parsed.usage={inputTokens:Number(data.usage?.prompt_tokens||0),outputTokens:Number(data.usage?.completion_tokens||0),billedCostUsd:Number(data.cheaper_inference?.billed_cost_usd||0)};
+    if (useStreaming && response.body && contentType.includes('text/event-stream')) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() || '';
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line.startsWith('data:')) continue;
+          const payloadText = line.slice(5).trim();
+          if (!payloadText || payloadText === '[DONE]') continue;
+
+          try {
+            const chunk = JSON.parse(payloadText);
+            const deltaContent = chunk.choices?.[0]?.delta?.content ?? chunk.choices?.[0]?.message?.content;
+            if (deltaContent !== undefined) {
+              textContent += this.extractContentText(deltaContent);
+            }
+            if (chunk.usage) usage = chunk.usage;
+          } catch {
+            // Ignore malformed/non-JSON SSE keepalive lines without aborting the whole completion.
+          }
+        }
+      }
+
+      if (buffer.trim().startsWith('data:')) {
+        const payloadText = buffer.trim().slice(5).trim();
+        if (payloadText && payloadText !== '[DONE]') {
+          try {
+            const chunk = JSON.parse(payloadText);
+            const deltaContent = chunk.choices?.[0]?.delta?.content ?? chunk.choices?.[0]?.message?.content;
+            if (deltaContent !== undefined) textContent += this.extractContentText(deltaContent);
+            if (chunk.usage) usage = chunk.usage;
+          } catch {
+            // Ignore a trailing malformed SSE fragment.
+          }
+        }
+      }
+    } else {
+      const data = await response.json() as any;
+      const rawContent = data.choices?.[0]?.message?.content;
+      textContent = this.extractContentText(rawContent);
+      usage = data.usage;
+    }
+
+    if (!textContent.trim()) {
+      throw new Error('A API respondeu sem conteúdo utilizável.');
+    }
+
+    const parsed = this.parseLLMResponse(textContent, context.mode, config.name, config.modelId, context.existingFiles);
+    parsed.usage = {
+      inputTokens: Number(usage?.prompt_tokens || 0),
+      outputTokens: Number(usage?.completion_tokens || 0),
+      billedCostUsd: Number(usage?.billed_cost_usd || 0),
+    };
     return parsed;
   }
 
