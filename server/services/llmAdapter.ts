@@ -448,6 +448,36 @@ export class LLMAdapterService {
     return str.trim();
   }
 
+  private static extractStructuredFiles(structured: any): any[] {
+    if (!structured || typeof structured !== 'object') return [];
+
+    const root =
+      (structured.proposal && typeof structured.proposal === 'object' ? structured.proposal : null) ||
+      (structured.build && typeof structured.build === 'object' ? structured.build : null) ||
+      structured;
+
+    const candidates = root.files !== undefined
+      ? root.files
+      : root.file_changes !== undefined
+        ? root.file_changes
+        : root.changes;
+
+    if (Array.isArray(candidates)) return candidates;
+
+    if (candidates && typeof candidates === 'object') {
+      return Object.entries(candidates).map(([path, value]) => {
+        if (typeof value === 'string') return { path, content: value, action: 'modify' };
+        if (value && typeof value === 'object') {
+          const item = value as Record<string, unknown>;
+          return { ...item, path: item.path || item.file || item.filename || item.filepath || path };
+        }
+        return { path, content: String(value === null || value === undefined ? '' : value), action: 'modify' };
+      });
+    }
+
+    if (root.path || root.file || root.filename || root.filepath) return [root];
+    return [];
+  }
   /**
    * Validates a file proposal strictly for path safety, size limits, and validity
    */
@@ -456,7 +486,7 @@ export class LLMAdapterService {
       return { valid: false, reason: 'Arquivo inválido: formato não é um objeto.' };
     }
 
-    let filePath = String(f.path || '').trim();
+    let filePath = String(f.path || f.file || f.filename || f.filepath || '').trim();
     if (!filePath) {
       return { valid: false, reason: 'Caminho do arquivo não especificado.' };
     }
@@ -467,8 +497,14 @@ export class LLMAdapterService {
     }
 
     filePath = filePath.replace(/\\/g, '/');
-    const action = f.action === 'delete' ? 'delete' : f.action === 'create' ? 'create' : 'modify';
-    const content = typeof f.content === 'string' ? f.content : '';
+    const rawAction = String(f.action || f.operation || f.type || '').toLowerCase();
+    const action = rawAction === 'delete' || rawAction === 'remove'
+      ? 'delete'
+      : rawAction === 'create' || rawAction === 'add' || rawAction === 'new'
+        ? 'create'
+        : 'modify';
+    const rawContent = f.content !== undefined ? f.content : (f.code !== undefined ? f.code : (f.contents !== undefined ? f.contents : f.text));
+    const content = typeof rawContent === 'string' ? rawContent : '';
 
     if (action !== 'delete' && !content) {
       return { valid: false, reason: `Arquivo ${filePath} sem conteúdo especificado.` };
@@ -921,11 +957,11 @@ Responda sempre em português claro, elegante e profissional.`;
         if (structured.plan || structured.type === 'plan' || structured.objective) {
           decisionType = 'plan';
           plan = this.normalizePlanOutput(structured.plan || structured);
-        } else if (structured.files && Array.isArray(structured.files) && structured.files.length > 0) {
+        } else if (this.extractStructuredFiles(structured).length > 0) {
           decisionType = 'change';
           const validFiles: FileChangeProposal[] = [];
 
-          for (const rawFile of structured.files) {
+          for (const rawFile of this.extractStructuredFiles(structured)) {
             const val = this.validateFileProposal(rawFile);
             if (val.valid && val.file) {
               const old = existingFiles[val.file.path] || null;
@@ -1005,10 +1041,8 @@ Responda sempre em português claro, elegante e profissional.`;
 
     // 2. BUILD MODE HANDLING
     if (mode === 'build') {
-      let candidateFiles: any[] = [];
-      if (structured && Array.isArray(structured.files) && structured.files.length > 0) {
-        candidateFiles = structured.files;
-      } else {
+      let candidateFiles: any[] = structured ? this.extractStructuredFiles(structured) : [];
+      if (candidateFiles.length === 0) {
         candidateFiles = this.extractFilesFromMarkdown(content);
       }
 
