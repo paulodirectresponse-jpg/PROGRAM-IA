@@ -792,13 +792,46 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
     const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oÃ³]rio|remoto)\b|\b(github|reposit[oÃ³]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(content);
     if(requestsGitHubPublish){
-      if(!project?.repo_url)return res.status(409).json({error:'Vincule ou crie um repositÃ³rio na aba Publicar antes de enviar o projeto ao GitHub.'});
-      const parsed=GitHubService.parseRepoUrl(project.repo_url);if(!parsed)return res.status(400).json({error:'A URL do repositÃ³rio vinculado Ã© invÃ¡lida.'});
-      const pushed=await GitHubService.pushFilesToRepo({userId:req.user!.id,owner:parsed.owner,repo:parsed.repo,branch:project.branch||'main',commitMessage:`Forge Agent: ${content.trim().slice(0,72)}`,files:existingFiles});
-      if(!pushed.success)return res.status(400).json({error:pushed.error||'O GitHub recusou a publicaÃ§Ã£o.'});
-      const agentMsgId='msg-agent-'+Date.now();const commitUrl=`https://github.com/${parsed.owner}/${parsed.repo}/commit/${pushed.commitSha}`;
-      const replyText=`PublicaÃ§Ã£o concluÃ­da no GitHub.\n\nCommit: ${pushed.commitSha}\n${commitUrl}`;const metadata={mode,decisionType:'publish',providerUsed:'GitHub',modelUsed:'ferramenta-direta',filesAffected:Object.keys(existingFiles),github:{owner:parsed.owner,repo:parsed.repo,branch:project.branch||'main',commitSha:pushed.commitSha,commitUrl}};
-      db.prepare("INSERT INTO messages (id,conversation_id,sender,content,metadata_json,created_at) VALUES (?,?,'agent',?,?,?)").run(agentMsgId,conv.id,replyText,JSON.stringify(metadata),now);
+      const repoContext=projectRepositoryContext(projectId,project);
+      if(!repoContext.repoUrl)return res.status(409).json({error:'Vincule ou crie um repositório na aba Publicar antes de enviar o projeto ao GitHub.'});
+      const parsed=GitHubService.parseRepoUrl(repoContext.repoUrl);
+      if(!parsed)return res.status(400).json({error:'A URL do repositório vinculado é inválida.'});
+
+      const binaryFiles:Record<string,Buffer>={};
+      for(const file of WorkspaceManager.getFiles(projectId)){
+        if(!file.isBinary)continue;
+        const bytes=WorkspaceManager.readBinaryFile(projectId,file.path);
+        if(bytes)binaryFiles[file.path]=bytes;
+      }
+
+      const pushed=await GitHubService.pushFilesToRepo({
+        userId:req.user!.id,
+        owner:parsed.owner,
+        repo:parsed.repo,
+        branch:repoContext.branch,
+        commitMessage:`Forge Agent: ${content.trim().slice(0,72)}`,
+        files:existingFiles,
+        binaryFiles,
+      });
+      if(!pushed.success)return res.status(400).json({error:pushed.error||'O GitHub recusou a publicação.'});
+      if(pushed.commitSha){
+        db.prepare('UPDATE branches SET head_commit_hash=? WHERE project_id=? AND name=?')
+          .run(pushed.commitSha,projectId,repoContext.branch);
+      }
+
+      const agentMsgId='msg-agent-'+Date.now();
+      const commitUrl=`https://github.com/${parsed.owner}/${parsed.repo}/commit/${pushed.commitSha}`;
+      const replyText=`Publicação concluída no GitHub.\n\nCommit: ${pushed.commitSha}\n${commitUrl}`;
+      const metadata={
+        mode,
+        decisionType:'publish',
+        providerUsed:'GitHub',
+        modelUsed:'ferramenta-direta',
+        filesAffected:[...Object.keys(existingFiles),...Object.keys(binaryFiles)],
+        github:{owner:parsed.owner,repo:parsed.repo,branch:repoContext.branch,commitSha:pushed.commitSha,commitUrl}
+      };
+      db.prepare("INSERT INTO messages (id,conversation_id,sender,content,metadata_json,created_at) VALUES (?,?,'agent',?,?,?)")
+        .run(agentMsgId,conv.id,replyText,JSON.stringify(metadata),now);
       return res.json({success:true,agentMessage:{id:agentMsgId,sender:'agent',content:replyText,metadata,created_at:now},github:metadata.github});
     }
     const providerConfig = LLMAdapterService.getActiveProviderConfig(req.user!.id);
