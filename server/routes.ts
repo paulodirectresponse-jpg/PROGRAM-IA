@@ -844,6 +844,13 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
           runId: execution!.runId,
           stepId: execution!.stepId,
           signal: controller.signal,
+          reliableBuild: {
+            requestedFiles: filesAffected,
+            objective: String(plan.objective || ''),
+            scopeIn: String(plan.scope_in || ''),
+            scopeOut: String(plan.scope_out || ''),
+            acceptanceCriteria,
+          },
         });
 
     controller.signal.throwIfAborted();
@@ -908,7 +915,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
       throw error;
     }
 
-    if (execution) RunService.finish(execution.runId, execution.stepId, 'completed');
+    if (execution) RunService.waitForApproval(execution.runId);
 
     res.json({
       success: true,
@@ -929,7 +936,13 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
       RunService.finish(execution.runId, execution.stepId, controller.signal.aborted ? 'aborted' : 'failed');
     }
     if (!res.headersSent && !res.destroyed) {
-      res.status(controller.signal.aborted ? 499 : 500).json({ error: err?.message || 'Falha ao aprovar e construir o plano.' });
+      const detail = String(err?.message || err || '').trim();
+      res.status(controller.signal.aborted ? 499 : 500).json({
+        error: controller.signal.aborted
+          ? 'Construção cancelada. O plano continua aguardando aprovação.'
+          : detail || 'Falha ao aprovar e construir o plano.',
+        code: controller.signal.aborted ? 'PLAN_BUILD_ABORTED' : 'PLAN_BUILD_FAILED',
+      });
     }
   } finally {
     activeProjects.delete(projectId);
