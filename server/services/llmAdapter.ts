@@ -711,13 +711,25 @@ export class LLMAdapterService {
   private static classifyExecutionError(error: any): string {
     const name = String(error?.name || '');
     const message = String(error?.message || error || '');
-    if (name === 'TimeoutError' || /timeout|timed out|tempo limite/i.test(message)) return 'timeout';
+    if (name === 'TimeoutError' || /timeout|timed out|tempo limite|HTTP\s*524/i.test(message)) return 'timeout';
     if (/HTTP\s*429|rate.?limit/i.test(message)) return 'rate_limit';
     if (/HTTP\s*(401|403)|invalid.?key|unauthor/i.test(message)) return 'invalid_key';
     if (/HTTP\s*404|invalid.?model|model.*not found/i.test(message)) return 'invalid_model';
     if (/HTTP\s*5\d\d|upstream/i.test(message)) return 'provider_error';
     if (/fetch|network|ECONN|ENOTFOUND|EAI_AGAIN/i.test(message)) return 'network_error';
     return 'provider_error';
+  }
+
+  private static cleanProviderErrorBody(body: string): string {
+    return String(body || '')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 260);
   }
 
   static async executePrompt(options: {
