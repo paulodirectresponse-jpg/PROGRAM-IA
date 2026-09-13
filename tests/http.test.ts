@@ -272,6 +272,17 @@ test('agent-engine plan approval uses reliable atomic build and remains waiting 
   const previousFlag=process.env.AGENT_ENGINE_ENABLED;
   process.env.AGENT_ENGINE_ENABLED='true';
   const originalReliable=(LLMAdapterService as any).buildApprovedPlanReliably;
+  const originalExecutePrompt=(LLMAdapterService as any).executePrompt;
+  (LLMAdapterService as any).executePrompt=async()=>({
+    replyText:'SCOUT: objetivo e riscos mapeados para o build.',
+    mode:'review',
+    decisionType:'review',
+    isDemonstrativeFallback:false,
+    providerUsed:'OmniRoute (Free Pool)',
+    modelUsed:'auto',
+    hasErrors:false,
+    usage:{inputTokens:3,outputTokens:4,billedCostUsd:0},
+  } as any);
   let reliableCalls=0;
   (LLMAdapterService as any).buildApprovedPlanReliably=async(options:any)=>{
     reliableCalls+=1;
@@ -317,6 +328,7 @@ test('agent-engine plan approval uses reliable atomic build and remains waiting 
     assert.equal(plan.status,'approved');
   } finally {
     (LLMAdapterService as any).buildApprovedPlanReliably=originalReliable;
+    (LLMAdapterService as any).executePrompt=originalExecutePrompt;
     if(previousFlag===undefined) delete process.env.AGENT_ENGINE_ENABLED; else process.env.AGENT_ENGINE_ENABLED=previousFlag;
   }
 });
