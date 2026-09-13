@@ -17,6 +17,7 @@ import {
   CheckCheck,
 } from 'lucide-react';
 import { Message, AgentMode, Skill, Plan, ChangeProposal, FileChangeProposal } from '../types';
+import { PlanResponseCard, parsePlanForDisplay } from './PlanResponseCard';
 
 interface ConversationPanelProps {
   messages: Message[];
@@ -198,6 +199,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
           const hasProposal = Boolean(proposal && proposal.files.length > 0);
           const filesAffected = Array.isArray(meta.filesAffected) ? meta.filesAffected.filter((f: unknown): f is string => typeof f === 'string') : [];
           const isDiffOpen = expandedDiffs[msg.id] ?? false;
+          const shouldRenderPlanCard = !isUser && (meta.decisionType === 'plan' || typeof meta.planId === 'string') && Boolean(parsePlanForDisplay(msg.content));
 
           return (
             <div
@@ -250,7 +252,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                   </div>
                 )}
 
-                <div>{msg.content}</div>
+                {shouldRenderPlanCard ? <PlanResponseCard content={msg.content} /> : <div>{msg.content}</div>}
 
                 {meta.validation && (
                   <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/70 p-2 space-y-1">
