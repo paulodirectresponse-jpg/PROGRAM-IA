@@ -29,6 +29,7 @@ interface ConversationPanelProps {
   onRejectProposal?: (proposal: ChangeProposal) => void;
   activePlan: Plan | null;
   isLoading: boolean;
+  activeAgentTrace?: any[];
   onAbort: () => void;
   availableSkills: Skill[];
   canSend: boolean;
@@ -44,6 +45,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onRejectProposal,
   activePlan,
   isLoading,
+  activeAgentTrace = [],
   onAbort,
   availableSkills,
   canSend,
@@ -421,20 +423,38 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
 
         {/* Loading Indicator with Abort Button */}
         {isLoading && (
-          <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between text-xs text-cyan-300">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
-              <span>Processando no modo {currentModeInfo.label}...</span>
+          <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 text-xs text-cyan-300 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
+                <span>Processando no modo {currentModeInfo.label}...</span>
+              </div>
+              <button
+                type="button"
+                id="btn-abort-request"
+                onClick={onAbort}
+                className="p-1 text-slate-400 hover:text-rose-400 rounded transition cursor-pointer"
+                title="Interromper geração"
+              >
+                <Square size={13} fill="currentColor" />
+              </button>
             </div>
-            <button
-              type="button"
-              id="btn-abort-request"
-              onClick={onAbort}
-              className="p-1 text-slate-400 hover:text-rose-400 rounded transition cursor-pointer"
-              title="Interromper geração"
-            >
-              <Square size={13} fill="currentColor" />
-            </button>
+            {Array.isArray(activeAgentTrace) && activeAgentTrace.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {activeAgentTrace.map((step:any) => (
+                  <span key={step.id} className={`rounded border px-1.5 py-0.5 text-[9px] font-mono ${
+                    step.status === 'completed'
+                      ? 'border-emerald-900/70 bg-emerald-950/30 text-emerald-300'
+                      : step.status === 'failed'
+                        ? 'border-rose-900/70 bg-rose-950/30 text-rose-300'
+                        : 'border-cyan-900/70 bg-cyan-950/30 text-cyan-300'
+                  }`}>
+                    {step.agent_key} · {step.status}
+                    {step.attempt_count > 0 ? ` · ${step.attempt_count} tent.` : ''}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
