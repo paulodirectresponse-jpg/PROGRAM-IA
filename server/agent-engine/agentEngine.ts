@@ -30,7 +30,7 @@ function relevantFiles(files: Record<string, string>, limit: number) {
 }
 
 function needsStudio(prompt: string, mode: AgentMode) {
-  return mode === 'auto' && /interface|layout|design|visual|tela|css|responsiv|premium|ux|ui/i.test(prompt);
+  return (mode === 'auto' || mode === 'build') && /interface|layout|design|visual|tela|css|responsiv|premium|ux|ui|dashboard|painel/i.test(prompt);
 }
 
 function needsShip(prompt: string, mode: AgentMode) {
@@ -159,42 +159,136 @@ export class AgentEngine {
   }
 }
 
-export type WorkflowResult = LLMExecutionResult & { agentKey: string; profileKey: ProfileKey; workflow: { runId: string; steps: string[]; status: 'waiting_approval' | 'completed' | 'failed' | 'aborted'; shipRequested?: boolean } };
+export type WorkflowResult = LLMExecutionResult & {
+  agentKey: string;
+  profileKey: ProfileKey;
+  workflow: {
+    runId: string;
+    steps: string[];
+    status: 'waiting_approval' | 'completed' | 'failed' | 'aborted';
+    shipRequested?: boolean;
+    trace?: ReturnType<typeof RunService.trace>;
+  };
+};
 
 export class AgentWorkflowEngine extends AgentEngine {
   static async executeWorkflow(x: Input): Promise<WorkflowResult> {
     const steps: string[] = [x.stepId];
-    RunService.assignAgent(x.stepId, 'SCOUT');
-    RunService.finishStep(x.stepId, 'completed', RunService.context('task', {
-      objective: x.prompt,
-      acceptanceCriteria: ['Sem sucesso falso', 'Preservar preview antes da aplicação definitiva', 'Rodar ValidatorEngine após aplicação real'],
-      snippets: relevantFiles(x.existingFiles, 12),
-      constraints: ['Não carregar projeto inteiro para o agente', 'Não publicar sem solicitação explícita'],
-    }));
-    let order = RunService.nextOrderIndex(x.runId);
 
-    if (needsStudio(x.prompt, x.mode)) {
-      const studio = RunService.createStep(x.runId, 'STUDIO', 'Definir critérios visuais aplicáveis', order++, 'local', RunService.context('local', {
-        objective: 'Transformar solicitação visual em critérios objetivos para o FORGE',
-        acceptanceCriteria: ['Layout coerente', 'Responsividade', 'Hierarquia visual clara'],
-        snippets: relevantFiles(x.existingFiles, 6),
-        constraints: ['STUDIO não modifica arquivos', 'STUDIO não chama provider quando critérios determinísticos bastam'],
-      }));
-      steps.push(studio);
-      RunService.finishStep(studio, 'completed');
+    // Forced modes map to the agent that actually owns that job.
+    // This prevents PLAN/REVIEW/PUBLISH from being mislabeled as FORGE work.
+    if (x.mode === 'plan' || x.mode === 'review' || x.mode === 'publish') {
+      const owner = x.mode === 'plan' ? 'SCOUT' : x.mode === 'review' ? 'SENTINEL' : 'SHIP';
+      RunService.assignAgent(x.stepId, owner);
+      try {
+        const result = await AgentEngine.execute(
+          { ...x, stepId: x.stepId },
+          { profile: 'BASE_FREE', forcedAgentKey: owner, allowExpertEscalation: true }
+        );
+        RunService.finishStep(x.stepId, result.hasErrors ? 'failed' : 'completed', {
+          decisionType: result.decisionType,
+          providerUsed: result.providerUsed,
+          modelUsed: result.modelUsed,
+          profileKey: result.profileKey,
+        });
+        return {
+          ...result,
+          workflow: {
+            runId: x.runId,
+            steps,
+            status: result.hasErrors ? 'failed' : 'completed',
+            shipRequested: x.mode === 'publish',
+            trace: RunService.trace(x.runId),
+          },
+        };
+      } catch (error: any) {
+        RunService.finishStep(x.stepId, x.signal?.aborted ? 'aborted' : 'failed', { error: String(error?.message || error) });
+        throw error;
+      }
     }
 
-    const forge = RunService.createStep(x.runId, 'FORGE', 'Gerar proposta de código', order++, 'local', RunService.context('local', {
+    // SCOUT is the orchestration/context phase for build/auto runs.
+    RunService.assignAgent(x.stepId, 'SCOUT');
+    const visibleFiles = relevantFiles(x.existingFiles, 12);
+    const scoutContext = RunService.context('task', {
       objective: x.prompt,
-      snippets: relevantFiles(x.existingFiles, 10),
-      constraints: ['Gerar proposta sem alterar definitivamente o workspace', 'Manter alteração limitada ao objetivo'],
-    }));
+      acceptanceCriteria: [
+        'Atender ao pedido sem ampliar escopo',
+        'Preservar o projeto existente',
+        'Produzir alteração revisável antes da aplicação',
+        'Rodar ValidatorEngine após aplicação real',
+      ],
+      snippets: visibleFiles,
+      constraints: [
+        'Não publicar sem solicitação explícita',
+        'Não aplicar arquivos antes da aprovação quando houver proposta',
+        'Manter contexto limitado aos arquivos relevantes',
+      ],
+    });
+    RunService.finishStep(x.stepId, 'completed', scoutContext);
+    let order = RunService.nextOrderIndex(x.runId);
+
+    let studioGuidance = '';
+    if (needsStudio(x.prompt, x.mode)) {
+      studioGuidance = [
+        'Critérios do STUDIO para esta implementação:',
+        '- preservar hierarquia visual clara e consistência entre seções',
+        '- garantir responsividade mobile e desktop',
+        '- evitar componentes visualmente quebrados, overflow e contraste insuficiente',
+        '- manter a direção visual coerente com o pedido do usuário e com o projeto existente',
+      ].join('\n');
+      const studio = RunService.createStep(
+        x.runId,
+        'STUDIO',
+        'Definir direção e critérios visuais para o FORGE',
+        order++,
+        'local',
+        RunService.context('local', {
+          objective: x.prompt,
+          acceptanceCriteria: [
+            'Layout coerente',
+            'Responsividade',
+            'Hierarquia visual clara',
+            'Sem regressão visual óbvia',
+          ],
+          snippets: relevantFiles(x.existingFiles, 6),
+          constraints: ['STUDIO não altera arquivos diretamente', 'Os critérios produzidos devem orientar o FORGE'],
+        })
+      );
+      steps.push(studio);
+      RunService.finishStep(studio, 'completed', {
+        guidance: studioGuidance,
+        source: 'deterministic_visual_guardrails',
+      });
+    }
+
+    const forge = RunService.createStep(
+      x.runId,
+      'FORGE',
+      'Gerar proposta de código',
+      order++,
+      'local',
+      RunService.context('local', {
+        objective: x.prompt,
+        acceptanceCriteria: ['Alteração concreta', 'Compatibilidade com o workspace', 'Sem sucesso falso'],
+        snippets: relevantFiles(x.existingFiles, 10),
+        constraints: ['Gerar proposta sem alterar definitivamente o workspace', 'Manter alteração limitada ao objetivo'],
+      })
+    );
     steps.push(forge);
+
+    const forgePrompt = studioGuidance ? `${x.prompt}\n\n${studioGuidance}` : x.prompt;
+    const reliableBuild = x.reliableBuild
+      ? {
+          ...x.reliableBuild,
+          scopeIn: [x.reliableBuild.scopeIn, studioGuidance].filter(Boolean).join('\n\n'),
+        }
+      : undefined;
 
     let result: LLMExecutionResult & { agentKey: string; profileKey: ProfileKey };
     try {
       result = await AgentEngine.execute(
-        { ...x, stepId: forge },
+        { ...x, prompt: forgePrompt, reliableBuild, stepId: forge },
         { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true }
       );
       RunService.finishStep(forge, result.hasErrors ? 'failed' : 'completed', {
@@ -206,22 +300,38 @@ export class AgentWorkflowEngine extends AgentEngine {
       });
     } catch (error: any) {
       RunService.finishStep(forge, x.signal?.aborted ? 'aborted' : 'failed', { error: String(error?.message || error) });
-      const sentinel = RunService.createStep(x.runId, 'SENTINEL', 'Diagnosticar falha executável', order++, 'micro', RunService.context('micro', {
-        objective: 'Interpretar falha concreta de provider/modelo',
-        errors: [String(error?.message || error)],
-        constraints: ['Sem revisão genérica', 'Sem segunda tentativa sem evidência nova'],
-      }));
+      const sentinel = RunService.createStep(
+        x.runId,
+        'SENTINEL',
+        'Diagnosticar falha executável',
+        order++,
+        'micro',
+        RunService.context('micro', {
+          objective: 'Interpretar falha concreta de provider/modelo',
+          errors: [String(error?.message || error)],
+          constraints: ['Sem revisão genérica', 'Sem nova tentativa sem evidência'],
+        })
+      );
       steps.push(sentinel);
       RunService.finishStep(sentinel, x.signal?.aborted ? 'aborted' : 'completed');
       throw error;
     }
 
     const hasReviewableChanges = Boolean(result.proposal?.files?.length || result.build?.files?.length);
-    const sentinelStatus = RunService.createStep(x.runId, 'SENTINEL', hasReviewableChanges ? 'Aguardar aplicação para validar proposta' : 'Registrar ausência de validação aplicável', order++, 'micro', {
-      status: hasReviewableChanges ? 'pending_user_apply' : 'not_applicable',
-      reason: hasReviewableChanges ? 'Preview antes de aplicar é intencional; ValidatorEngine roda na aplicação definitiva.' : 'Sem proposta de código para validar.',
-      validator: 'ValidatorEngine',
-    });
+    const sentinelStatus = RunService.createStep(
+      x.runId,
+      'SENTINEL',
+      hasReviewableChanges ? 'Aguardar aplicação para executar quality gates' : 'Registrar ausência de alteração validável',
+      order++,
+      'micro',
+      {
+        status: hasReviewableChanges ? 'pending_user_apply' : 'not_applicable',
+        reason: hasReviewableChanges
+          ? 'A proposta será validada pelo ValidatorEngine somente após aplicação aprovada pelo usuário.'
+          : 'Sem proposta de código para validar.',
+        validator: 'ValidatorEngine',
+      }
+    );
     steps.push(sentinelStatus);
     RunService.finishStep(sentinelStatus, 'completed');
 
@@ -232,7 +342,9 @@ export class AgentWorkflowEngine extends AgentEngine {
         steps,
         status: result.hasErrors ? 'failed' : hasReviewableChanges ? 'waiting_approval' : 'completed',
         shipRequested: needsShip(x.prompt, x.mode),
+        trace: RunService.trace(x.runId),
       },
     };
   }
 }
+
