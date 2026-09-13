@@ -44,38 +44,68 @@ export class IntegrationService {
     return this.summary(userId, service);
   }
   static async test(userId: string, service: string) {
-    const c = this.read(userId, service);
-    let url: string;
-    let token = c.token;
-    if (service === 'github') url = 'https://api.github.com/user';
-    else if (service === 'cloudflare') {
-      if (!c.accountId) throw new Error('Informe o Account ID da Cloudflare.');
-      url = `https://api.cloudflare.com/client/v4/accounts/${c.accountId}/pages/projects`;
-    } else if (service === 'supabase') {
-      if (!c.projectRef) throw new Error('Informe o Project Ref do Supabase e um token de gerenciamento.');
-      url = `https://api.supabase.com/v1/projects/${c.projectRef}`;
-    } else {
-      if (!c.serviceAccount) throw new Error('Informe o JSON de conta de serviço do projeto Firebase.');
-      const account = JSON.parse(c.serviceAccount);
-      const now = Math.floor(Date.now() / 1000);
-      const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
-      const unsigned = `${encode({alg:'RS256',typ:'JWT'})}.${encode({iss:account.client_email,scope:'https://www.googleapis.com/auth/firebase.readonly',aud:'https://oauth2.googleapis.com/token',iat:now,exp:now+300})}`;
-      const assertion = `${unsigned}.${crypto.sign('RSA-SHA256', Buffer.from(unsigned), account.private_key).toString('base64url')}`;
-      const auth = await fetch('https://oauth2.googleapis.com/token', {method:'POST', body:new URLSearchParams({grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer',assertion}), signal:AbortSignal.timeout(15000)});
-      if (!auth.ok) throw new Error(`Google recusou a conta de serviço (HTTP ${auth.status}).`);
-      token = (await auth.json()).access_token;
-      url = `https://firebase.googleapis.com/v1beta1/projects/${encodeURIComponent(account.project_id)}`;
+    const mark = (status: 'connected' | 'error') => {
+      db.prepare(
+        'UPDATE integrations SET status=?, last_verified_at=? WHERE user_id=? AND service_name=?'
+      ).run(status, new Date().toISOString(), userId, service);
+    };
+
+    try {
+      const c = this.read(userId, service);
+      let url: string;
+      let token = c.token;
+
+      if (service === 'github') {
+        url = 'https://api.github.com/user';
+      } else if (service === 'cloudflare') {
+        if (!c.accountId) throw new Error('Informe o Account ID da Cloudflare.');
+        url = `https://api.cloudflare.com/client/v4/accounts/${c.accountId}/pages/projects`;
+      } else if (service === 'supabase') {
+        if (!c.projectRef) throw new Error('Informe o Project Ref do Supabase e um token de gerenciamento.');
+        url = `https://api.supabase.com/v1/projects/${c.projectRef}`;
+      } else if (service === 'firebase') {
+        if (!c.serviceAccount) throw new Error('Informe o JSON de conta de serviço do projeto Firebase.');
+        const account = JSON.parse(c.serviceAccount);
+        const now = Math.floor(Date.now() / 1000);
+        const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+        const unsigned = `${encode({alg:'RS256',typ:'JWT'})}.${encode({
+          iss:account.client_email,
+          scope:'https://www.googleapis.com/auth/firebase.readonly',
+          aud:'https://oauth2.googleapis.com/token',
+          iat:now,
+          exp:now+300,
+        })}`;
+        const assertion = `${unsigned}.${crypto.sign('RSA-SHA256', Buffer.from(unsigned), account.private_key).toString('base64url')}`;
+        const auth = await fetch('https://oauth2.googleapis.com/token', {
+          method:'POST',
+          body:new URLSearchParams({grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer',assertion}),
+          signal:AbortSignal.timeout(15000),
+        });
+        if (!auth.ok) throw new Error(`Google recusou a conta de serviço (HTTP ${auth.status}).`);
+        token = (await auth.json()).access_token;
+        url = `https://firebase.googleapis.com/v1beta1/projects/${encodeURIComponent(account.project_id)}`;
+      } else {
+        throw new Error('Integração desconhecida.');
+      }
+
+      if (!token) throw new Error('Credencial ausente. Configure e salve antes de testar.');
+      const response = await fetch(url, {
+        headers:{Authorization:`Bearer ${token}`,Accept:'application/json'},
+        redirect:'error',
+        signal:AbortSignal.timeout(15000),
+      });
+      if (!response.ok) {
+        throw new Error(`O serviço recusou a consulta (HTTP ${response.status}). Confira credencial, projeto e permissões.`);
+      }
+      const data = await response.json() as any;
+      if (data?.success === false) throw new Error('O serviço não aprovou a consulta.');
+
+      mark('connected');
+      return {success:true, message:'Conexão confirmada e credencial pronta para operações autorizadas.'};
+    } catch (error) {
+      mark('error');
+      throw error;
     }
-    if (!token) throw new Error('Credencial ausente. Configure e salve antes de testar.');
-    const response = await fetch(url, {headers:{Authorization:`Bearer ${token}`, Accept:'application/json'}, redirect:'error', signal:AbortSignal.timeout(15000)});
-    if (!response.ok) {
-      db.prepare("UPDATE integrations SET status='error',last_verified_at=? WHERE user_id=? AND service_name=?").run(new Date().toISOString(),userId,service);
-      throw new Error(`O serviço recusou a consulta (HTTP ${response.status}). Confira credencial, projeto e permissões.`);
-    }
-    const data = await response.json();
-    if (data.success === false) throw new Error('O serviço não aprovou a consulta.');
-    db.prepare("UPDATE integrations SET status='connected',last_verified_at=? WHERE user_id=? AND service_name=?").run(new Date().toISOString(),userId,service);
-    return {success:true, message:'Conexão confirmada e credencial pronta para operações autorizadas.'};
   }
 
   static async deployCloudflarePages(userId: string, branch: string) {
