@@ -853,11 +853,14 @@ export class LLMAdapterService {
     }
 
     if (out.length === 0) {
-      // A scratch project may contain only the Forge preview placeholder. Do not
-      // silently force a real application into index.html; the approved plan must
-      // choose the architecture. Keep index.html only as a last-resort target when
-      // it is genuinely the sole existing safe file.
-      if (existingPaths.length === 1 && existingPaths[0] === 'index.html') add('index.html');
+      // A scratch project may contain only the Forge preview placeholder. That file
+      // is preview scaffolding, not product architecture, so it must not become the
+      // implicit build target. Legacy/static projects that own a real index.html can
+      // still use it as a last-resort target.
+      const onlyIndex = existingPaths.length === 1 && existingPaths[0] === 'index.html';
+      const indexContent = String(existingFiles['index.html'] || '');
+      const isForgePlaceholder = /forge-placeholder:\s*preview-only/i.test(indexContent);
+      if (onlyIndex && !isForgePlaceholder) add('index.html');
     }
     return out.sort((a, b) => this.buildTargetPriority(a) - this.buildTargetPriority(b));
   }
