@@ -116,6 +116,24 @@ export class LLMAdapterService {
     return 'build';
   }
 
+  static resolveRequestedMode(prompt: string, selectedMode: AgentMode): AgentMode {
+    const text = String(prompt || '').toLowerCase();
+
+    const explicitPublish = /\b(publicar|publique|deploy|commit|push|enviar\s+para\s+(?:o\s+)?github|sincronizar\s+com\s+(?:o\s+)?github)\b/i.test(text);
+    if (explicitPublish) return 'publish';
+
+    const explicitReview = /\b(revisar|revise|auditar|auditoria|encontrar\s+(?:bugs|erros)|corrigir\s+bugs|analisar\s+(?:o\s+)?c[oó]digo)\b/i.test(text);
+    if (explicitReview) return 'review';
+
+    const explicitPlan = /\b(planejar|planeje|planeja|fa[cç]a\s+(?:um\s+)?plano|crie\s+(?:um\s+)?plano|arquitetura|roadmap|especifica[cç][aã]o)\b/i.test(text);
+    if (explicitPlan) return 'plan';
+
+    const explicitBuild = /\b(construir|construa|implementar|implemente|criar\s+(?:o|a|um|uma)\s|fa[cç]a\s+(?:o|a|um|uma)\s|alterar|altere|corrigir|corrija)\b/i.test(text);
+    if (explicitBuild) return 'build';
+
+    return selectedMode;
+  }
+
   /**
    * Centralized Single Source of Truth for Provider Configuration
    * Resolves per-user encrypted keys first, then falls back to server env
@@ -925,7 +943,11 @@ export class LLMAdapterService {
           };
         }
 
-        if (!accepted && result.errorReason && ['invalid_key', 'invalid_model', 'rate_limit'].includes(result.errorReason)) {
+        if (
+          !accepted &&
+          result.errorReason &&
+          ['invalid_key', 'invalid_model', 'rate_limit', 'provider_error', 'network_error', 'timeout', 'terminal_provider_error'].includes(result.errorReason)
+        ) {
           terminalFailure = result.errorMessage || result.errorReason;
           break;
         }
@@ -997,9 +1019,22 @@ export class LLMAdapterService {
    * Main Prompt Execution with Support for "auto" mode
    */
   private static requestTimeoutMs(): number {
-    const configured = Number(process.env.FORGE_LLM_TIMEOUT_MS || 180000);
-    if (!Number.isFinite(configured)) return 180000;
-    return Math.max(15000, Math.min(configured, 600000));
+    const configured = Number(process.env.FORGE_LLM_TIMEOUT_MS || 90000);
+    if (!Number.isFinite(configured)) return 90000;
+    return Math.max(15000, Math.min(configured, 180000));
+  }
+
+  private static async waitForRetry(ms: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, ms);
+      if (!signal) return;
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(signal.reason || new DOMException('Aborted', 'AbortError'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
   private static classifyExecutionError(error: any): string {
@@ -1054,47 +1089,66 @@ export class LLMAdapterService {
     const filesList = Object.keys(existingFiles).join(', ') || 'Nenhum arquivo ainda criado.';
 
     if (providerConfig && providerConfig.isConfigured) {
-      try {
-        if (providerConfig.type === 'openai_compatible') {
-          return await this.callOpenAICompatible(providerConfig, {
-            prompt,
-            mode,
-            skillsText,
-            filesList,
-            existingFiles,
-            conversationHistory,
-            signal: options.signal,
-          });
-        } else if (providerConfig.type === 'gemini') {
-          return await this.callGemini(providerConfig, {
-            prompt,
-            mode,
-            skillsText,
-            filesList,
-            existingFiles,
-            conversationHistory,
-            signal: options.signal,
-          });
+      let lastError: any = null;
+      let lastReason = 'provider_error';
+      const maxAttempts = 2;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        options.signal?.throwIfAborted();
+        try {
+          if (providerConfig.type === 'openai_compatible') {
+            const result = await this.callOpenAICompatible(providerConfig, {
+              prompt,
+              mode,
+              skillsText,
+              filesList,
+              existingFiles,
+              conversationHistory,
+              signal: options.signal,
+            });
+            result.diagnostics = { ...(result.diagnostics || {}), attempts: attempt };
+            return result;
+          }
+
+          if (providerConfig.type === 'gemini') {
+            const result = await this.callGemini(providerConfig, {
+              prompt,
+              mode,
+              skillsText,
+              filesList,
+              existingFiles,
+              conversationHistory,
+              signal: options.signal,
+            });
+            result.diagnostics = { ...(result.diagnostics || {}), attempts: attempt };
+            return result;
+          }
+        } catch (err: any) {
+          if (options.signal?.aborted) throw err;
+          lastError = err;
+          lastReason = this.classifyExecutionError(err);
+          const retryable = lastReason === 'provider_error' || lastReason === 'network_error';
+
+          if (!retryable || attempt >= maxAttempts) break;
+          await this.waitForRetry(350 * attempt, options.signal);
         }
-      } catch (err: any) {
-        if (options.signal?.aborted) throw err;
-        console.error('Erro na chamada do provedor de IA:', err);
-        const reason = this.classifyExecutionError(err);
-        return {
-          replyText: `⚠️ **Falha na comunicação com ${providerConfig.name} (${providerConfig.modelId})**: ${err?.message || 'Erro de conexão'}.`,
-          mode,
-          decisionType: 'invalid_response',
-          isDemonstrativeFallback: false,
-          providerUsed: providerConfig.name,
-          modelUsed: providerConfig.modelId,
-          hasErrors: true,
-          errorMessage: String(err?.message || 'Erro de conexão'),
-          errorReason: reason,
-        };
       }
+
+      console.error('Erro na chamada do provedor de IA:', lastError);
+      return {
+        replyText: `O provedor ${providerConfig.name} ficou temporariamente indisponível. Nenhuma alteração foi aplicada. Você pode tentar novamente sem perder o contexto.`,
+        mode,
+        decisionType: 'invalid_response',
+        isDemonstrativeFallback: false,
+        providerUsed: providerConfig.name,
+        modelUsed: providerConfig.modelId,
+        hasErrors: true,
+        errorMessage: String(lastError?.message || 'Erro de conexão com o provedor'),
+        errorReason: lastReason,
+        diagnostics: { strategy: 'bounded_transport_retry', attempts: lastError ? maxAttempts : 1 },
+      };
     }
 
-    // Explicit demonstrative fallback when no keys are configured
     return this.generateDemonstrativeFallback(prompt, mode, existingFiles, appliedSkills);
   }
 
