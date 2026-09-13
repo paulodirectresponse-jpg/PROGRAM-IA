@@ -14,6 +14,12 @@ Este arquivo contém somente pendências reais. Não trate itens já implementad
 - Não alterar Supabase remoto sem migration versionada, reconciliação e autorização explícita.
 - Manter Firebase como identidade do Forge; Firebase de projetos continua sendo integração externa separada.
 
+## Fase 1 — Context Engine V2
+
+O core isolado da Fase 1 já está implementado e validado. O handoff operacional exclusivo está em `PHASE1_CODEX_HANDOFF.md`.
+
+**Não reimplementar** `ProjectFileIndex`, `ArchitectureGraphService`, `ContextCommitService`, `ContextCompiler`, schemas ou APIs do Context Engine V2. A responsabilidade restante é a integração profunda desses contratos nos fluxos existentes.
+
 ## C — Runtime de frameworks e preview executável
 
 ### Implementado localmente
