@@ -117,6 +117,10 @@ export class LLMAdapterService {
   }
 
   static resolveRequestedMode(prompt: string, selectedMode: AgentMode): AgentMode {
+    // Manual advanced modes are explicit user overrides. Only "auto" may
+    // reclassify intent from the prompt text.
+    if (selectedMode !== 'auto') return selectedMode;
+
     const text = String(prompt || '').toLowerCase();
 
     const explicitPublish = /\b(publicar|publique|deploy|commit|push|enviar\s+para\s+(?:o\s+)?github|sincronizar\s+com\s+(?:o\s+)?github)\b/i.test(text);
