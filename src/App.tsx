@@ -81,6 +81,7 @@ export default function App() {
   const [buildInfo,setBuildInfo]=useState<{version:string;sha:string;agentEngineEnabled?:boolean}|null>(null);
   const [activeAgentTrace,setActiveAgentTrace]=useState<any[]>([]);
   const [activeAgentRunStatus,setActiveAgentRunStatus]=useState<string|null>(null);
+  const [activeAgentRun,setActiveAgentRun]=useState<any|null>(null);
 
   // Abort controller ref
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -228,6 +229,7 @@ export default function App() {
     if (!activeProject || !buildInfo?.agentEngineEnabled) {
       setActiveAgentTrace([]);
       setActiveAgentRunStatus(null);
+      setActiveAgentRun(null);
       return;
     }
     let cancelled = false;
@@ -239,6 +241,7 @@ export default function App() {
           const latest = data.runs?.[0];
           setActiveAgentTrace(Array.isArray(latest?.trace) ? latest.trace : []);
           setActiveAgentRunStatus(latest?.status || null);
+          setActiveAgentRun(latest || null);
         }
       } catch {}
     };
@@ -645,6 +648,7 @@ export default function App() {
         isLoading={isLoading}
         activeAgentTrace={activeAgentTrace}
         activeAgentRunStatus={activeAgentRunStatus}
+        activeAgentRun={activeAgentRun}
         onContinueRun={handleContinueAgentRun}
         onAbort={handleAbort}
         availableSkills={skills}
@@ -705,7 +709,7 @@ export default function App() {
           await loadSkills();return true;
         }}
       />
-      <AgentsModal isOpen={isAgentsOpen} onClose={()=>setIsAgentsOpen(false)}/>
+      <AgentsModal isOpen={isAgentsOpen} onClose={()=>setIsAgentsOpen(false)} projectId={activeProject?.id || null}/>
 
       <CheckpointsModal
         isOpen={isCheckpointsOpen}
