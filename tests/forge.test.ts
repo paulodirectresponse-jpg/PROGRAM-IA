@@ -113,7 +113,7 @@ describe('Forge Agent Complete Verification Suite (50+ Scenarios)', () => {
   // 2. CRIPTOGRAFIA AES-256-GCM E GESTÃO DE SEGREDOS (10 cenários)
   // =========================================================================
   describe('2. Criptografia AES-256-GCM e Gestão de Segredos', () => {
-    const testSecret = 'sk-forge-secret-production-key-998877665544';
+    const testSecret = 'forge-secret-fixture-production-998877665544';
     const testUserId = `user-crypto-${Date.now()}`;
 
     test('2.1: Criptografia AES-256-GCM gera formato iv:authTag:ciphertext', () => {
@@ -187,8 +187,8 @@ describe('Forge Agent Complete Verification Suite (50+ Scenarios)', () => {
     });
 
     test('2.8: Máscara adequada oculta caracteres intermediários', () => {
-      const masked = SecretService.maskSecret('ghp_1234567890abcdefghijklmnopqrstuv');
-      assert.ok(masked.startsWith('ghp_'));
+      const masked = SecretService.maskSecret('token_1234567890abcdefghijklmnopqrstuv');
+      assert.ok(masked.startsWith('toke'));
       assert.ok(masked.includes('...'));
       assert.ok(masked.endsWith('stuv'));
     });
@@ -415,12 +415,17 @@ Criar API segura
       assert.ok(status.missingConfig.includes('GITHUB_TOKEN'));
     });
 
-    test('5.2: Teste de conexão com token inválido retorna invalid_key', async () => {
-      const result = await SecretService.testConnection('test-user-id', 'github', {
-        apiKey: 'ghp_invalid_token_12345678901234567890',
-      });
-      assert.equal(result.success, false);
-      assert.ok(['invalid_key', 'network_error'].includes(result.code));
+    test('5.2: GitHubService classifica token recusado como invalid_token', async (t) => {
+      const user = AuthService.firebaseLogin(
+        `github-invalid-${Date.now()}@forge.dev`,
+        'GitHub Invalid Token',
+        `firebase-github-invalid-${Date.now()}`
+      ).user;
+      SecretService.saveSecret(user.id, 'github', 'invalid-github-token-fixture-1234567890');
+      t.mock.method(globalThis, 'fetch', async () => new Response('{}', { status: 401 }));
+      const result = await GitHubService.verifyConnection(user.id);
+      assert.equal(result.isConnected, false);
+      assert.equal(result.status, 'invalid_token');
     });
 
     test('5.3: Parsing de URL de repositório identifica owner e repo', () => {
@@ -442,9 +447,9 @@ Criar API segura
     });
 
     test('5.6: Mascaramento de tokens do GitHub nunca expõe o valor completo', () => {
-      const rawToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890';
+      const rawToken = 'token_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890';
       const masked = SecretService.maskSecret(rawToken);
-      assert.ok(masked.startsWith('ghp_'));
+      assert.ok(masked.startsWith('toke'));
       assert.ok(masked.endsWith('7890'));
       assert.equal(masked.includes('ABCDEFGHIJKLMNOPQRSTUVWXYZ'), false);
     });
@@ -481,7 +486,7 @@ Criar API segura
     });
 
     test('6.4: Quality Gate de vazamento de segredos detecta chaves privadas', () => {
-      const leakFile = 'const KEY = "ghp_123456789012345678901234567890123456";';
+      const leakFile = 'const API_KEY = "example-sensitive-value-12345678901234567890";';
       WorkspaceManager.writeFile(testProjectId, 'leaked.js', leakFile);
 
       const cpId = WorkspaceManager.createCheckpoint(testProjectId, 'Check with leak');
