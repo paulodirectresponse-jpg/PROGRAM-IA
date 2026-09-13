@@ -752,6 +752,185 @@ router.get('/conversations/:projectId', requireAuth, requireProjectOwner, (req: 
   }
 });
 
+router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  const projectId = req.params.projectId;
+  if (activeProjects.has(projectId)) {
+    return res.status(409).json({ error: 'JÃ¡ hÃ¡ uma execuÃ§Ã£o neste projeto. Aguarde ou cancele antes de aprovar o plano.' });
+  }
+
+  activeProjects.add(projectId);
+  const controller = new AbortController();
+  let execution: { runId: string; stepId: string } | null = null;
+  res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+
+  const parseStoredList = (value: unknown): string[] => {
+    if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
+    if (typeof value !== 'string' || !value.trim()) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : [String(parsed)];
+    } catch {
+      return [value];
+    }
+  };
+
+  try {
+    const { planId } = req.body || {};
+    if (!planId) return res.status(400).json({ error: 'Identificador do plano Ã© obrigatÃ³rio.' });
+
+    const plan = db.prepare('SELECT * FROM plans WHERE id = ? AND project_id = ?').get(planId, projectId) as any;
+    if (!plan) return res.status(404).json({ error: 'Plano nÃ£o encontrado neste projeto.' });
+    if (plan.status !== 'draft') {
+      return res.status(409).json({ error: `Este plano nÃ£o estÃ¡ mais aguardando aprovaÃ§Ã£o (${plan.status || 'estado invÃ¡lido'}).` });
+    }
+
+    const conversation = db.prepare('SELECT * FROM conversations WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+    if (!conversation) return res.status(404).json({ error: 'Conversa nÃ£o encontrada.' });
+
+    const providerConfig = LLMAdapterService.getActiveProviderConfig(req.user!.id);
+    if (!providerConfig) {
+      return res.status(409).json({ error: 'Selecione e salve um provedor de IA antes de construir o plano.' });
+    }
+
+    const filesAffected = parseStoredList(plan.files_affected_json);
+    const integrations = parseStoredList(plan.integrations_json);
+    const risks = parseStoredList(plan.risks_json);
+    const acceptanceCriteria = parseStoredList(plan.acceptance_criteria_json);
+    const buildPrompt = [
+      'O usuÃ¡rio aprovou este plano tÃ©cnico. Implemente-o agora no workspace atual.',
+      '',
+      `OBJETIVO:\n${plan.objective || ''}`,
+      `ESCOPO INCLUÃDO:\n${plan.scope_in || ''}`,
+      `ESCOPO EXCLUÃDO:\n${plan.scope_out || ''}`,
+      filesAffected.length ? `ARQUIVOS PREVISTOS:\n- ${filesAffected.join('\n- ')}` : '',
+      integrations.length ? `INTEGRAÃ‡Ã•ES:\n- ${integrations.join('\n- ')}` : '',
+      risks.length ? `RISCOS:\n- ${risks.join('\n- ')}` : '',
+      acceptanceCriteria.length ? `CRITÃ‰RIOS DE ACEITE:\n- ${acceptanceCriteria.join('\n- ')}` : '',
+      '',
+      'Gere uma proposta concreta de arquivos para cumprir o plano. NÃ£o aplique nada automaticamente; retorne os arquivos estruturados para revisÃ£o e aprovaÃ§Ã£o do usuÃ¡rio.',
+    ].filter(Boolean).join('\n\n');
+
+    const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 20')
+      .all(conversation.id).reverse() as any[];
+    const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
+    const agentEngineEnabled = process.env.AGENT_ENGINE_ENABLED === 'true';
+
+    if (agentEngineEnabled) {
+      execution = RunService.start(req.user!.id, projectId, conversation.id, 'build', .5);
+    }
+
+    let result = !agentEngineEnabled
+      ? await LLMAdapterService.executePrompt({
+          prompt: buildPrompt,
+          mode: 'build',
+          projectId,
+          providerKey: providerConfig.key,
+          modelId: providerConfig.modelId,
+          existingFiles,
+          appliedSkills: [],
+          conversationHistory: history,
+          userId: req.user!.id,
+          signal: controller.signal,
+        })
+      : await AgentWorkflowEngine.executeWorkflow({
+          prompt: buildPrompt,
+          mode: 'build',
+          projectId,
+          existingFiles,
+          appliedSkills: [],
+          conversationHistory: history,
+          userId: req.user!.id,
+          runId: execution!.runId,
+          stepId: execution!.stepId,
+          signal: controller.signal,
+        });
+
+    controller.signal.throwIfAborted();
+
+    if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
+      return res.status(409).json({ error: 'Os arquivos mudaram durante a construÃ§Ã£o. Aprove o plano novamente para usar a versÃ£o atual.' });
+    }
+
+    if (result.build?.files?.length && !result.proposal && !result.isDemonstrativeFallback && !result.hasErrors) {
+      result.proposal = {
+        id: `proposal-${crypto.randomUUID()}`,
+        summary: result.build.summary || `ConstruÃ§Ã£o do plano: ${String(plan.objective || '').slice(0, 80)}`,
+        requiresConfirmation: true,
+        files: result.build.files,
+        status: 'pending',
+      };
+    }
+
+    if (result.hasErrors || result.invalidResponse || !result.proposal?.files?.length) {
+      if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+      return res.status(422).json({
+        success: false,
+        error: result.errorMessage || result.errorReason || 'O modelo nÃ£o retornou uma proposta de construÃ§Ã£o vÃ¡lida. O plano continua aguardando aprovaÃ§Ã£o.',
+      });
+    }
+
+    const now = new Date().toISOString();
+    const agentMsgId = `msg-agent-${Date.now()}`;
+    const metadata = {
+      mode: 'build',
+      decisionType: result.decisionType,
+      providerUsed: result.providerUsed,
+      modelUsed: result.modelUsed,
+      planId,
+      planApproved: true,
+      filesAffected: result.build?.files?.map((file) => file.path) || [],
+      proposal: result.proposal,
+      hasErrors: false,
+      runId: execution?.runId,
+      executionType: agentEngineEnabled ? 'agent_engine' : 'direct_llm',
+      agentKey: agentEngineEnabled ? ((result as any).agentKey || 'PROGRAM') : undefined,
+      profileKey: (result as any).profileKey,
+      workflow: (result as any).workflow,
+    };
+
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare("UPDATE plans SET status = 'approved', updated_at = ? WHERE id = ? AND project_id = ? AND status = 'draft'")
+        .run(now, planId, projectId);
+      db.prepare("UPDATE conversations SET mode = 'build', updated_at = ? WHERE id = ?").run(now, conversation.id);
+      db.prepare(`
+        INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
+        VALUES (?, ?, 'agent', ?, ?, ?)
+      `).run(agentMsgId, conversation.id, result.replyText, JSON.stringify(metadata), now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+
+    if (execution) RunService.finish(execution.runId, execution.stepId, 'completed');
+
+    res.json({
+      success: true,
+      plan: { ...plan, status: 'approved', updated_at: now },
+      agentMessage: {
+        id: agentMsgId,
+        conversation_id: conversation.id,
+        sender: 'agent',
+        content: result.replyText,
+        metadata,
+        created_at: now,
+      },
+      build: result.build,
+      proposal: result.proposal,
+    });
+  } catch (err: any) {
+    if (execution) {
+      RunService.finish(execution.runId, execution.stepId, controller.signal.aborted ? 'aborted' : 'failed');
+    }
+    if (!res.headersSent && !res.destroyed) {
+      res.status(controller.signal.aborted ? 499 : 500).json({ error: err?.message || 'Falha ao aprovar e construir o plano.' });
+    }
+  } finally {
+    activeProjects.delete(projectId);
+  }
+});
+
 router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   if (activeProjects.has(req.params.projectId)) return res.status(409).json({error:'JÃ¡ hÃ¡ uma execuÃ§Ã£o neste projeto. Aguarde ou cancele antes de enviar outro pedido.'});
   activeProjects.add(req.params.projectId);
