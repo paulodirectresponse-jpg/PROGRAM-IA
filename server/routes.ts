@@ -21,6 +21,21 @@ import { CloudSyncService } from './services/cloudSyncService.js';
 export const router = express.Router();
 const activeProjects = new Set<string>();
 
+function ensureUserWorkspace(userId: string) {
+  const id = `ws-${userId}`;
+  const existing = db.prepare('SELECT id FROM workspaces WHERE id = ?').get(id) as { id: string } | undefined;
+  if (!existing) {
+    db.prepare('INSERT INTO workspaces (id, user_id, name, root_path, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(id, userId, 'Workspace do usu�rio', `/workspace/${userId}`, new Date().toISOString());
+  }
+  return id;
+}
+
+function projectResponse(projectId: string, userId: string) {
+  const project = db.prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?').get(projectId, userId);
+  return { success: true, projectId, project };
+}
+
 function upsertRepository(projectId: string, remoteUrl: string, branch: string, visibility = 'private') {
   const existing = db.prepare('SELECT id FROM repositories WHERE project_id = ?').get(projectId) as { id: string } | undefined;
   if (existing) {
@@ -292,6 +307,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
     const now = new Date().toISOString();
     let effectiveBranch = branch || 'main';
     const userId = req.user!.id;
+    const workspaceId = ensureUserWorkspace(userId);
 
     // 1. GITHUB REPOSITORY IMPORT
     if (origin === 'github') {
@@ -319,8 +335,8 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       db.prepare(`
         INSERT INTO projects (
           id, user_id, workspace_id, name, description, origin, repo_url, branch, status, provider_id, model_id, created_at, updated_at
-        ) VALUES (?, ?, 'ws-default', ?, ?, ?, ?, ?, 'active', 'prov-useoneai', 'chatgpt-5.5', ?, ?)
-      `).run(projectId, userId, name.trim(), description || `Importado de ${repo_url}`, origin, repo_url.trim(), effectiveBranch, now, now);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, NULL, ?, ?)
+      `).run(projectId, userId, workspaceId, name.trim(), description || `Importado de ${repo_url}`, origin, repo_url.trim(), effectiveBranch, now, now);
 
       // Write text files
       if (importResult.files) {
@@ -360,7 +376,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       );
 
       WorkspaceManager.createCheckpoint(projectId, 'Importação do GitHub', `Importado de ${parsed.owner}/${parsed.repo}`);
-      return res.json({ success: true, projectId });
+      return res.json(projectResponse(projectId, userId));
     }
 
     // 2. LOCAL / ZIP FILE IMPORT
@@ -368,8 +384,8 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       db.prepare(`
         INSERT INTO projects (
           id, user_id, workspace_id, name, description, origin, repo_url, branch, status, provider_id, model_id, created_at, updated_at
-        ) VALUES (?, ?, 'ws-default', ?, ?, ?, '', 'main', 'active', 'prov-useoneai', 'chatgpt-5.5', ?, ?)
-      `).run(projectId, userId, name.trim(), description || 'Importado de arquivo ZIP', origin, now, now);
+        ) VALUES (?, ?, ?, ?, ?, ?, '', 'main', 'active', NULL, NULL, ?, ?)
+      `).run(projectId, userId, workspaceId, name.trim(), description || 'Importado de arquivo ZIP', origin, now, now);
 
       let importedCount = 0;
       if (zipData) {
@@ -407,15 +423,15 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       );
 
       if (!zipData) WorkspaceManager.createCheckpoint(projectId, 'Importação de Arquivo ZIP', `Extração de ${importedCount} arquivos`);
-      return res.json({ success: true, projectId });
+      return res.json(projectResponse(projectId, userId));
     }
 
     // 3. NEW PROJECT FROM SCRATCH
     db.prepare(`
       INSERT INTO projects (
         id, user_id, workspace_id, name, description, origin, repo_url, branch, status, provider_id, model_id, created_at, updated_at
-      ) VALUES (?, ?, 'ws-default', ?, ?, 'novo', '', 'main', 'active', 'prov-useoneai', 'chatgpt-5.5', ?, ?)
-    `).run(projectId, userId, name.trim(), description || 'Novo projeto Forge Agent', now, now);
+      ) VALUES (?, ?, ?, ?, ?, 'novo', '', 'main', 'active', NULL, NULL, ?, ?)
+    `).run(projectId, userId, workspaceId, name.trim(), description || 'Novo projeto Forge Agent', now, now);
 
     db.prepare(`
       INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at)
@@ -474,7 +490,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
     WorkspaceManager.writeFile(projectId, 'index.html', initialHtml);
     WorkspaceManager.createCheckpoint(projectId, 'Criação do Projeto', 'Setup inicial do workspace');
 
-    res.json({ success: true, projectId });
+    res.json(projectResponse(projectId, userId));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -535,20 +551,23 @@ router.post('/projects/:id/duplicate', requireAuth, requireProjectOwner, (req: R
     const now = new Date().toISOString();
     const newName = `${source.name} (Cópia)`;
 
+    const workspaceId = ensureUserWorkspace(req.user!.id);
+
     db.prepare(`
       INSERT INTO projects (
         id, user_id, workspace_id, name, description, origin, repo_url, branch, status, provider_id, model_id, created_at, updated_at
-      ) VALUES (?, ?, 'ws-default', ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
     `).run(
       newId,
       req.user!.id,
+      workspaceId,
       newName,
       source.description,
       source.origin || 'novo',
       source.repo_url || '',
       source.branch || 'main',
-      source.provider_id || 'prov-useoneai',
-      source.model_id || 'chatgpt-5.5',
+      source.provider_id || null,
+      source.model_id || null,
       now,
       now
     );

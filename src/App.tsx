@@ -223,9 +223,9 @@ export default function App() {
       }
       if (result.success && result.projectId) {
         await loadProjects();
-        const createdProj = {
+        const createdProj = result.project || {
           id: result.projectId,
-          workspace_id: 'ws-default',
+          workspace_id: '',
           name: data.name,
           description: data.description,
           origin: data.origin,
