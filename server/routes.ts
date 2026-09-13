@@ -949,6 +949,8 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     }
 
     const projectId = req.params.projectId;
+    const selectedMode = mode as AgentMode;
+    const resolvedMode = LLMAdapterService.resolveRequestedMode(content, selectedMode);
     let conv = db.prepare('SELECT * FROM conversations WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
     const now = new Date().toISOString();
 
@@ -964,17 +966,17 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       );
       conv = { id: convId, mode };
     } else {
-      db.prepare('UPDATE conversations SET mode = ?, updated_at = ? WHERE id = ?').run(mode, now, conv.id);
+      db.prepare('UPDATE conversations SET mode = ?, updated_at = ? WHERE id = ?').run(resolvedMode, now, conv.id);
     }
     const agentEngineEnabled = process.env.AGENT_ENGINE_ENABLED === 'true';
-    if (agentEngineEnabled) execution=RunService.start(req.user!.id,projectId,conv.id,mode,.5);
+    if (agentEngineEnabled) execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,.5);
 
     // Save user message
     const userMsgId = 'msg-user-' + Date.now();
     db.prepare(`
       INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
       VALUES (?, ?, 'user', ?, ?, ?)
-    `).run(userMsgId, conv.id, content, JSON.stringify({ mode, appliedSkills }), now);
+    `).run(userMsgId, conv.id, content, JSON.stringify({ mode: resolvedMode, selectedMode, appliedSkills }), now);
 
     const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 20').all(conv.id).reverse() as any[];
     const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
@@ -1032,7 +1034,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     // Call LLM Adapter with authenticated userId
     let result = !agentEngineEnabled ? await LLMAdapterService.executePrompt({
       prompt: content,
-      mode: mode as AgentMode,
+      mode: resolvedMode,
       projectId,
       providerKey,
       modelId,
@@ -1041,7 +1043,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       conversationHistory: history,
       userId: req.user!.id,
       signal: controller.signal,
-    }) : await AgentWorkflowEngine.executeWorkflow({prompt:content,mode:mode as AgentMode,projectId,existingFiles,appliedSkills,conversationHistory:history,userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal});
+    }) : await AgentWorkflowEngine.executeWorkflow({prompt:content,mode:resolvedMode,projectId,existingFiles,appliedSkills,conversationHistory:history,userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal});
     controller.signal.throwIfAborted();
 
     const effectiveIntent = mode === 'auto' ? LLMAdapterService.classifyIntent(content) : (mode as AgentMode);
