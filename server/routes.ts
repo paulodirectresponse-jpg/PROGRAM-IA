@@ -1264,26 +1264,32 @@ router.post('/projects/:id/github/pull-request', requireAuth, requireProjectOwne
 router.post('/projects/:id/github/connect-repo', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const { repoUrl, branch = 'main' } = req.body;
-    if (!repoUrl) return res.status(400).json({ error: 'repoUrl Ã© obrigatÃ³rio.' });
+    if (!repoUrl) return res.status(400).json({ error: 'repoUrl é obrigatório.' });
 
     const parsed = GitHubService.parseRepoUrl(repoUrl);
-    if (!parsed) return res.status(400).json({ error: 'URL do GitHub invÃ¡lida.' });
+    if (!parsed) return res.status(400).json({ error: 'URL do GitHub inválida.' });
+
+    const targetBranch = String(branch || 'main').trim();
+    const head = await GitHubService.getBranchHead(parsed.owner, parsed.repo, targetBranch, req.user!.id);
+    if (!head.success || !head.sha) return res.status(400).json({ error: head.error || 'Não foi possível validar a branch remota.' });
 
     const now = new Date().toISOString();
-    db.prepare('UPDATE projects SET repo_url = ?, branch = ?, updated_at = ? WHERE id = ?').run(
-      repoUrl.trim(),
-      branch.trim(),
-      now,
-      req.params.id
-    );
+    upsertRepository(req.params.id, repoUrl.trim(), targetBranch);
     db.prepare('UPDATE branches SET is_current = 0 WHERE project_id = ?').run(req.params.id);
-    const knownBranch = db.prepare('SELECT id FROM branches WHERE project_id = ? AND name = ?').get(req.params.id, branch.trim()) as { id: string } | undefined;
-    if (knownBranch) db.prepare('UPDATE branches SET is_current = 1 WHERE id = ?').run(knownBranch.id);
-    else db.prepare('INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at) VALUES (?, ?, ?, 1, NULL, ?)')
-      .run(`br-${crypto.randomUUID()}`, req.params.id, branch.trim(), now);
-    upsertRepository(req.params.id, repoUrl.trim(), branch.trim());
+    const knownBranch = db.prepare('SELECT id FROM branches WHERE project_id = ? AND name = ?')
+      .get(req.params.id, targetBranch) as { id: string } | undefined;
+    if (knownBranch) {
+      db.prepare('UPDATE branches SET is_current = 1, head_commit_hash = ? WHERE id = ?').run(head.sha, knownBranch.id);
+    } else {
+      db.prepare('INSERT INTO branches (id, project_id, name, is_current, head_commit_hash, created_at) VALUES (?, ?, ?, 1, ?, ?)')
+        .run(`br-${crypto.randomUUID()}`, req.params.id, targetBranch, head.sha, now);
+    }
 
-    res.json({ success: true, repoUrl: repoUrl.trim(), branch: branch.trim() });
+    // Temporary mirror for older UI/data migrations; repositories + branches are canonical.
+    db.prepare('UPDATE projects SET repo_url = ?, branch = ?, updated_at = ? WHERE id = ?')
+      .run(repoUrl.trim(), targetBranch, now, req.params.id);
+
+    res.json({ success: true, repoUrl: repoUrl.trim(), branch: targetBranch, headSha: head.sha });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
