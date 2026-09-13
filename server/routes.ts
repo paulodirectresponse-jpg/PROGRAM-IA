@@ -1213,7 +1213,10 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       VALUES (?, ?, 'agent', ?, ?, ?)
     `).run(agentMsgId, conv.id, result.replyText, JSON.stringify(metadata), now);
 
-    if (execution) RunService.finish(execution.runId,execution.stepId,result.hasErrors?'failed':'completed');
+    if (execution) {
+      if (result.proposal?.status === 'pending' && !result.hasErrors) RunService.waitForApproval(execution.runId);
+      else RunService.finish(execution.runId,execution.stepId,result.hasErrors?'failed':'completed');
+    }
     res.json({
       success: !result.hasErrors && !result.invalidResponse,
       agentMessage: {
@@ -1290,9 +1293,10 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
     }
 
     const checkpointId = WorkspaceManager.createCheckpoint(projectId, summary.slice(0, 100), summary);
-    const workflowRunId = metadata.workflow?.runId || null;
+    const workflowRunId = metadata.workflow?.runId || metadata.runId || null;
+    if (workflowRunId) RunService.resume(workflowRunId);
     const validationStepId = workflowRunId
-      ? RunService.createStep(workflowRunId, 'SENTINEL', 'Executar ValidatorEngine após aplicação', 90, 'micro', { proposalId, checkpointId })
+      ? RunService.createStep(workflowRunId, 'SENTINEL', 'Executar ValidatorEngine após aplicação', RunService.nextOrderIndex(workflowRunId), 'micro', { proposalId, checkpointId })
       : undefined;
 
     const validation = await ValidatorEngine.validate({
@@ -1303,43 +1307,120 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
     });
 
     if (validationStepId) {
-      RunService.finishStep(
-        validationStepId,
-        validation.status === 'failed' ? 'failed' : 'completed',
-        {
-          validator: 'ValidatorEngine',
-          status: validation.status,
-          failedGate: validation.results.find((item: any) => item.status === 'fail')?.tool || null,
-          security: validation.security?.status,
-        }
-      );
+      RunService.finishStep(validationStepId, validation.status === 'failed' ? 'failed' : 'completed', {
+        validator: 'ValidatorEngine',
+        status: validation.status,
+        failedGate: validation.results.find((item: any) => item.status === 'fail')?.tool || null,
+        security: validation.security?.status,
+      });
     }
 
     if (validation.status === 'failed') {
-      const evidenceStepId = workflowRunId
-        ? RunService.createStep(
-            workflowRunId,
-            'SENTINEL',
-            'Diagnosticar falha real de validação',
-            91,
-            'micro',
-            RunService.context('micro', {
-              objective: 'Explicar rollback por gate executado',
-              errors: [
-                validation.results.find((item: any) => item.status === 'fail')?.output ||
-                validation.security?.issues?.join('; ') ||
-                'Gate executado falhou',
-              ],
-              constraints: ['Sem revisão genérica', 'Sem aplicar arquivo que falhou em validação'],
-            })
-          )
-        : undefined;
-
-      if (evidenceStepId) RunService.finishStep(evidenceStepId, 'completed');
-      if (workflowRunId) RunService.finish(workflowRunId, evidenceStepId || validationStepId || '', 'failed');
-
       WorkspaceManager.restoreCheckpoint(projectId, rollbackCheckpointId);
       workspaceMutated = false;
+      const failedResult = validation.results.find((item: any) => item.status === 'fail');
+      const errorOutput = failedResult?.output || validation.security?.issues?.join('; ') || 'Gate executado falhou';
+      const affectedFiles = files.map((file: any) => file.path);
+      const diagnosis = {
+        cause: `Falha no gate ${failedResult?.tool || validation.security?.status || 'validator'}`,
+        affectedFiles,
+        repairInstruction: 'Corrija somente a falha apontada pelo ValidatorEngine, mantendo o escopo da proposta original.',
+        confidence: 0.7,
+      };
+      const evidenceStepId = workflowRunId
+        ? RunService.createStep(workflowRunId, 'SENTINEL', 'Diagnosticar falha real de validação', RunService.nextOrderIndex(workflowRunId), 'micro', RunService.context('micro', {
+            objective: 'Identificar a causa concreta desta falha e a menor correção necessária.',
+            snippets: [{ failedGate: failedResult?.tool || null, affectedFiles, originalProposal: files.map((file: any) => ({ path: file.path, action: file.action })) }],
+            errors: [errorOutput],
+            previousAttempt: 'A proposta original foi aplicada, validada, falhou e foi revertida para o checkpoint anterior.',
+            constraints: ['Sem revisão genérica', 'Sem carregar projeto inteiro', 'Sem aplicar terceira tentativa automática'],
+          }))
+        : undefined;
+      if (evidenceStepId) RunService.finishStep(evidenceStepId, 'completed', diagnosis);
+
+      if (workflowRunId) {
+        let repairStepId: string | null = null;
+        let repairRollbackId: string | null = null;
+        try {
+          repairStepId = RunService.createStep(workflowRunId, 'FORGE', 'Corrigir falha de validação', RunService.nextOrderIndex(workflowRunId), 'micro', RunService.context('micro', {
+            objective: metadata.originalRequest || summary,
+            snippets: [{ affectedFiles, failedGate: failedResult?.tool || null, diagnosis }],
+            diff: files.map((file: any) => ({ path: file.path, action: file.action })),
+            errors: [errorOutput],
+            previousAttempt: 'Repair automático bounded: única correção automática permitida para esta aprovação.',
+            constraints: ['Corrigir somente a falha evidenciada', 'Não ampliar escopo', 'Não tentar terceira correção automática'],
+          }));
+          const repairResult = await AgentEngine.execute({
+            prompt: `${diagnosis.repairInstruction}
+Falha concreta: ${errorOutput}`,
+            mode: 'build',
+            projectId,
+            existingFiles: WorkspaceManager.getAllFilesContent(projectId),
+            appliedSkills: [],
+            conversationHistory: [],
+            userId: req.user!.id,
+            runId: workflowRunId,
+            stepId: repairStepId,
+          }, { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true, repair: true });
+          const repairFiles = repairResult.build?.files || repairResult.proposal?.files || [];
+          if (!Array.isArray(repairFiles) || repairFiles.length === 0) throw new Error('Repair não retornou arquivos aplicáveis.');
+          for (const file of repairFiles) {
+            WorkspaceManager.resolveSafePath(projectId, file.path);
+            if (!['create', 'update', 'delete', 'modify'].includes(file.action) || (file.action !== 'delete' && typeof file.content !== 'string')) throw new Error('Repair retornou arquivo inválido.');
+          }
+          repairRollbackId = WorkspaceManager.createCheckpoint(projectId, `Antes do repair: ${summary.slice(0, 50)}`);
+          workspaceMutated = true;
+          for (const file of repairFiles) {
+            if (file.action === 'delete') WorkspaceManager.deleteFile(projectId, file.path);
+            else WorkspaceManager.writeFile(projectId, file.path, file.content);
+          }
+          const repairCheckpointId = WorkspaceManager.createCheckpoint(projectId, `Repair: ${summary.slice(0, 70)}`, 'Correção automática bounded após falha real do ValidatorEngine.');
+          const revalidationStepId = RunService.createStep(workflowRunId, 'SENTINEL', 'Reexecutar ValidatorEngine após repair', RunService.nextOrderIndex(workflowRunId), 'micro', { proposalId, repairCheckpointId });
+          const repairValidation = await ValidatorEngine.validate({ projectId, checkpointId: repairCheckpointId, runId: workflowRunId, stepId: revalidationStepId });
+          RunService.finishStep(revalidationStepId, repairValidation.status === 'failed' ? 'failed' : 'completed', { validator: 'ValidatorEngine', status: repairValidation.status });
+          if (repairValidation.status === 'failed') {
+            WorkspaceManager.restoreCheckpoint(projectId, repairRollbackId);
+            workspaceMutated = false;
+            RunService.finishStep(repairStepId, 'failed', { repair: 'failed', validation: repairValidation });
+            RunService.finish(workflowRunId, revalidationStepId, 'failed');
+            metadata.proposal.status = 'failed_validation';
+            metadata.validation = validation;
+            metadata.repair = { attempted: true, status: 'failed', validation: repairValidation, profileKey: repairResult.profileKey };
+            metadata.hasErrors = true;
+            metadata.errorMessage = 'A proposta e o repair automático falharam na validação; alterações revertidas.';
+            db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
+            return res.status(422).json({ error: metadata.errorMessage, validation: repairValidation, repair: metadata.repair });
+          }
+          workspaceMutated = false;
+          RunService.finishStep(repairStepId, 'completed', { repair: 'passed', checkpointId: repairCheckpointId, profileKey: repairResult.profileKey });
+          if (metadata.workflow?.shipRequested) {
+            const ship = RunService.createStep(workflowRunId, 'SHIP', 'Preparar publicação solicitada após validação', RunService.nextOrderIndex(workflowRunId), 'task', { requested: true, status: 'waiting_for_publish_adapter' });
+            RunService.finishStep(ship, 'completed');
+          }
+          RunService.finish(workflowRunId, repairStepId, 'completed');
+          metadata.proposal.status = 'applied';
+          metadata.validation = repairValidation;
+          metadata.initialValidation = validation;
+          metadata.repair = { attempted: true, status: 'passed', checkpointId: repairCheckpointId, profileKey: repairResult.profileKey, files: repairFiles.map((file: any) => file.path) };
+          metadata.checkpointId = repairCheckpointId;
+          metadata.hasErrors = false;
+          db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
+          return res.json({ success: true, checkpointId: repairCheckpointId, validation: repairValidation, repair: metadata.repair, message: 'Alterações aplicadas após repair automático e verificadas com sucesso.' });
+        } catch (repairError: any) {
+          if (workspaceMutated && repairRollbackId) { try { WorkspaceManager.restoreCheckpoint(projectId, repairRollbackId); } catch {} }
+          workspaceMutated = false;
+          if (repairStepId) RunService.finishStep(repairStepId, repairError?.name === 'AbortError' ? 'aborted' : 'failed', { error: String(repairError?.message || repairError) });
+          RunService.finish(workflowRunId, repairStepId || evidenceStepId || validationStepId || '', repairError?.name === 'AbortError' ? 'aborted' : 'failed');
+          metadata.proposal.status = 'failed_validation';
+          metadata.validation = validation;
+          metadata.repair = { attempted: true, status: repairError?.name === 'AbortError' ? 'aborted' : 'failed', error: String(repairError?.message || repairError) };
+          metadata.hasErrors = true;
+          metadata.errorMessage = repairError?.name === 'AbortError' ? 'Repair cancelado.' : 'A alteração foi revertida e o repair automático não conseguiu gerar correção válida.';
+          db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
+          return res.status(repairError?.name === 'AbortError' ? 499 : 422).json({ error: metadata.errorMessage, validation, repair: metadata.repair });
+        }
+      }
+
       metadata.proposal.status = 'failed_validation';
       metadata.validation = validation;
       metadata.hasErrors = true;
@@ -1348,6 +1429,10 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
       return res.status(422).json({ error: metadata.errorMessage, validation });
     }
 
+    if (metadata.workflow?.shipRequested && workflowRunId) {
+      const ship = RunService.createStep(workflowRunId, 'SHIP', 'Preparar publicação solicitada após validação', RunService.nextOrderIndex(workflowRunId), 'task', { requested: true, status: 'waiting_for_publish_adapter' });
+      RunService.finishStep(ship, 'completed');
+    }
     if (workflowRunId) RunService.finish(workflowRunId, validationStepId || '', 'completed');
     metadata.proposal.status = 'applied';
     metadata.validation = validation;
@@ -1982,6 +2067,12 @@ router.post('/conversations/:projectId/reject-proposal', requireAuth, requirePro
   const metadata = JSON.parse(row.metadata_json || '{}');
   if (metadata.proposal.status !== 'pending') return res.status(409).json({ error: 'Esta proposta jÃ¡ foi encerrada.' });
   metadata.proposal.status = 'rejected';
+  const workflowRunId = metadata.workflow?.runId || metadata.runId || null;
+  if (workflowRunId) {
+    const rejectedStep = RunService.createStep(workflowRunId, 'PROGRAM', 'Proposta rejeitada pelo usuário', RunService.nextOrderIndex(workflowRunId), 'task', { proposalId });
+    RunService.finishStep(rejectedStep, 'rejected');
+    RunService.finish(workflowRunId, rejectedStep, 'rejected');
+  }
   db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), row.id);
   res.json({ success: true });
 });

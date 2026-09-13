@@ -104,13 +104,15 @@ test('agent workflow skips STUDIO for backend-only work and only adds SHIP when 
   const conversationId = `agent-flow-conv-${unique}`;
   const {runId,stepId}=RunService.start(userId,projectId,conversationId,'publish',0.5);
   try {
-    await AgentWorkflowEngine.executeWorkflow({
+    const result = await AgentWorkflowEngine.executeWorkflow({
       prompt:'publique no github quando estiver pronto',
       mode:'publish',projectId,existingFiles:{'server.ts':'export {}'},appliedSkills:[],conversationHistory:[],userId,runId,stepId
     });
     const keys=(db.prepare('SELECT agent_key FROM agent_steps WHERE run_id=? ORDER BY order_index').all(runId) as any[]).map(x=>x.agent_key);
-    assert.deepEqual(keys,['SCOUT','FORGE','SENTINEL','SHIP']);
+    assert.deepEqual(keys,['SCOUT','FORGE','SENTINEL']);
     assert.equal(keys.includes('STUDIO'),false);
+    assert.equal(keys.includes('SHIP'),false);
+    assert.equal(result.workflow.shipRequested,true);
   } finally {
     db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
     db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
@@ -165,4 +167,40 @@ test('workflow forced FORGE keeps agent_steps and model_invocations agent_key co
   }
 });
 
+test('abort before repair/provider attempt records no invocation or attempt', async (t) => {
+  const unique = Date.now().toString(36) + Math.random().toString(36).slice(2);
+  const userId = `agent-abort-user-${unique}`;
+  const projectId = `agent-abort-project-${unique}`;
+  const conversationId = `agent-abort-conv-${unique}`;
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO providers(id,user_id,provider_key,name,base_url,model_id,is_configured,connection_status,context_limit,created_at) VALUES(?,?,?,?,?,?,1,'connected',128000,?)")
+    .run(`prov-${unique}`, userId, 'omniroute', 'OmniRoute', 'https://example.test/v1', 'auto', now);
+  db.prepare('INSERT INTO model_profiles(id,user_id,profile_key,level,max_attempts,max_cost_usd,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(`profile-${unique}`, userId, 'BASE_FREE', 0, 1, 0.01, 1, now, now);
+  db.prepare('INSERT INTO model_candidates(id,profile_id,provider_key,model_id,priority,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+    .run(`candidate-${unique}`, `profile-${unique}`, 'omniroute', 'auto', 0, 1, now, now);
+  SecretService.saveSecret(userId, 'omniroute', 'secret-for-test');
+  let providerCalls = 0;
+  t.mock.method(LLMAdapterService, 'executePrompt', async () => {
+    providerCalls++;
+    return {} as any;
+  });
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'build',0.5);
+  const controller = new AbortController();
+  controller.abort();
+  try {
+    await assert.rejects(() => AgentEngine.execute({prompt:'corrija',mode:'build',projectId,existingFiles:{},appliedSkills:[],conversationHistory:[],userId,runId,stepId,signal:controller.signal},{profile:'BASE_FREE',forcedAgentKey:'FORGE',allowExpertEscalation:true}), /aborted|Abort/i);
+    assert.equal(providerCalls, 0);
+    assert.equal((db.prepare('SELECT attempt_count FROM agent_steps WHERE id=?').get(stepId) as any).attempt_count,0);
+    assert.equal((db.prepare('SELECT COUNT(*) c FROM model_invocations WHERE run_id=?').get(runId) as any).c,0);
+  } finally {
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    db.prepare('DELETE FROM model_candidates WHERE profile_id=?').run(`profile-${unique}`);
+    db.prepare('DELETE FROM model_profiles WHERE id=?').run(`profile-${unique}`);
+    db.prepare('DELETE FROM user_secrets WHERE user_id=?').run(userId);
+    db.prepare('DELETE FROM providers WHERE id=?').run(`prov-${unique}`);
+  }
+});
 

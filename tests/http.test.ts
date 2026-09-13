@@ -10,6 +10,8 @@ import {WorkspaceManager} from '../server/services/workspaceManager.js';
 import {RuntimeManager} from '../server/services/runtimeManager.js';
 import {SecretService} from '../server/services/secretService.js';
 import {ValidatorEngine} from '../server/services/validatorEngine.js';
+import {RunService} from '../server/services/runService.js';
+import {AgentEngine} from '../server/agent-engine/agentEngine.js';
 import type {Server} from 'node:http';
 
 let server:Server, base:string, tokenA:string, tokenB:string, userA:string, userB:string;
@@ -514,5 +516,168 @@ test('Cloudflare Direct Upload does not treat public source folder as build arti
     db.prepare('DELETE FROM user_secrets WHERE user_id=? AND service_key=?').run(userA,'integration:cloudflare');
     db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
   }
+});
+
+function insertLifecycleProposal(projectId:string, runId:string, files:any[], shipRequested=false) {
+  const now = new Date().toISOString();
+  const conversationId = `lifecycle-conv-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const proposalId = `lifecycle-prop-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  db.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)').run(conversationId,projectId,'Lifecycle',now,now);
+  const metadata = {runId, workflow:{runId,status:'waiting_approval',shipRequested}, originalRequest:'lifecycle test', proposal:{id:proposalId,status:'pending',summary:'Lifecycle proposal',files}};
+  db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent','proposal',?,?)").run(`lifecycle-msg-${Date.now()}-${Math.random().toString(16).slice(2)}`,conversationId,JSON.stringify(metadata),now);
+  return {conversationId,proposalId};
+}
+
+function createLifecycleProject(label:string) {
+  const projectId = `${label}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,?,'novo',?,?)")
+    .run(projectId,userA,`ws-${userA}`,label,now,now);
+  return projectId;
+}
+
+function configureLifecycleProfile(userId:string, profile:'BASE_FREE'|'EXPERT_PAID', providerKey:string, modelId:string, maxCost=0.01) {
+  const now = new Date().toISOString();
+  db.prepare("UPDATE providers SET is_configured=1, connection_status='connected', model_id=? WHERE user_id=? AND provider_key=?").run(modelId,userId,providerKey);
+  SecretService.saveSecret(userId, providerKey, `${providerKey}-secret`);
+  const profileId = `profile-${userId}-${profile}`;
+  db.prepare('INSERT OR REPLACE INTO model_profiles(id,user_id,profile_key,level,max_attempts,max_cost_usd,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(profileId,userId,profile,profile==='BASE_FREE'?0:1,1,maxCost,1,now,now);
+  db.prepare('DELETE FROM model_candidates WHERE profile_id=?').run(profileId);
+  db.prepare('INSERT INTO model_candidates(id,profile_id,provider_key,model_id,priority,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+    .run(`candidate-${userId}-${profile}-${Date.now()}`,profileId,providerKey,modelId,0,1,now,now);
+}
+
+test('agent proposal lifecycle waits for approval instead of completing run', async (t) => {
+  process.env.AGENT_ENGINE_ENABLED='true';
+  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>({replyText:'proposal',mode:'auto',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',proposal:{id:'prop-wait',summary:'wait',requiresConfirmation:true,files:[{path:'index.html',action:'modify',content:'<html></html>'}],status:'pending'},build:{summary:'wait',explanation:'wait',files:[{path:'index.html',action:'modify',content:'<html></html>'}]},usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any));
+  const projectId=createLifecycleProject('wait-approval');
+  try {
+    const r=await fetch(`${base}/conversations/${projectId}/messages`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({content:'crie uma tela visual',mode:'auto'})});
+    assert.equal(r.status,200);
+    const body=await r.json();
+    const run=db.prepare('SELECT status,finished_at FROM agent_runs WHERE id=?').get(body.agentMessage.metadata.workflow.runId) as any;
+    assert.equal(run.status,'waiting_approval');
+    assert.equal(run.finished_at,null);
+    assert.equal(body.proposal.status,'pending');
+  } finally { delete process.env.AGENT_ENGINE_ENABLED; WorkspaceManager.deleteProject(projectId); db.prepare('DELETE FROM projects WHERE id=?').run(projectId); }
+});
+
+test('rejecting proposal closes run as rejected without validation or repair invocation', async () => {
+  const projectId=createLifecycleProject('reject-proposal');
+  const {runId}=RunService.start(userA,projectId,`conv-placeholder-${Date.now()}`,'auto',0.5);RunService.waitForApproval(runId);
+  const {proposalId}=insertLifecycleProposal(projectId,runId,[{path:'index.html',action:'modify',content:'<html></html>'}]);
+  const beforeInv=(db.prepare('SELECT COUNT(*) c FROM model_invocations WHERE run_id=?').get(runId) as any).c;
+  try {
+    const r=await fetch(`${base}/conversations/${projectId}/reject-proposal`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({proposalId})});
+    assert.equal(r.status,200);
+    const run=db.prepare('SELECT status,finished_at FROM agent_runs WHERE id=?').get(runId) as any;
+    assert.equal(run.status,'rejected');
+    assert.ok(run.finished_at);
+    assert.equal((db.prepare('SELECT COUNT(*) c FROM model_invocations WHERE run_id=?').get(runId) as any).c,beforeInv);
+    assert.equal((db.prepare('SELECT COUNT(*) c FROM verifications WHERE project_id=?').get(projectId) as any).c,0);
+  } finally { WorkspaceManager.deleteProject(projectId); db.prepare('DELETE FROM projects WHERE id=?').run(projectId); }
+});
+
+test('approving proposal with passing validator completes waiting run without repair', async () => {
+  const projectId=createLifecycleProject('approval-pass');
+  const {runId}=RunService.start(userA,projectId,`conv-placeholder-${Date.now()}`,'auto',0.5);RunService.waitForApproval(runId);
+  const {proposalId}=insertLifecycleProposal(projectId,runId,[{path:'index.html',action:'modify',content:'<html></html>'},{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(0)"'}})}]);
+  try {
+    const r=await fetch(`${base}/conversations/${projectId}/apply-proposal`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({proposalId,summary:'pass'})});
+    assert.equal(r.status,200);
+    const run=db.prepare('SELECT status,finished_at FROM agent_runs WHERE id=?').get(runId) as any;
+    assert.equal(run.status,'completed');
+    assert.ok(run.finished_at);
+    assert.equal((db.prepare("SELECT COUNT(*) c FROM agent_steps WHERE run_id=? AND title LIKE 'Corrigir falha%'").get(runId) as any).c,0);
+  } finally { WorkspaceManager.deleteProject(projectId); db.prepare('DELETE FROM projects WHERE id=?').run(projectId); }
+});
+
+test('approved publish proposal creates SHIP only after validation passes', async () => {
+  const projectId=createLifecycleProject('approval-ship');
+  const {runId}=RunService.start(userA,projectId,`conv-placeholder-${Date.now()}`,'publish',0.5);RunService.waitForApproval(runId);
+  const {proposalId}=insertLifecycleProposal(projectId,runId,[{path:'index.html',action:'modify',content:'<html></html>'},{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(0)"'}})}],true);
+  try {
+    assert.equal((db.prepare("SELECT COUNT(*) c FROM agent_steps WHERE run_id=? AND agent_key='SHIP'").get(runId) as any).c,0);
+    const r=await fetch(`${base}/conversations/${projectId}/apply-proposal`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({proposalId,summary:'publish pass'})});
+    assert.equal(r.status,200);
+    const ship=db.prepare("SELECT status,order_index FROM agent_steps WHERE run_id=? AND agent_key='SHIP'").get(runId) as any;
+    assert.equal(ship.status,'completed');
+    assert.equal((db.prepare('SELECT status FROM agent_runs WHERE id=?').get(runId) as any).status,'completed');
+  } finally { WorkspaceManager.deleteProject(projectId); db.prepare('DELETE FROM projects WHERE id=?').run(projectId); }
+});
+
+test('validator fail triggers one bounded FORGE repair and completes when revalidation passes', async (t) => {
+  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>({replyText:'repair',mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',build:{summary:'repair',explanation:'repair',files:[{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(0)"'}})},{path:'index.html',action:'modify',content:'<html><body>fixed</body></html>'}]},proposal:{id:'repair-prop',summary:'repair',requiresConfirmation:false,files:[{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(0)"'}})},{path:'index.html',action:'modify',content:'<html><body>fixed</body></html>'}],status:'pending'},usage:{inputTokens:1,outputTokens:1,billedCostUsd:0.001}} as any));
+  const projectId=createLifecycleProject('repair-pass');
+  const {runId}=RunService.start(userA,projectId,`conv-placeholder-${Date.now()}`,'auto',0.5);RunService.waitForApproval(runId);
+  const {proposalId}=insertLifecycleProposal(projectId,runId,[{path:'index.html',action:'modify',content:'<html><body>broken</body></html>'},{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(1)"'}})}]);
+  try {
+    const r=await fetch(`${base}/conversations/${projectId}/apply-proposal`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({proposalId,summary:'repair pass'})});
+    assert.equal(r.status,200);
+    const body=await r.json();
+    assert.equal(body.repair.status,'passed');
+    assert.equal((db.prepare('SELECT status FROM agent_runs WHERE id=?').get(runId) as any).status,'completed');
+    assert.equal((db.prepare("SELECT COUNT(*) c FROM agent_steps WHERE run_id=? AND title='Corrigir falha de validação'").get(runId) as any).c,1);
+    const inv=db.prepare('SELECT agent_key,profile_key FROM model_invocations WHERE run_id=?').all(runId) as any[];
+    assert.equal(inv[0].agent_key,'FORGE');
+    assert.equal(inv[0].profile_key,'BASE_FREE');
+  } finally { WorkspaceManager.deleteProject(projectId); db.prepare('DELETE FROM projects WHERE id=?').run(projectId); }
+});
+
+test('validator fail plus repair fail rolls back and does not attempt third repair', async (t) => {
+  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>({replyText:'bad repair',mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',build:{summary:'bad',explanation:'bad',files:[{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(1)"'}})}]},proposal:{id:'repair-bad',summary:'bad',requiresConfirmation:false,files:[{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(1)"'}})}],status:'pending'},usage:{inputTokens:1,outputTokens:1,billedCostUsd:0.001}} as any));
+  const projectId=createLifecycleProject('repair-fail');
+  WorkspaceManager.writeFile(projectId,'index.html','<html><body>original</body></html>');
+  const {runId}=RunService.start(userA,projectId,`conv-placeholder-${Date.now()}`,'auto',0.5);RunService.waitForApproval(runId);
+  const {proposalId}=insertLifecycleProposal(projectId,runId,[{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(1)"'}})}]);
+  try {
+    const r=await fetch(`${base}/conversations/${projectId}/apply-proposal`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({proposalId,summary:'repair fail'})});
+    assert.equal(r.status,422);
+    assert.equal((db.prepare('SELECT status FROM agent_runs WHERE id=?').get(runId) as any).status,'failed');
+    assert.equal((db.prepare("SELECT COUNT(*) c FROM agent_steps WHERE run_id=? AND title='Corrigir falha de validação'").get(runId) as any).c,1);
+    assert.equal((db.prepare("SELECT COUNT(*) c FROM tool_executions WHERE run_id=? AND tool_key='build'").get(runId) as any).c,2);
+  } finally { WorkspaceManager.deleteProject(projectId); db.prepare('DELETE FROM projects WHERE id=?').run(projectId); }
+});
+
+test('repair escalates only the blocked step to EXPERT and later model step starts BASE_FREE', async (t) => {
+  db.prepare("UPDATE model_profiles SET enabled=0 WHERE user_id=? AND profile_key='BASE_FREE'").run(userA);
+  configureLifecycleProfile(userA,'EXPERT_PAID','cheaper_inference','expert-model',0.01);
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>({replyText:'expert repair',mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'Cheaper',modelUsed:'expert-model',build:{summary:'repair',explanation:'repair',files:[{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(0)"'}})}]},proposal:{id:'repair-expert',summary:'repair',requiresConfirmation:false,files:[{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(0)"'}})}],status:'pending'},usage:{inputTokens:1,outputTokens:1,billedCostUsd:0.001}} as any));
+  const projectId=createLifecycleProject('repair-expert');
+  const {runId}=RunService.start(userA,projectId,`conv-placeholder-${Date.now()}`,'auto',0.5);RunService.waitForApproval(runId);
+  const {proposalId}=insertLifecycleProposal(projectId,runId,[{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(1)"'}})}]);
+  try {
+    const r=await fetch(`${base}/conversations/${projectId}/apply-proposal`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({proposalId,summary:'expert repair'})});
+    assert.equal(r.status,200);
+    const inv=db.prepare('SELECT profile_key FROM model_invocations WHERE run_id=?').all(runId) as any[];
+    assert.ok(inv.some(i=>i.profile_key==='EXPERT_PAID'));
+    const next=RunService.createStep(runId,'SHIP','Depois do repair',RunService.nextOrderIndex(runId),'task',{});
+    db.prepare("UPDATE model_profiles SET enabled=1 WHERE user_id=? AND profile_key='BASE_FREE'").run(userA);
+    configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
+    await AgentEngine.execute({prompt:'ship',mode:'publish',projectId,existingFiles:{},appliedSkills:[],conversationHistory:[],userId:userA,runId,stepId:next},{profile:'BASE_FREE',forcedAgentKey:'SHIP'});
+    const last=db.prepare('SELECT profile_key FROM model_invocations WHERE run_id=? ORDER BY created_at DESC LIMIT 1').get(runId) as any;
+    assert.equal(last.profile_key,'BASE_FREE');
+  } finally { db.prepare("UPDATE model_profiles SET enabled=1 WHERE user_id=? AND profile_key='BASE_FREE'").run(userA); WorkspaceManager.deleteProject(projectId); db.prepare('DELETE FROM projects WHERE id=?').run(projectId); }
+});
+
+test('budget blocks EXPERT repair before provider call and PREMIUM is not automatic', async (t) => {
+  let calls=0;
+  db.prepare("UPDATE model_profiles SET enabled=0 WHERE user_id=? AND profile_key='BASE_FREE'").run(userA);
+  configureLifecycleProfile(userA,'EXPERT_PAID','cheaper_inference','expert-model',1);
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>{calls++;return {} as any;});
+  const projectId=createLifecycleProject('repair-budget');
+  const {runId}=RunService.start(userA,projectId,`conv-placeholder-${Date.now()}`,'auto',0.01);RunService.waitForApproval(runId);
+  const {proposalId}=insertLifecycleProposal(projectId,runId,[{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(1)"'}})}]);
+  try {
+    const r=await fetch(`${base}/conversations/${projectId}/apply-proposal`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({proposalId,summary:'budget'})});
+    assert.equal(r.status,422);
+    assert.equal(calls,0);
+    const profiles=(db.prepare('SELECT DISTINCT profile_key FROM model_invocations WHERE run_id=?').all(runId) as any[]).map(x=>x.profile_key);
+    assert.equal(profiles.includes('PREMIUM_OVERRIDE'),false);
+  } finally { db.prepare("UPDATE model_profiles SET enabled=1 WHERE user_id=? AND profile_key='BASE_FREE'").run(userA); WorkspaceManager.deleteProject(projectId); db.prepare('DELETE FROM projects WHERE id=?').run(projectId); }
 });
 

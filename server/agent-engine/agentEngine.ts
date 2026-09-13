@@ -16,7 +16,7 @@ type Input = {
   signal?: AbortSignal;
 };
 
-type ExecuteOptions = { profile?: ProfileKey; forcedAgentKey?: string };
+type ExecuteOptions = { profile?: ProfileKey; forcedAgentKey?: string; allowExpertEscalation?: boolean; repair?: boolean };
 
 function relevantFiles(files: Record<string, string>, limit: number) {
   return Object.entries(files).slice(0, limit).map(([file, content]) => ({ file, chars: content.length, preview: content.slice(0, 240) }));
@@ -34,14 +34,25 @@ export class AgentEngine {
   static async execute(x: Input, profileOrOptions: ProfileKey | ExecuteOptions = 'BASE_FREE'): Promise<LLMExecutionResult & { agentKey: string; profileKey: ProfileKey }> {
     const options: ExecuteOptions = typeof profileOrOptions === 'string' ? { profile: profileOrOptions } : profileOrOptions;
     const profile = options.profile || 'BASE_FREE';
+    try {
+      return await this.executeWithProfile(x, profile, options);
+    } catch (error: any) {
+      const canEscalate = options.allowExpertEscalation && profile === 'BASE_FREE' && !x.signal?.aborted && /Nenhum modelo disponivel|Nenhum modelo disponível|Nenhum candidate|incompatible|bloqueado|Provider indisponivel|Provider indisponível/i.test(String(error?.message || error));
+      if (!canEscalate) throw error;
+      return await this.executeWithProfile(x, 'EXPERT_PAID', { ...options, profile: 'EXPERT_PAID' });
+    }
+  }
+
+  private static async executeWithProfile(x: Input, profile: ProfileKey, options: ExecuteOptions): Promise<LLMExecutionResult & { agentKey: string; profileKey: ProfileKey }> {
     const agentKey = options.forcedAgentKey || selectAgent(x.mode, x.prompt);
     RunService.assignAgent(x.stepId, agentKey);
     const available = ModelRouter.candidates(x.userId, profile).filter(c => LLMAdapterService.getProviderConfig(c.provider_key, x.userId).isConfigured);
-    const candidates = available.slice(0, Math.max(1, Number(available[0]?.max_attempts || 1)));
-    if (!candidates.length) {
+    if (!available.length) {
+      if (options.allowExpertEscalation) throw new Error(`Nenhum candidate utilizável no perfil ${profile}.`);
       const fallback = await LLMAdapterService.executePrompt({ ...x, providerKey: undefined, allowActiveFallback: false });
       return { ...fallback, agentKey, profileKey: profile };
     }
+    const candidates = available.slice(0, Math.max(1, Number(available[0]?.max_attempts || 1)));
     let last: unknown;
     for (let i = 0; i < candidates.length; i++) {
       x.signal?.throwIfAborted();
@@ -100,7 +111,7 @@ export class AgentEngine {
   }
 }
 
-export type WorkflowResult = LLMExecutionResult & { agentKey: string; profileKey: ProfileKey; workflow: { runId: string; steps: string[]; status: 'completed' | 'failed' | 'aborted' } };
+export type WorkflowResult = LLMExecutionResult & { agentKey: string; profileKey: ProfileKey; workflow: { runId: string; steps: string[]; status: 'waiting_approval' | 'completed' | 'failed' | 'aborted'; shipRequested?: boolean } };
 
 export class AgentWorkflowEngine extends AgentEngine {
   static async executeWorkflow(x: Input): Promise<WorkflowResult> {
@@ -112,7 +123,7 @@ export class AgentWorkflowEngine extends AgentEngine {
       snippets: relevantFiles(x.existingFiles, 12),
       constraints: ['Não carregar projeto inteiro para o agente', 'Não publicar sem solicitação explícita'],
     }));
-    let order = 1;
+    let order = RunService.nextOrderIndex(x.runId);
 
     if (needsStudio(x.prompt, x.mode)) {
       const studio = RunService.createStep(x.runId, 'STUDIO', 'Definir critérios visuais aplicáveis', order++, 'local', RunService.context('local', {
@@ -162,16 +173,6 @@ export class AgentWorkflowEngine extends AgentEngine {
     steps.push(sentinelStatus);
     RunService.finishStep(sentinelStatus, 'completed');
 
-    if (needsShip(x.prompt, x.mode)) {
-      const ship = RunService.createStep(x.runId, 'SHIP', 'Preparar publicação solicitada', order++, 'task', {
-        requested: true,
-        status: 'waiting_for_publish_adapter',
-        constraints: ['SHIP não publica sem adapter/credencial real'],
-      });
-      steps.push(ship);
-      RunService.finishStep(ship, 'completed');
-    }
-
-    return { ...result, workflow: { runId: x.runId, steps, status: result.hasErrors ? 'failed' : 'completed' } };
+    return { ...result, workflow: { runId: x.runId, steps, status: result.hasErrors ? 'failed' : result.proposal ? 'waiting_approval' : 'completed', shipRequested: needsShip(x.prompt, x.mode) } };
   }
 }
