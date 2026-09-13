@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import {db} from '../db/index.js';
-export type RunStatus='running'|'waiting_approval'|'completed'|'failed'|'aborted'|'rejected';
+export type RunStatus='running'|'waiting_approval'|'needs_verification'|'completed'|'failed'|'aborted'|'rejected';
 export type StepStatus='completed'|'failed'|'aborted'|'rejected';
 export class RunService{
   static start(userId:string,projectId:string,conversationId:string,mode:string,budget=.5){
