@@ -88,7 +88,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           id="btn-sidebar-new-project"
           onClick={onOpenNewProject}
           title={collapsed?'Novo Projeto':undefined}
-          className={`w-full py-2 ${collapsed?'px-2':'px-3'} rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-semibold text-xs flex items-center justify-center gap-1.5 shadow-sm transition cursor-pointer"
+          className={`w-full py-2 ${collapsed?'px-2':'px-3'} rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-semibold text-xs flex items-center justify-center gap-1.5 shadow-sm transition cursor-pointer`}
         >
           <Plus size={15} />
           {!collapsed&&'Novo Projeto'}
