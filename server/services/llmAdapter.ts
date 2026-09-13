@@ -1431,9 +1431,18 @@ Responda sempre em português claro, elegante e profissional.`;
 
     // 3. PLAN MODE HANDLING
     if (mode === 'plan') {
-      let plan: PlanOutput | undefined;
-      if (structured && (structured.objective || structured.plan)) {
-        plan = this.normalizePlanOutput(structured.plan || structured);
+      let plan: PlanOutput | undefined = this.extractPlan(content) || undefined;
+      if (!plan) {
+        const clean = content.replace(/```[\s\S]*?```/g, ' ').replace(/\s+/g, ' ').trim();
+        plan = {
+          objective: clean.slice(0, 500) || 'Implementar a solicitação do usuário',
+          scope_in: clean.slice(0, 2500) || 'Implementação da solicitação aprovada.',
+          scope_out: '',
+          files_affected: [],
+          integrations: [],
+          risks: [],
+          acceptance_criteria: ['Implementação funcional', 'Validação sem erros críticos'],
+        };
       }
       return {
         replyText: content,
