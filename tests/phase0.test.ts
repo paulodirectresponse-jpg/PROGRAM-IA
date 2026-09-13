@@ -58,6 +58,42 @@ test('phase0 preview-only index is not treated as implicit application architect
   assert.deepEqual(legacy,['index.html']);
 });
 
+test('phase0 atomic builder emits live progress for every generated file', async (t) => {
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    const target=String(options.prompt).match(/ARQUIVO ALVO:\s*([^\n]+)/)?.[1]?.trim() || 'unknown.ts';
+    return {
+      replyText:JSON.stringify({files:[{path:target,action:'create',content:`export const value = "${target}";`}]}),
+      mode:'build',
+      decisionType:'change',
+      isDemonstrativeFallback:false,
+      providerUsed:'Mock',
+      modelUsed:'mock',
+      hasErrors:false,
+      build:{summary:'ok',explanation:'ok',files:[{path:target,action:'create',content:`export const value = "${target}";`}]},
+      usage:{inputTokens:1,outputTokens:1,billedCostUsd:0},
+    } as any;
+  });
+  const events:any[]=[];
+  const files=['src/domain/Product.ts','src/services/products.ts','src/features/ProductForm.tsx'];
+  const result=await LLMAdapterService.buildApprovedPlanReliably({
+    projectId:'phase0-builder',
+    providerKey:'mock',
+    modelId:'mock',
+    userId:'phase0-user',
+    existingFiles:{},
+    requestedFiles:files,
+    objective:'Construir produtos',
+    acceptanceCriteria:['Cadastro funcional'],
+    onProgress:(event)=>events.push(event),
+  });
+  assert.equal(result.hasErrors,false);
+  assert.equal(result.build?.files.length,3);
+  assert.deepEqual(events.filter(event=>event.type==='file_started').map(event=>event.path),files);
+  assert.deepEqual(events.filter(event=>event.type==='file_completed').map(event=>event.path),files);
+  assert.equal(events.at(-1)?.index,3);
+  assert.equal(events.at(-1)?.total,3);
+});
+
 test('phase0 retry controller prevents blind repetition and recommends strategy changes', () => {
   const first={failureKind:'operational' as const,errorMessage:'upstream timeout 180000ms',strategy:'same_candidate'};
   const firstDecision=ProgressRetryController.decide(first,[],{attempt:1,maxAttempts:3,hasNextCandidate:false,canEscalate:true});
