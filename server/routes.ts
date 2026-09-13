@@ -265,29 +265,6 @@ router.post('/secrets', requireAuth, (req: Request, res: Response) => {
   }
 });
 
-router.post('/secrets/test', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const { providerKey, secretValue, baseUrl, modelId } = req.body;
-    if (!providerKey) {
-      return res.status(400).json({ error: 'Provedor Ã© obrigatÃ³rio para teste.' });
-    }
-
-    const result = await SecretService.testConnection(req.user!.id, providerKey, {
-      apiKey: secretValue,
-      baseUrl,
-      modelId,
-    });
-
-    res.json(result);
-  } catch (err: any) {
-    res.status(500).json({
-      success: false,
-      code: 'network_error',
-      message: `Erro interno ao testar conexÃ£o: ${err.message}`,
-    });
-  }
-});
-
 router.delete('/secrets/:providerKey', requireAuth, (req: Request, res: Response) => {
   try {
     SecretService.deleteSecret(req.user!.id, req.params.providerKey);
