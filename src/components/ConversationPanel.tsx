@@ -31,6 +31,7 @@ interface ConversationPanelProps {
   isLoading: boolean;
   activeAgentTrace?: any[];
   activeAgentRunStatus?: string | null;
+  activeAgentRun?: any | null;
   onContinueRun?: () => void;
   onAbort: () => void;
   availableSkills: Skill[];
@@ -49,6 +50,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   isLoading,
   activeAgentTrace = [],
   activeAgentRunStatus = null,
+  activeAgentRun = null,
   onContinueRun,
   onAbort,
   availableSkills,
@@ -60,6 +62,25 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   const [showAdvancedModes, setShowAdvancedModes] = useState(false);
   const [expandedDiffs, setExpandedDiffs] = useState<Record<string, boolean>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [clockNow,setClockNow]=useState(()=>Date.now());
+
+  useEffect(()=>{
+    if(activeAgentRunStatus!=='running')return;
+    setClockNow(Date.now());
+    const timer=window.setInterval(()=>setClockNow(Date.now()),1000);
+    return()=>window.clearInterval(timer);
+  },[activeAgentRunStatus]);
+
+  const elapsed=(start?:string|null,end?:string|null)=>{
+    if(!start)return '00:00';
+    const startMs=new Date(start).getTime();
+    const endMs=end?new Date(end).getTime():clockNow;
+    const seconds=Math.max(0,Math.floor((endMs-startMs)/1000));
+    const minutes=Math.floor(seconds/60);
+    const rest=seconds%60;
+    return `${String(minutes).padStart(2,'0')}:${String(rest).padStart(2,'0')}`;
+  };
+  const executionBusy=isLoading||activeAgentRunStatus==='running';
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -67,7 +88,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputText.trim() || isLoading || !canSend) return;
+    if (!inputText.trim() || executionBusy || !canSend) return;
 
     // Detect @skill mentions in message
     const mentionedSkills: string[] = [...selectedSkills];
@@ -351,7 +372,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                           type="button"
                           id={`btn-apply-proposal-${proposal.id}`}
                           onClick={() => onApplyProposal(proposal)}
-                          disabled={isLoading}
+                          disabled={executionBusy}
                           className="flex-1 py-1.5 px-3 rounded-md bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
                         >
                           <Check size={14} />
@@ -360,7 +381,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                         {onRejectProposal && <button
                           type="button"
                           onClick={() => onRejectProposal(proposal)}
-                          disabled={isLoading}
+                          disabled={executionBusy}
                           className="py-1.5 px-3 rounded-md border border-slate-700 hover:border-rose-500 text-slate-300 hover:text-rose-300 font-semibold text-xs transition"
                         >
                           <X size={14} /> Rejeitar
@@ -415,7 +436,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                 type="button"
                 id="btn-approve-plan"
                 onClick={() => onApprovePlan(activePlan.id)}
-                disabled={isLoading}
+                disabled={executionBusy}
                 className="flex-1 py-1.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
               >
                 <CheckCircle2 size={14} />
@@ -425,21 +446,27 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
           </div>
         )}
 
-        {/* Loading Indicator with Abort Button */}
+        {/* Persistent Agent Timeline */}
         {(isLoading || activeAgentRunStatus === 'running' || ((activeAgentRunStatus === 'failed' || activeAgentRunStatus === 'aborted') && activeAgentTrace.length > 0)) && (
-          <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 text-xs text-cyan-300 space-y-2">
+          <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 text-xs text-cyan-300 space-y-2.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
-                <span>{
-                  activeAgentRunStatus === 'running' && !isLoading
-                    ? 'Execução continua ativa no servidor...'
-                    : activeAgentRunStatus === 'failed'
-                      ? 'A execução parou com erro. O progresso concluído foi preservado.'
-                      : activeAgentRunStatus === 'aborted'
-                        ? 'A execução foi interrompida. O progresso concluído foi preservado.'
-                        : `Processando no modo ${currentModeInfo.label}...`
-                }</span>
+                <div>
+                  <div>{
+                    activeAgentRunStatus === 'running' && !isLoading
+                      ? 'Execução continua ativa no servidor...'
+                      : activeAgentRunStatus === 'failed'
+                        ? 'A execução parou com erro. O progresso concluído foi preservado.'
+                        : activeAgentRunStatus === 'aborted'
+                          ? 'A execução foi interrompida. O progresso concluído foi preservado.'
+                          : `Processando no modo ${currentModeInfo.label}...`
+                  }</div>
+                  {activeAgentRun?.created_at&&<div className="mt-0.5 font-mono text-[9px] text-slate-500">
+                    total {elapsed(activeAgentRun.created_at,activeAgentRun.status==='running'?null:activeAgentRun.finished_at)}
+                    {activeAgentRun?.id&&<> · {String(activeAgentRun.id).slice(-8)}</>}
+                  </div>}
+                </div>
               </div>
               {activeAgentRunStatus === 'running' || isLoading ? (
                 <button
@@ -463,19 +490,42 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
               ) : null}
             </div>
             {Array.isArray(activeAgentTrace) && activeAgentTrace.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {activeAgentTrace.map((step:any) => (
-                  <span key={step.id} className={`rounded border px-1.5 py-0.5 text-[9px] font-mono ${
+              <div className="space-y-1.5">
+                {activeAgentTrace.map((step:any,index:number) => {
+                  const files=Array.isArray(step.context?.files)?step.context.files:[];
+                  const running=step.status==='running';
+                  return <div key={step.id} className={`rounded-lg border px-2 py-1.5 ${
                     step.status === 'completed'
-                      ? 'border-emerald-900/70 bg-emerald-950/30 text-emerald-300'
+                      ? 'border-emerald-900/60 bg-emerald-950/20'
                       : step.status === 'failed'
-                        ? 'border-rose-900/70 bg-rose-950/30 text-rose-300'
-                        : 'border-cyan-900/70 bg-cyan-950/30 text-cyan-300'
+                        ? 'border-rose-900/60 bg-rose-950/20'
+                        : step.status === 'aborted'
+                          ? 'border-slate-800 bg-slate-950/50'
+                          : 'border-cyan-900/60 bg-cyan-950/20'
                   }`}>
-                    {step.agent_key} · {step.status}
-                    {step.attempt_count > 0 ? ` · ${step.attempt_count} tent.` : ''}
-                  </span>
-                ))}
+                    <div className="flex items-center justify-between gap-2 text-[9px] font-mono">
+                      <span className={step.status==='completed'?'text-emerald-300':step.status==='failed'?'text-rose-300':step.status==='aborted'?'text-slate-500':'text-cyan-300'}>
+                        {String(index+1).padStart(2,'0')} · {step.agent_key} · {step.status}
+                      </span>
+                      <span className="text-slate-500">
+                        {elapsed(step.created_at,running?null:step.finished_at)}
+                        {step.attempt_count>0?` · ${step.attempt_count} tent.`:''}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 text-[9px] text-slate-500">{step.title}</div>
+                    {Array.isArray(step.invocations)&&step.invocations.length>0&&<div className="mt-1 space-y-0.5">
+                      {step.invocations.map((inv:any)=><div key={inv.id} className="text-[9px] font-mono text-slate-500">
+                        <span className={inv.status==='success'?'text-emerald-400':inv.status==='failed'?'text-rose-400':'text-slate-500'}>{inv.status}</span>
+                        {' · '}{inv.profile_key}/{inv.provider_key}/{inv.model_id}
+                        {Number.isFinite(Number(inv.latency_ms))?` · ${Math.round(Number(inv.latency_ms)/1000)}s`:''}
+                        {inv.error_code?` · ${inv.error_code}`:''}
+                      </div>)}
+                    </div>}
+                    {files.length>0&&<div className="mt-1 flex flex-wrap gap-1">
+                      {files.map((file:string)=><span key={file} className="inline-flex items-center gap-1 rounded border border-slate-800 bg-slate-950 px-1 py-0.5 text-[9px] font-mono text-cyan-400"><FileCode2 size={9}/>{file}</span>)}
+                    </div>}
+                  </div>;
+                })}
               </div>
             )}
           </div>
@@ -562,7 +612,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
             <button
               type="submit"
               id="btn-send-message"
-              disabled={!inputText.trim() || isLoading || !canSend}
+              disabled={!inputText.trim() || executionBusy || !canSend}
               className="p-1.5 rounded bg-cyan-600 hover:bg-cyan-500 disabled:opacity-30 disabled:pointer-events-none text-slate-950 font-bold transition cursor-pointer"
             >
               <Send size={13} />
