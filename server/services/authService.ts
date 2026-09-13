@@ -49,33 +49,6 @@ export class AuthService {
   }
 
   /**
-   * Hash a password securely with salt using scrypt (Argon2-comparable memory-hard hashing)
-   */
-  static hashPassword(password: string): string {
-    const salt = crypto.randomBytes(16).toString('hex');
-    const derivedKey = crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 });
-    return `scrypt$${salt}$${derivedKey.toString('hex')}`;
-  }
-
-  /**
-   * Verify password against stored hash using constant-time comparison
-   */
-  static verifyPassword(password: string, storedHash: string): boolean {
-    try {
-      const parts = storedHash.split('$');
-      if (parts.length !== 3 || parts[0] !== 'scrypt') {
-        return false;
-      }
-      const salt = parts[1];
-      const originalKey = Buffer.from(parts[2], 'hex');
-      const derivedKey = crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 });
-      return crypto.timingSafeEqual(originalKey, derivedKey);
-    } catch {
-      return false;
-    }
-  }
-
-  /**
    * Check and record login rate limiting
    */
   static checkRateLimit(key: string): { allowed: boolean; waitSeconds?: number } {
@@ -98,52 +71,6 @@ export class AuthService {
 
   static resetRateLimit(key: string): void {
     loginAttempts.delete(key);
-  }
-
-  /**
-   * Create a new user with validation
-   */
-  static register(email: string, name: string, password: string): AuthUser {
-    const normalizedEmail = email.trim().toLowerCase();
-    if (!normalizedEmail || !normalizedEmail.includes('@') || !normalizedEmail.includes('.')) {
-      throw new Error('Formato de e-mail inválido.');
-    }
-    if (!password || password.length < 8) {
-      throw new Error('A senha deve conter no mínimo 8 caracteres.');
-    }
-    const cleanName = name.trim() || normalizedEmail.split('@')[0];
-
-    const existing = db.prepare('SELECT id FROM users WHERE LOWER(email) = ?').get(normalizedEmail);
-    if (existing) {
-      throw new Error('Este endereço de e-mail já está em uso.');
-    }
-
-    const userId = 'usr-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex');
-    const passwordHash = this.hashPassword(password);
-    const now = new Date().toISOString();
-
-    db.prepare(`
-      INSERT INTO users (id, email, name, password_hash, role, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'developer', ?, ?)
-    `).run(userId, normalizedEmail, cleanName, passwordHash, now, now);
-
-    // Create user default workspace
-    const wsId = 'ws-' + userId;
-    db.prepare(`
-      INSERT INTO workspaces (id, user_id, name, root_path, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(wsId, userId, `${cleanName}'s Workspace`, `/workspace/${userId}`, now);
-
-    // Seed user standard skills & default providers
-    this.seedUserData(userId);
-
-    return {
-      id: userId,
-      email: normalizedEmail,
-      name: cleanName,
-      role: 'developer',
-      created_at: now,
-    };
   }
 
   /**
@@ -192,12 +119,10 @@ export class AuthService {
       const cleanName = name.trim() || normalizedEmail.split('@')[0];
       const userId = stableUserId;
       const now = new Date().toISOString();
-      const fakePassHash = this.hashPassword(crypto.randomBytes(48).toString('hex'));
-
       db.prepare(`
-        INSERT INTO users (id, email, name, password_hash, role, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'developer', ?, ?)
-      `).run(userId, normalizedEmail, cleanName, fakePassHash, now, now);
+        INSERT INTO users (id, email, name, role, created_at, updated_at)
+        VALUES (?, ?, ?, 'developer', ?, ?)
+      `).run(userId, normalizedEmail, cleanName, now, now);
 
       const wsId = 'ws-' + userId;
       db.prepare(`
@@ -220,42 +145,6 @@ export class AuthService {
     this.seedUserData(user.id);
     const session = this.createSession(user.id, userAgent, ipAddress);
     return { user, session, legacyUserIds };
-  }
-
-  /**
-   * Authenticate user and generate persistent session
-   */
-  static login(
-    email: string,
-    password: string,
-    userAgent: string = '',
-    ipAddress: string = ''
-  ): { user: AuthUser; session: SessionInfo } {
-    const normalizedEmail = email.trim().toLowerCase();
-    const user = db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(normalizedEmail) as any;
-
-    // Generic error to not disclose whether user exists
-    if (!user || !user.password_hash) {
-      throw new Error('Credenciais inválidas. Verifique seu e-mail e senha.');
-    }
-
-    const valid = this.verifyPassword(password, user.password_hash);
-    if (!valid) {
-      throw new Error('Credenciais inválidas. Verifique seu e-mail e senha.');
-    }
-
-    const session = this.createSession(user.id, userAgent, ipAddress);
-
-    return {
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role || 'developer',
-        created_at: user.created_at,
-      },
-      session,
-    };
   }
 
   /**
@@ -342,27 +231,6 @@ export class AuthService {
    * Invalidate all sessions for user
    */
   static logoutAllSessions(userId: string): void {
-    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
-  }
-
-  /**
-   * Change user password
-   */
-  static changePassword(userId: string, currentPass: string, newPass: string): void {
-    const user = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(userId) as any;
-    if (!user || !user.password_hash) {
-      throw new Error('Usuário não localizado.');
-    }
-    if (!this.verifyPassword(currentPass, user.password_hash)) {
-      throw new Error('Senha atual incorreta.');
-    }
-    if (!newPass || newPass.length < 8) {
-      throw new Error('A nova senha deve ter no mínimo 8 caracteres.');
-    }
-    const newHash = this.hashPassword(newPass);
-    const now = new Date().toISOString();
-    db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(newHash, now, userId);
-    // Invalidate other sessions
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
   }
 
