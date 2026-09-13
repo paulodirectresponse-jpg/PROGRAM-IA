@@ -523,10 +523,12 @@ Criar API segura
 
     test('6.7: Exclusão completa de projeto cascateia banco e remove arquivos do disco', () => {
       const projId = 'proj-delete-test-' + Date.now();
+      const owner = AuthService.firebaseLogin(`delete-${Date.now()}@forge.dev`, 'Delete Owner', `delete-firebase-${Date.now()}`).user;
+      const workspaceId = (db.prepare('SELECT id FROM workspaces WHERE user_id = ? LIMIT 1').get(owner.id) as any).id;
       db.prepare(`
         INSERT INTO projects (id, workspace_id, name, description, branch, origin, user_id, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-      `).run(projId, 'ws-default', 'Projeto Para Excluir', 'Teste de deleção em cascata', 'main', 'novo', 'user-default');
+      `).run(projId, workspaceId, 'Projeto Para Excluir', 'Teste de deleção em cascata', 'main', 'novo', owner.id);
 
       // Create files
       WorkspaceManager.writeFile(projId, 'src/App.tsx', 'export const App = () => <h1>Hello</h1>;');
