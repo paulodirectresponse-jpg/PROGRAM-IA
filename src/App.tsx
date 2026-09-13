@@ -446,6 +446,33 @@ export default function App() {
     setIsLoading(false);
   };
 
+  const handleContinueAgentRun = async () => {
+    if (!activeProject) return;
+    try {
+      const runsRes = await fetch(`/api/agent-runs?projectId=${encodeURIComponent(activeProject.id)}`);
+      const runsData = await runsRes.json();
+      const run = Array.isArray(runsData.runs)
+        ? runsData.runs.find((item:any) => ['failed','aborted'].includes(item.status) && Array.isArray(item.trace) && item.trace.some((step:any)=>step.agent_key==='SCOUT'&&step.status==='completed'))
+        : null;
+      if (!run) {
+        setToastMessage({text:'Não há uma execução recuperável para continuar.',type:'error'});
+        return;
+      }
+      setIsLoading(true);
+      const res = await fetch(`/api/agent-runs/${run.id}/continue`, { method:'POST' });
+      const data = await readApiPayload(res);
+      if (!res.ok) throw new Error(data.error || 'Não foi possível continuar a execução.');
+      if (data.agentMessage) setMessages(prev => [...prev, data.agentMessage]);
+      await loadProjectDetails(activeProject.id);
+      setPreviewNonce(Date.now());
+      setToastMessage({text:'Execução retomada a partir do progresso salvo.',type:'success'});
+    } catch (err:any) {
+      setToastMessage({text:err?.message || 'Não foi possível continuar a execução.',type:'error'});
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Restore checkpoint
   const handleRestoreCheckpoint = async (checkpointId: string) => {
     if (!activeProject) return;
@@ -618,6 +645,7 @@ export default function App() {
         isLoading={isLoading}
         activeAgentTrace={activeAgentTrace}
         activeAgentRunStatus={activeAgentRunStatus}
+        onContinueRun={handleContinueAgentRun}
         onAbort={handleAbort}
         availableSkills={skills}
         canSend={Boolean(activeProject) && !projectLoadError}
