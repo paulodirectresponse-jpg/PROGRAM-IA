@@ -1671,17 +1671,22 @@ Falha concreta: ${errorOutput}`,
           }
           workspaceMutated = false;
           RunService.finishStep(repairStepId, 'completed', { repair: 'passed', checkpointId: repairCheckpointId, profileKey: repairResult.profileKey });
-          if (metadata.workflow?.shipRequested) {
+          if (metadata.workflow?.shipRequested && repairValidation.status === 'passed') {
             const ship = RunService.createStep(workflowRunId, 'SHIP', 'Preparar publicação solicitada após validação', RunService.nextOrderIndex(workflowRunId), 'task', { requested: true, status: 'waiting_for_publish_adapter' });
             RunService.finishStep(ship, 'completed');
           }
-          RunService.finish(workflowRunId, repairStepId, 'completed');
+          if (repairValidation.status === 'passed') RunService.finish(workflowRunId, repairStepId, 'completed');
+          else {
+            RunService.closeDanglingSteps(workflowRunId, 'aborted');
+            RunService.setStatus(workflowRunId, 'needs_verification', true);
+          }
           metadata.proposal.status = 'applied';
           metadata.validation = repairValidation;
           metadata.initialValidation = validation;
           metadata.repair = { attempted: true, status: 'passed', checkpointId: repairCheckpointId, profileKey: repairResult.profileKey, files: repairFiles.map((file: any) => file.path) };
           metadata.checkpointId = repairCheckpointId;
           metadata.hasErrors = false;
+          if (metadata.workflow) metadata.workflow.status = repairValidation.status==='passed'?'completed':'needs_verification';
           requirementUpdate(repairValidation.status==='passed'?'verified':'implemented',{
             type:repairValidation.status==='passed'?'repair_verified':'repair_unverified',
             validation:repairValidation,
@@ -1689,7 +1694,16 @@ Falha concreta: ${errorOutput}`,
           },repairFiles.map((file:any)=>file.path));
           if (metadata.workflow) metadata.workflow.trace = RunService.trace(workflowRunId);
           db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
-          return res.json({ success: true, checkpointId: repairCheckpointId, validation: repairValidation, repair: metadata.repair, message: 'Alterações aplicadas após repair automático e verificadas com sucesso.' });
+          return res.json({
+            success: true,
+            checkpointId: repairCheckpointId,
+            validation: repairValidation,
+            repair: metadata.repair,
+            needsVerification: repairValidation.status !== 'passed',
+            message: repairValidation.status === 'passed'
+              ? 'Alterações aplicadas após repair automático e verificadas com sucesso.'
+              : 'Alterações aplicadas após repair, mas ainda sem verificação automática suficiente. A execução permanece como needs_verification.',
+          });
         } catch (repairError: any) {
           if (workspaceMutated && repairRollbackId) { try { WorkspaceManager.restoreCheckpoint(projectId, repairRollbackId); } catch {} }
           workspaceMutated = false;
@@ -1717,15 +1731,22 @@ Falha concreta: ${errorOutput}`,
       return res.status(422).json({ error: metadata.errorMessage, validation });
     }
 
-    if (metadata.workflow?.shipRequested && workflowRunId) {
+    if (metadata.workflow?.shipRequested && workflowRunId && validation.status === 'passed') {
       const ship = RunService.createStep(workflowRunId, 'SHIP', 'Preparar publicação solicitada após validação', RunService.nextOrderIndex(workflowRunId), 'task', { requested: true, status: 'waiting_for_publish_adapter' });
       RunService.finishStep(ship, 'completed');
     }
-    if (workflowRunId) RunService.finish(workflowRunId, validationStepId || '', 'completed');
+    if (workflowRunId) {
+      if (validation.status === 'passed') RunService.finish(workflowRunId, validationStepId || '', 'completed');
+      else {
+        RunService.closeDanglingSteps(workflowRunId, 'aborted');
+        RunService.setStatus(workflowRunId, 'needs_verification', true);
+      }
+    }
     metadata.proposal.status = 'applied';
     metadata.validation = validation;
     metadata.checkpointId = checkpointId;
     metadata.hasErrors = false;
+    if (metadata.workflow) metadata.workflow.status = validation.status==='passed'?'completed':'needs_verification';
     requirementUpdate(validation.status==='passed'?'verified':'implemented',{
       type:validation.status==='passed'?'validator_verified':'validator_unverified',
       validation,
@@ -1741,8 +1762,9 @@ Falha concreta: ${errorOutput}`,
       success: true,
       checkpointId,
       validation,
+      needsVerification: validation.status !== 'passed',
       message: validation.status === 'unverified'
-        ? 'Alterações aplicadas. Validação automática não disponível para este projeto.'
+        ? 'Alterações aplicadas, mas ainda sem verificação automática suficiente. A execução permanece como needs_verification.'
         : 'Alterações aplicadas e verificadas com sucesso.',
     });
   } catch (err: any) {
