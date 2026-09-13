@@ -9,14 +9,35 @@ export interface LLMRequestMessage {
   content: string;
 }
 
+export interface PlanRequirement {
+  id: string;
+  title: string;
+  description: string;
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  verification: string[];
+}
+
+export interface PlanTask {
+  id: string;
+  title: string;
+  requirement_ids: string[];
+  depends_on: string[];
+}
+
 export interface PlanOutput {
   objective: string;
   scope_in: string;
   scope_out: string;
-  files_affected: string[];
+  architecture_summary: string;
+  existing_files_to_modify: string[];
+  new_files_to_create: string[];
+  files_to_delete: string[];
+  files_affected: string[]; // backward-compatible union of the three lists above
   integrations: string[];
   risks: string[];
   acceptance_criteria: string[];
+  requirements: PlanRequirement[];
+  task_graph: PlanTask[];
 }
 
 export interface FileChangeProposal {
@@ -676,14 +697,54 @@ export class LLMAdapterService {
 
   private static normalizePlanOutput(value: unknown): PlanOutput {
     const plan = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+    const existingFiles = this.normalizePlanList(plan.existing_files_to_modify);
+    const newFiles = this.normalizePlanList(plan.new_files_to_create);
+    const filesToDelete = this.normalizePlanList(plan.files_to_delete);
+    const legacyFiles = this.normalizePlanList(plan.files_affected);
+    const union = [...new Set([...existingFiles, ...newFiles, ...filesToDelete, ...legacyFiles])];
+
+    const rawRequirements = Array.isArray(plan.requirements) ? plan.requirements : [];
+    const criteria = this.normalizePlanList(plan.acceptance_criteria);
+    const requirements: PlanRequirement[] = rawRequirements.length
+      ? rawRequirements.map((item: any, index: number) => ({
+          id: String(item?.id || `REQ-${String(index + 1).padStart(3, '0')}`).toUpperCase(),
+          title: this.normalizePlanText(item?.title || item?.name || item?.description || `Requisito ${index + 1}`),
+          description: this.normalizePlanText(item?.description || item?.title || item?.name || ''),
+          priority: ['critical','high','medium','low'].includes(String(item?.priority || '').toLowerCase())
+            ? String(item.priority).toLowerCase() as PlanRequirement['priority']
+            : 'high',
+          verification: this.normalizePlanList(item?.verification || item?.verification_steps || item?.acceptance_criteria),
+        }))
+      : criteria.map((criterion, index) => ({
+          id: `REQ-${String(index + 1).padStart(3, '0')}`,
+          title: criterion,
+          description: criterion,
+          priority: 'high' as const,
+          verification: [criterion],
+        }));
+
+    const rawTasks = Array.isArray(plan.task_graph) ? plan.task_graph : [];
+    const taskGraph: PlanTask[] = rawTasks.map((item: any, index: number) => ({
+      id: String(item?.id || `TASK-${String(index + 1).padStart(3, '0')}`).toUpperCase(),
+      title: this.normalizePlanText(item?.title || item?.name || item?.description || `Tarefa ${index + 1}`),
+      requirement_ids: this.normalizePlanList(item?.requirement_ids || item?.requirements).map((id) => id.toUpperCase()),
+      depends_on: this.normalizePlanList(item?.depends_on || item?.dependencies).map((id) => id.toUpperCase()),
+    }));
+
     return {
       objective: this.normalizePlanText(plan.objective),
       scope_in: this.normalizePlanText(plan.scope_in),
       scope_out: this.normalizePlanText(plan.scope_out),
-      files_affected: this.normalizePlanList(plan.files_affected),
+      architecture_summary: this.normalizePlanText(plan.architecture_summary || plan.architecture),
+      existing_files_to_modify: existingFiles,
+      new_files_to_create: newFiles,
+      files_to_delete: filesToDelete,
+      files_affected: union,
       integrations: this.normalizePlanList(plan.integrations),
       risks: this.normalizePlanList(plan.risks),
-      acceptance_criteria: this.normalizePlanList(plan.acceptance_criteria),
+      acceptance_criteria: criteria,
+      requirements,
+      task_graph: taskGraph,
     };
   }
 
@@ -713,10 +774,22 @@ export class LLMAdapterService {
         objective: objMatch[1].trim(),
         scope_in: inMatch ? inMatch[1].trim() : '',
         scope_out: outMatch ? outMatch[1].trim() : '',
+        architecture_summary: '',
+        existing_files_to_modify: [],
+        new_files_to_create: [],
+        files_to_delete: [],
         files_affected: [],
         integrations: [],
         risks: [],
         acceptance_criteria: criteria,
+        requirements: criteria.map((criterion, index) => ({
+          id: `REQ-${String(index + 1).padStart(3, '0')}`,
+          title: criterion,
+          description: criterion,
+          priority: 'high',
+          verification: [criterion],
+        })),
+        task_graph: [],
       };
     }
     return null;
@@ -765,7 +838,7 @@ export class LLMAdapterService {
       const expanded = existingPaths
         .filter((path) => prefix && path.startsWith(prefix) && this.isSafeBuildTarget(path))
         .sort((a, b) => this.buildTargetPriority(a) - this.buildTargetPriority(b));
-      for (const path of expanded.slice(0, 4)) add(path);
+      for (const path of expanded) add(path);
     }
 
     const mentionedPathRegex = /(?:^|[\s"'(])([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*\.[a-zA-Z0-9]+)(?=$|[\s"'),:])/g;
@@ -776,11 +849,17 @@ export class LLMAdapterService {
       const core = existingPaths
         .filter((path) => this.isSafeBuildTarget(path))
         .sort((a, b) => this.buildTargetPriority(a) - this.buildTargetPriority(b));
-      for (const path of core.slice(0, 5)) add(path);
+      for (const path of core) add(path);
     }
 
-    if (out.length === 0) add('index.html');
-    return out.sort((a, b) => this.buildTargetPriority(a) - this.buildTargetPriority(b)).slice(0, 8);
+    if (out.length === 0) {
+      // A scratch project may contain only the Forge preview placeholder. Do not
+      // silently force a real application into index.html; the approved plan must
+      // choose the architecture. Keep index.html only as a last-resort target when
+      // it is genuinely the sole existing safe file.
+      if (existingPaths.length === 1 && existingPaths[0] === 'index.html') add('index.html');
+    }
+    return out.sort((a, b) => this.buildTargetPriority(a) - this.buildTargetPriority(b));
   }
 
   private static contextForBuildTarget(existingFiles: Record<string, string>, targetPath: string): Record<string, string> {
@@ -1563,15 +1642,18 @@ Responda sempre em português claro, elegante e profissional.`;
       let plan: PlanOutput | undefined = this.extractPlan(content) || undefined;
       if (!plan) {
         const clean = content.replace(/```[\s\S]*?```/g, ' ').replace(/\s+/g, ' ').trim();
-        plan = {
+        plan = this.normalizePlanOutput({
           objective: clean.slice(0, 500) || 'Implementar a solicitação do usuário',
           scope_in: clean.slice(0, 2500) || 'Implementação da solicitação aprovada.',
           scope_out: '',
-          files_affected: [],
+          architecture_summary: 'Arquitetura ainda não determinada; deve ser escolhida conforme o produto e o workspace, sem preferência por arquivo único.',
+          existing_files_to_modify: [],
+          new_files_to_create: [],
+          files_to_delete: [],
           integrations: [],
           risks: [],
           acceptance_criteria: ['Implementação funcional', 'Validação sem erros críticos'],
-        };
+        });
       }
       return {
         replyText: content,
@@ -1609,18 +1691,21 @@ Responda sempre em português claro, elegante e profissional.`;
     const notice = `> ℹ️ **[PROVEDOR DE IA NÃO CONFIGURADO]**\n> Nenhuma chave foi configurada para o UseOneAI ou Gemini na sua conta. Acesse a aba **Modelos de IA** para adicionar sua chave de API segura.\n\n`;
 
     if (mode === 'plan') {
-      const plan: PlanOutput = {
+      const plan: PlanOutput = this.normalizePlanOutput({
         objective: `Planejamento preliminar: "${prompt.slice(0, 80)}"`,
         scope_in: 'Estruturação conceitual dos componentes e lógica.',
         scope_out: 'Deploy externo e chamadas de produção nesta fase demonstrativa.',
-        files_affected: ['index.html'],
+        architecture_summary: 'A arquitetura deve ser definida pelo pedido; nenhum arquivo ou framework é presumido.',
+        existing_files_to_modify: [],
+        new_files_to_create: [],
+        files_to_delete: [],
         integrations: ['Forge Preview Sandbox', 'Audit Logs'],
         risks: ['Provedor de IA inativo para geração automática de código.'],
         acceptance_criteria: [
           'Configurar chave de API em Modelos de IA.',
           'Interface funcional validada pelo usuário no sandbox.',
         ],
-      };
+      });
 
       const replyText = `${notice}### 📋 Plano Técnico Demonstrativo (Sem Provedor Ativo)
 
