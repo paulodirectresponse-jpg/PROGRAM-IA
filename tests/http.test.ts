@@ -83,6 +83,78 @@ test('failed executed validation rolls an applied proposal back to the exact pre
   assert.equal(metadata.validation.status,'failed');
 });
 
+test('invalid proposal is rejected before mutation and remains pending',async()=>{
+  const now=new Date(Date.now()+2000).toISOString();
+  const conversation=`invalid-proposal-conversation-${Date.now()}`;
+  const proposal=`invalid-proposal-${Date.now()}`;
+  WorkspaceManager.writeFile(id,'index.html','<html><body>INVALID_ACTION_ORIGINAL</body></html>');
+  db.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)')
+    .run(conversation,id,'Invalid proposal preflight',now,now);
+  db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent','proposal',?,?)")
+    .run(
+      `invalid-proposal-message-${Date.now()}`,
+      conversation,
+      JSON.stringify({proposal:{
+        id:proposal,
+        status:'pending',
+        files:[
+          {path:'index.html',action:'execute',content:'<html><body>SHOULD_NOT_APPLY</body></html>'}
+        ]
+      }}),
+      now
+    );
+
+  const response=await fetch(`${base}/conversations/${id}/apply-proposal`,{
+    method:'POST',
+    headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
+    body:JSON.stringify({proposalId:proposal,summary:'Invalid preflight'})
+  });
+  assert.equal(response.status,400);
+  assert.match(WorkspaceManager.readFile(id,'index.html')||'',/INVALID_ACTION_ORIGINAL/);
+  const metadata=JSON.parse((db.prepare("SELECT metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC LIMIT 1").get(conversation) as any).metadata_json);
+  assert.equal(metadata.proposal.status,'pending');
+});
+
+test('unexpected validation exception restores workspace and makes proposal retryable',async()=>{
+  const now=new Date(Date.now()+3000).toISOString();
+  const conversation=`exception-proposal-conversation-${Date.now()}`;
+  const proposal=`exception-proposal-${Date.now()}`;
+  WorkspaceManager.writeFile(id,'index.html','<html><body>EXCEPTION_ORIGINAL</body></html>');
+  db.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)')
+    .run(conversation,id,'Unexpected validation exception',now,now);
+  db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent','proposal',?,?)")
+    .run(
+      `exception-proposal-message-${Date.now()}`,
+      conversation,
+      JSON.stringify({proposal:{
+        id:proposal,
+        status:'pending',
+        files:[
+          {path:'index.html',action:'modify',content:'<html><body>MUTATED_BEFORE_EXCEPTION</body></html>'}
+        ]
+      }}),
+      now
+    );
+
+  const originalValidate=ValidatorEngine.validate;
+  ValidatorEngine.validate=async()=>{ throw new Error('synthetic validator crash'); };
+  try {
+    const response=await fetch(`${base}/conversations/${id}/apply-proposal`,{
+      method:'POST',
+      headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
+      body:JSON.stringify({proposalId:proposal,summary:'Unexpected validator crash'})
+    });
+    assert.equal(response.status,500);
+    assert.match(WorkspaceManager.readFile(id,'index.html')||'',/EXCEPTION_ORIGINAL/);
+    const metadata=JSON.parse((db.prepare("SELECT metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC LIMIT 1").get(conversation) as any).metadata_json);
+    assert.equal(metadata.proposal.status,'pending');
+    assert.equal(metadata.hasErrors,true);
+    assert.match(metadata.errorMessage,/restaurado/i);
+  } finally {
+    ValidatorEngine.validate=originalValidate;
+  }
+});
+
 test('changing model configuration does not mutate another user',async()=>{
   const r=await fetch(`${base}/providers/update`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({providerKey:'useoneai',modelId:'my-model'})});
   assert.equal(r.status,200);
