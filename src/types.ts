@@ -137,6 +137,8 @@ export interface Provider {
   connection_status: 'untested' | 'connected' | 'not_configured' | 'error';
   context_limit: number;
   masked_hint?: string;
+  last_verified_at?: string | null;
+  last_error?: string | null;
   created_at: string;
 }
 
