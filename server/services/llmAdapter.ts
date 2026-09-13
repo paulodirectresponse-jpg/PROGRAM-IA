@@ -56,6 +56,7 @@ export interface LLMExecutionResult {
   invalidResponse?: boolean;
   errorReason?: string;
   usage?: {inputTokens:number;outputTokens:number;billedCostUsd:number};
+  diagnostics?: { strategy?: string; attempts?: number; targets?: string[]; failures?: string[] };
 }
 
 export interface ProviderConnectionTestResult {
@@ -864,6 +865,7 @@ export class LLMAdapterService {
     let billedCostUsd = 0;
     let providerUsed = '';
     let modelUsed = options.modelId;
+    let totalAttempts = 0;
 
     for (const targetPath of targets) {
       options.signal?.throwIfAborted();
@@ -888,6 +890,7 @@ export class LLMAdapterService {
             : 'A resposta anterior não pôde ser convertida em arquivo. Responda SOMENTE com o conteúdo COMPLETO do arquivo alvo. Sem explicação, sem cabeçalho e sem Markdown.',
         ].filter(Boolean).join('\n\n');
 
+        totalAttempts += 1;
         const result = await this.executePrompt({
           prompt,
           mode: 'build',
@@ -939,6 +942,7 @@ export class LLMAdapterService {
         invalidResponse: true,
         errorReason: 'granular_build_failed',
         usage: { inputTokens, outputTokens, billedCostUsd },
+        diagnostics: { strategy: 'atomic_file_build', attempts: totalAttempts, targets, failures },
       };
     }
 
@@ -958,6 +962,7 @@ export class LLMAdapterService {
         files: generated,
       },
       usage: { inputTokens, outputTokens, billedCostUsd },
+      diagnostics: { strategy: 'atomic_file_build', attempts: totalAttempts, targets, failures },
     };
   }
 
