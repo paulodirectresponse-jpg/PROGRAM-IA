@@ -432,6 +432,25 @@ Criar API segura
       assert.equal(plan.acceptance_criteria.length, 2);
     });
 
+    test('4.10: Modo manual Construir prevalece sobre palavras de planejamento no prompt', () => {
+      const resolved = LLMAdapterService.resolveRequestedMode(
+        'Planeje primeiro e depois construa este sistema completo',
+        'build'
+      );
+      assert.equal(resolved, 'build');
+    });
+
+    test('4.11: Somente o modo Automático reclassifica intenção pelo texto', () => {
+      assert.equal(
+        LLMAdapterService.resolveRequestedMode('Planeje a arquitetura do sistema', 'auto'),
+        'plan'
+      );
+      assert.equal(
+        LLMAdapterService.resolveRequestedMode('Publique este projeto no GitHub', 'auto'),
+        'publish'
+      );
+    });
+
     test('4.10: Build aceita aliases comuns de modelos gratuitos', () => {
       const structured = `\`\`\`json
 {
