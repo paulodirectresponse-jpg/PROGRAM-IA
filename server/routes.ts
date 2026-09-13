@@ -763,6 +763,17 @@ router.get('/projects/:id/verifications', requireAuth, requireProjectOwner, (req
 // 5. CONVERSATIONS & CHAT API
 // ==========================================
 
+router.get('/projects/:id/requirements', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  try {
+    res.json({
+      requirements: RequirementLedgerService.list(req.params.id),
+      summary: RequirementLedgerService.summary(req.params.id),
+    });
+  } catch (error:any) {
+    res.status(500).json({error:String(error?.message||error)});
+  }
+});
+
 router.get('/conversations/:projectId', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   try {
     const conversation = db.prepare('SELECT * FROM conversations WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(req.params.projectId) as any;
@@ -771,7 +782,7 @@ router.get('/conversations/:projectId', requireAuth, requireProjectOwner, (req: 
     }
 
     const messages = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC').all(conversation.id);
-    const activePlan = db.prepare('SELECT * FROM plans WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(req.params.projectId);
+    const activePlan = db.prepare("SELECT * FROM plans WHERE project_id = ? AND status='draft' ORDER BY created_at DESC LIMIT 1").get(req.params.projectId);
 
     res.json({ conversation, messages, activePlan });
   } catch (err: any) {
@@ -1250,6 +1261,8 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     let savedPlanId: string | null = null;
     if (result.plan) {
       savedPlanId = 'plan-' + Date.now();
+      db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'")
+        .run(now,projectId);
       db.prepare(`
         INSERT INTO plans (
           id, task_id, project_id, objective, scope_in, scope_out,
@@ -1539,6 +1552,11 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
 
     const checkpointId = WorkspaceManager.createCheckpoint(projectId, summary.slice(0, 100), summary);
     const workflowRunId = metadata.workflow?.runId || metadata.runId || null;
+    const requirementUpdate=(status:'pending'|'implemented'|'verified'|'failed'|'waived',evidence?:any,changedFiles?:string[])=>{
+      if(workflowRunId) RequirementLedgerService.setStatusForRun(workflowRunId,status,evidence,changedFiles);
+      else if(metadata.planId) RequirementLedgerService.setStatusForPlan(projectId,metadata.planId,status,evidence,changedFiles);
+    };
+    requirementUpdate('implemented',{type:'proposal_applied',checkpointId,at:new Date().toISOString()},files.map((file:any)=>file.path));
     if (workflowRunId) RunService.resume(workflowRunId);
     const validationStepId = workflowRunId
       ? RunService.createStep(workflowRunId, 'SENTINEL', 'Executar ValidatorEngine após aplicação', RunService.nextOrderIndex(workflowRunId), 'micro', { proposalId, checkpointId })
@@ -1633,6 +1651,7 @@ Falha concreta: ${errorOutput}`,
             metadata.repair = { attempted: true, status: 'failed', validation: repairValidation, profileKey: repairResult.profileKey };
             metadata.hasErrors = true;
             metadata.errorMessage = 'A proposta e o repair automático falharam na validação; alterações revertidas.';
+            requirementUpdate('failed',{type:'repair_validation_failed',validation:repairValidation,at:new Date().toISOString()},repairFiles.map((file:any)=>file.path));
             if (metadata.workflow) metadata.workflow.trace = RunService.trace(workflowRunId);
             db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
             return res.status(422).json({ error: metadata.errorMessage, validation: repairValidation, repair: metadata.repair });
@@ -1650,6 +1669,11 @@ Falha concreta: ${errorOutput}`,
           metadata.repair = { attempted: true, status: 'passed', checkpointId: repairCheckpointId, profileKey: repairResult.profileKey, files: repairFiles.map((file: any) => file.path) };
           metadata.checkpointId = repairCheckpointId;
           metadata.hasErrors = false;
+          requirementUpdate(repairValidation.status==='passed'?'verified':'implemented',{
+            type:repairValidation.status==='passed'?'repair_verified':'repair_unverified',
+            validation:repairValidation,
+            at:new Date().toISOString(),
+          },repairFiles.map((file:any)=>file.path));
           if (metadata.workflow) metadata.workflow.trace = RunService.trace(workflowRunId);
           db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
           return res.json({ success: true, checkpointId: repairCheckpointId, validation: repairValidation, repair: metadata.repair, message: 'Alterações aplicadas após repair automático e verificadas com sucesso.' });
@@ -1663,6 +1687,7 @@ Falha concreta: ${errorOutput}`,
           metadata.repair = { attempted: true, status: repairError?.name === 'AbortError' ? 'aborted' : 'failed', error: String(repairError?.message || repairError) };
           metadata.hasErrors = true;
           metadata.errorMessage = repairError?.name === 'AbortError' ? 'Repair cancelado.' : 'A alteração foi revertida e o repair automático não conseguiu gerar correção válida.';
+          requirementUpdate('failed',{type:'repair_failed',error:String(repairError?.message||repairError),at:new Date().toISOString()},files.map((file:any)=>file.path));
           if (metadata.workflow) metadata.workflow.trace = RunService.trace(workflowRunId);
           db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
           return res.status(repairError?.name === 'AbortError' ? 499 : 422).json({ error: metadata.errorMessage, validation, repair: metadata.repair });
@@ -1673,6 +1698,7 @@ Falha concreta: ${errorOutput}`,
       metadata.validation = validation;
       metadata.hasErrors = true;
       metadata.errorMessage = 'Uma verificação executada falhou; a alteração foi revertida integralmente.';
+      requirementUpdate('failed',{type:'validation_failed',validation,at:new Date().toISOString()},files.map((file:any)=>file.path));
       if (metadata.workflow && workflowRunId) metadata.workflow.trace = RunService.trace(workflowRunId);
       db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
       return res.status(422).json({ error: metadata.errorMessage, validation });
@@ -1687,6 +1713,13 @@ Falha concreta: ${errorOutput}`,
     metadata.validation = validation;
     metadata.checkpointId = checkpointId;
     metadata.hasErrors = false;
+    requirementUpdate(validation.status==='passed'?'verified':'implemented',{
+      type:validation.status==='passed'?'validator_verified':'validator_unverified',
+      validation,
+      at:new Date().toISOString(),
+    },files.map((file:any)=>file.path));
+    db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'")
+      .run(new Date().toISOString(),projectId);
     if (metadata.workflow && workflowRunId) metadata.workflow.trace = RunService.trace(workflowRunId);
     db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
 
