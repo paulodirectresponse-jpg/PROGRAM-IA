@@ -597,13 +597,44 @@ export class LLMAdapterService {
     };
   }
 
+  private static normalizePlanText(value: unknown): string {
+    if (typeof value === 'string') return value.trim();
+    if (value === null || value === undefined) return '';
+    if (Array.isArray(value)) {
+      return value.map((item) => this.normalizePlanText(item)).filter(Boolean).join('\n');
+    }
+    if (typeof value === 'object') {
+      try { return JSON.stringify(value); } catch { return String(value); }
+    }
+    return String(value);
+  }
+
+  private static normalizePlanList(value: unknown): string[] {
+    if (value === null || value === undefined) return [];
+    const items = Array.isArray(value) ? value : [value];
+    return items.map((item) => this.normalizePlanText(item)).filter(Boolean);
+  }
+
+  private static normalizePlanOutput(value: unknown): PlanOutput {
+    const plan = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+    return {
+      objective: this.normalizePlanText(plan.objective),
+      scope_in: this.normalizePlanText(plan.scope_in),
+      scope_out: this.normalizePlanText(plan.scope_out),
+      files_affected: this.normalizePlanList(plan.files_affected),
+      integrations: this.normalizePlanList(plan.integrations),
+      risks: this.normalizePlanList(plan.risks),
+      acceptance_criteria: this.normalizePlanList(plan.acceptance_criteria),
+    };
+  }
+
   /**
    * Extract plan output from structured or unstructured text
    */
   static extractPlan(text: string): PlanOutput | null {
     const structured = this.extractStructuredJson(text);
     if (structured && (structured.objective || structured.plan)) {
-      return structured.plan || structured;
+      return this.normalizePlanOutput(structured.plan || structured);
     }
 
     const objMatch = text.match(/##\s*Objetivo\s*\n([\s\S]*?)(?=\n##|$)/i);
@@ -889,7 +920,7 @@ Responda sempre em português claro, elegante e profissional.`;
       if (structured) {
         if (structured.plan || structured.type === 'plan' || structured.objective) {
           decisionType = 'plan';
-          plan = structured.plan || structured;
+          plan = this.normalizePlanOutput(structured.plan || structured);
         } else if (structured.files && Array.isArray(structured.files) && structured.files.length > 0) {
           decisionType = 'change';
           const validFiles: FileChangeProposal[] = [];
@@ -1029,7 +1060,7 @@ Responda sempre em português claro, elegante e profissional.`;
     if (mode === 'plan') {
       let plan: PlanOutput | undefined;
       if (structured && (structured.objective || structured.plan)) {
-        plan = structured.plan || structured;
+        plan = this.normalizePlanOutput(structured.plan || structured);
       }
       return {
         replyText: content,
