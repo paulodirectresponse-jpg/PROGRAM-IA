@@ -9,6 +9,7 @@ import {WorkspaceManager} from '../server/services/workspaceManager.js';
 import {ModelRouter} from '../server/services/modelRouter.js';
 import {CloudSyncService} from '../server/services/cloudSyncService.js';
 import {ValidatorEngine} from '../server/services/validatorEngine.js';
+import {LLMAdapterService} from '../server/services/llmAdapter.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -146,3 +147,17 @@ test('checkpoint restores text and binary assets and removes subsequent files',(
 test('plain HTML without a toolchain is unverified rather than failed',async()=>{const id=`html-unverified-${suffix}`,now=new Date().toISOString();db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'HTML','novo',?,?)").run(id,a,`ws-${a}`,now,now);WorkspaceManager.writeFile(id,'index.html','<!doctype html><html><body><script src="app.js"></script></body></html>');WorkspaceManager.writeFile(id,'app.js','document.body.dataset.ready="true";');const result=await ValidatorEngine.validate({projectId:id});assert.equal(result.status,'unverified');assert.equal(result.passed,false);assert.ok(result.results.every(item=>item.status==='skipped'));assert.equal(result.advisory?.status,'pass');});
 test('an executed npm build failure is failed and eligible for rollback',async()=>{const id=`build-failed-${suffix}`,now=new Date().toISOString();db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'Build failure','novo',?,?)").run(id,a,`ws-${a}`,now,now);WorkspaceManager.writeFile(id,'package.json',JSON.stringify({scripts:{build:'node -e "process.exit(1)"'}}));const result=await ValidatorEngine.validate({projectId:id});assert.equal(result.status,'failed');assert.equal(result.results.find(item=>item.tool==='build')?.status,'fail');});
 
+
+
+test('provider tester classifies rate limit and upstream errors precisely', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({error:{message:'limit'}}), {status: 429}));
+  const limited = await LLMAdapterService.testConnection({providerKey:'useoneai', apiKey:'sk-test', baseUrl:'https://api.example.test/v1', modelId:'chatgpt-5.5'});
+  assert.equal(limited.success, false);
+  assert.equal(limited.status, 'rate_limit');
+
+  t.mock.restoreAll();
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({error:{message:'temporarily down'}}), {status: 502}));
+  const upstream = await LLMAdapterService.testConnection({providerKey:'useoneai', apiKey:'sk-test', baseUrl:'https://api.example.test/v1', modelId:'chatgpt-5.5'});
+  assert.equal(upstream.success, false);
+  assert.equal(upstream.status, 'provider_error');
+});

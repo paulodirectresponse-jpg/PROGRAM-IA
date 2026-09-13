@@ -60,7 +60,7 @@ export interface LLMExecutionResult {
 
 export interface ProviderConnectionTestResult {
   success: boolean;
-  status: 'success' | 'invalid_key' | 'invalid_model' | 'invalid_url' | 'network_error' | 'incompatible_response';
+  status: 'success' | 'invalid_key' | 'invalid_model' | 'invalid_url' | 'timeout' | 'network_error' | 'rate_limit' | 'provider_error' | 'incompatible_response';
   message: string;
   statusCode?: number;
   details?: any;
@@ -302,6 +302,24 @@ export class LLMAdapterService {
         };
       }
 
+      if (statusCode === 429) {
+        return {
+          success: false,
+          status: 'rate_limit',
+          statusCode,
+          message: 'Limite de uso atingido no provedor (HTTP 429). Aguarde ou troque o modelo/provedor ativo.',
+        };
+      }
+
+      if (statusCode >= 500) {
+        return {
+          success: false,
+          status: 'provider_error',
+          statusCode,
+          message: `Erro temporário do provedor (HTTP ${statusCode}). Tente novamente em instantes.`,
+        };
+      }
+
       let data: any;
       try {
         data = JSON.parse(responseText);
@@ -343,8 +361,8 @@ export class LLMAdapterService {
       if (err.name === 'AbortError') {
         return {
           success: false,
-          status: 'network_error',
-          message: 'Erro de rede: tempo limite de conexão esgotado (timeout de 15s).',
+          status: 'timeout',
+          message: 'Tempo limite esgotado ao conectar à API (timeout de 15s).',
         };
       }
       return {
