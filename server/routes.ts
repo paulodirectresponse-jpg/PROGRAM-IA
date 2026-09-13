@@ -1436,6 +1436,7 @@ Falha concreta: ${errorOutput}`,
             metadata.repair = { attempted: true, status: 'failed', validation: repairValidation, profileKey: repairResult.profileKey };
             metadata.hasErrors = true;
             metadata.errorMessage = 'A proposta e o repair automático falharam na validação; alterações revertidas.';
+            if (metadata.workflow) metadata.workflow.trace = RunService.trace(workflowRunId);
             db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
             return res.status(422).json({ error: metadata.errorMessage, validation: repairValidation, repair: metadata.repair });
           }
@@ -1452,6 +1453,7 @@ Falha concreta: ${errorOutput}`,
           metadata.repair = { attempted: true, status: 'passed', checkpointId: repairCheckpointId, profileKey: repairResult.profileKey, files: repairFiles.map((file: any) => file.path) };
           metadata.checkpointId = repairCheckpointId;
           metadata.hasErrors = false;
+          if (metadata.workflow) metadata.workflow.trace = RunService.trace(workflowRunId);
           db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
           return res.json({ success: true, checkpointId: repairCheckpointId, validation: repairValidation, repair: metadata.repair, message: 'Alterações aplicadas após repair automático e verificadas com sucesso.' });
         } catch (repairError: any) {
@@ -1464,6 +1466,7 @@ Falha concreta: ${errorOutput}`,
           metadata.repair = { attempted: true, status: repairError?.name === 'AbortError' ? 'aborted' : 'failed', error: String(repairError?.message || repairError) };
           metadata.hasErrors = true;
           metadata.errorMessage = repairError?.name === 'AbortError' ? 'Repair cancelado.' : 'A alteração foi revertida e o repair automático não conseguiu gerar correção válida.';
+          if (metadata.workflow) metadata.workflow.trace = RunService.trace(workflowRunId);
           db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
           return res.status(repairError?.name === 'AbortError' ? 499 : 422).json({ error: metadata.errorMessage, validation, repair: metadata.repair });
         }
@@ -1473,6 +1476,7 @@ Falha concreta: ${errorOutput}`,
       metadata.validation = validation;
       metadata.hasErrors = true;
       metadata.errorMessage = 'Uma verificação executada falhou; a alteração foi revertida integralmente.';
+      if (metadata.workflow && workflowRunId) metadata.workflow.trace = RunService.trace(workflowRunId);
       db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
       return res.status(422).json({ error: metadata.errorMessage, validation });
     }
@@ -1486,6 +1490,7 @@ Falha concreta: ${errorOutput}`,
     metadata.validation = validation;
     metadata.checkpointId = checkpointId;
     metadata.hasErrors = false;
+    if (metadata.workflow && workflowRunId) metadata.workflow.trace = RunService.trace(workflowRunId);
     db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
 
     workspaceMutated = false;
