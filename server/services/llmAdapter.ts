@@ -699,6 +699,268 @@ export class LLMAdapterService {
     return null;
   }
 
+  private static isSafeBuildTarget(filePath: string): boolean {
+    const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '').trim();
+    if (!normalized || normalized.includes('..') || normalized.startsWith('/')) return false;
+    if (/(^|\/)(node_modules|\.git|dist|build|coverage)(\/|$)/i.test(normalized)) return false;
+    if (/(^|\/)\.env$/i.test(normalized)) return false;
+    if (/\.(png|jpe?g|gif|webp|ico|pdf|zip|woff2?|ttf|mp4|mov|mp3|wav)$/i.test(normalized)) return false;
+    if (/(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|bun\.lock)$/i.test(normalized)) return false;
+    return true;
+  }
+
+  private static buildTargetPriority(filePath: string): number {
+    const path = filePath.replace(/\\/g, '/').toLowerCase();
+    if (/src\/(app|main|index)\.(tsx?|jsx?)$/.test(path)) return 0;
+    if (/src\/(index|app|main)\.css$/.test(path)) return 1;
+    if (path === 'index.html') return 2;
+    if (path === 'package.json') return 3;
+    if (path.startsWith('src/')) return 4;
+    if (path.startsWith('server/')) return 5;
+    if (path.startsWith('public/')) return 6;
+    if (path === '.env.example') return 7;
+    if (/readme\.md$/i.test(path)) return 8;
+    return 9;
+  }
+
+  static resolveBuildTargets(requested: string[], existingFiles: Record<string, string>, prompt = ''): string[] {
+    const existingPaths = Object.keys(existingFiles).map((item) => item.replace(/\\/g, '/'));
+    const out: string[] = [];
+    const add = (candidate: string) => {
+      const normalized = String(candidate || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '').trim();
+      if (!normalized || !this.isSafeBuildTarget(normalized) || out.includes(normalized)) return;
+      out.push(normalized);
+    };
+
+    for (const item of (requested || []).map((value) => String(value || '').trim()).filter(Boolean)) {
+      const normalized = item.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '');
+      if (/\.[a-zA-Z0-9]+$/.test(normalized) || /(^|\/)(Dockerfile|Procfile)$/i.test(normalized)) {
+        add(normalized);
+        continue;
+      }
+      const prefix = normalized ? normalized + '/' : '';
+      const expanded = existingPaths
+        .filter((path) => prefix && path.startsWith(prefix) && this.isSafeBuildTarget(path))
+        .sort((a, b) => this.buildTargetPriority(a) - this.buildTargetPriority(b));
+      for (const path of expanded.slice(0, 4)) add(path);
+    }
+
+    const mentionedPathRegex = /(?:^|[\s"'(])([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*\.[a-zA-Z0-9]+)(?=$|[\s"'),:])/g;
+    let match: RegExpExecArray | null;
+    while ((match = mentionedPathRegex.exec(prompt)) !== null) add(match[1]);
+
+    if (out.length === 0) {
+      const core = existingPaths
+        .filter((path) => this.isSafeBuildTarget(path))
+        .sort((a, b) => this.buildTargetPriority(a) - this.buildTargetPriority(b));
+      for (const path of core.slice(0, 5)) add(path);
+    }
+
+    if (out.length === 0) add('index.html');
+    return out.sort((a, b) => this.buildTargetPriority(a) - this.buildTargetPriority(b)).slice(0, 8);
+  }
+
+  private static contextForBuildTarget(existingFiles: Record<string, string>, targetPath: string): Record<string, string> {
+    const picked: Record<string, string> = {};
+    let total = 0;
+    const maxChars = 70000;
+    const normalizedTarget = targetPath.replace(/\\/g, '/');
+    const dir = normalizedTarget.includes('/') ? normalizedTarget.slice(0, normalizedTarget.lastIndexOf('/') + 1) : '';
+    const candidates = [
+      normalizedTarget,
+      'package.json',
+      'tsconfig.json',
+      'vite.config.ts',
+      'vite.config.js',
+      'next.config.js',
+      'next.config.mjs',
+      'index.html',
+      ...Object.keys(existingFiles)
+        .map((path) => path.replace(/\\/g, '/'))
+        .filter((path) => dir && path.startsWith(dir))
+        .sort((a, b) => this.buildTargetPriority(a) - this.buildTargetPriority(b)),
+    ];
+
+    for (const path of [...new Set(candidates)]) {
+      const content = existingFiles[path];
+      if (typeof content !== 'string') continue;
+      if (total + content.length > maxChars && path !== normalizedTarget) continue;
+      picked[path] = content;
+      total += content.length;
+      if (total >= maxChars) break;
+    }
+    return picked;
+  }
+
+  private static plausibleFileContent(targetPath: string, content: string): boolean {
+    const text = String(content || '').trim();
+    if (!text || text.length > 5 * 1024 * 1024) return false;
+    const lower = targetPath.toLowerCase();
+    if (lower.endsWith('.json')) {
+      try { JSON.parse(text); return true; } catch { return false; }
+    }
+    if (/\.html?$/.test(lower)) return /<(!doctype|html|body|div|main|section|head|script|style)\b/i.test(text);
+    if (/\.css$/.test(lower)) return /\{[\s\S]*\}/.test(text);
+    if (/\.(tsx?|jsx?|mjs|cjs)$/.test(lower)) return /(import\s|export\s|function\s|const\s|let\s|class\s|=>|return\s*\(|<\w+[\s>])/.test(text);
+    if (/\.(ya?ml|toml)$/.test(lower)) return /[:=]/.test(text);
+    if (lower.endsWith('.env.example')) return /^[A-Z0-9_]+=/m.test(text);
+    return text.length >= 8;
+  }
+
+  static extractKnownFileContent(text: string, targetPath: string): string | null {
+    const raw = String(text || '').trim();
+    if (!raw) return null;
+
+    const structured = this.extractStructuredJson(raw);
+    if (structured) {
+      const files = this.extractStructuredFiles(structured);
+      const exact = files.find((file: any) => {
+        const path = String(file?.path || file?.file || file?.filename || file?.filepath || '').replace(/\\/g, '/');
+        return path === targetPath.replace(/\\/g, '/');
+      }) || (files.length === 1 ? files[0] : null);
+
+      if (exact) {
+        const value = exact.content ?? exact.code ?? exact.contents ?? exact.text;
+        if (typeof value === 'string' && this.plausibleFileContent(targetPath, value)) return value;
+      }
+    }
+
+    const blocks = [...raw.matchAll(/\`\`\`[^\n]*\n([\s\S]*?)\`\`\`/g)];
+    for (const block of blocks) {
+      const candidate = String(block[1] || '').trim();
+      if (this.plausibleFileContent(targetPath, candidate)) return candidate;
+    }
+
+    const stripped = raw
+      .replace(/^\s*(?:PATH|FILE|FILENAME|ARQUIVO)\s*:\s*[^\n]+\n/i, '')
+      .replace(/^\s*(?:ACTION|OPERATION|ACAO|AÇÃO)\s*:\s*[^\n]+\n/i, '')
+      .trim();
+    return this.plausibleFileContent(targetPath, stripped) ? stripped : null;
+  }
+
+  static async buildApprovedPlanReliably(options: {
+    projectId: string;
+    providerKey: string;
+    modelId: string;
+    userId: string;
+    existingFiles: Record<string, string>;
+    requestedFiles: string[];
+    objective: string;
+    scopeIn?: string;
+    scopeOut?: string;
+    acceptanceCriteria?: string[];
+    signal?: AbortSignal;
+  }): Promise<LLMExecutionResult> {
+    const targets = this.resolveBuildTargets(
+      options.requestedFiles,
+      options.existingFiles,
+      [options.objective, options.scopeIn, ...(options.acceptanceCriteria || [])].filter(Boolean).join('\n')
+    );
+
+    const generated: FileChangeProposal[] = [];
+    const failures: string[] = [];
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let billedCostUsd = 0;
+    let providerUsed = '';
+    let modelUsed = options.modelId;
+
+    for (const targetPath of targets) {
+      options.signal?.throwIfAborted();
+      const current = options.existingFiles[targetPath];
+      const action: 'create' | 'modify' = current === undefined ? 'create' : 'modify';
+      const contextFiles = this.contextForBuildTarget(options.existingFiles, targetPath);
+      let accepted: FileChangeProposal | null = null;
+      let lastRaw = '';
+
+      for (let attempt = 1; attempt <= 2 && !accepted; attempt++) {
+        const prompt = [
+          'Implemente APENAS o arquivo solicitado abaixo. Esta é uma etapa atômica de uma construção maior.',
+          'ARQUIVO ALVO: ' + targetPath,
+          'AÇÃO: ' + action,
+          'OBJETIVO DO PLANO: ' + options.objective,
+          options.scopeIn ? 'ESCOPO: ' + options.scopeIn : '',
+          options.scopeOut ? 'FORA DO ESCOPO: ' + options.scopeOut : '',
+          options.acceptanceCriteria?.length ? 'CRITÉRIOS DE ACEITE:\n- ' + options.acceptanceCriteria.join('\n- ') : '',
+          current !== undefined ? 'Preserve compatibilidade com o conteúdo atual e com os arquivos de contexto.' : 'Crie o arquivo completo e funcional.',
+          attempt === 1
+            ? 'Responda com UM único objeto JSON contendo apenas files:[{path,action,content}] para o arquivo alvo. Não inclua outros arquivos.'
+            : 'A resposta anterior não pôde ser convertida em arquivo. Responda SOMENTE com o conteúdo COMPLETO do arquivo alvo. Sem explicação, sem cabeçalho e sem Markdown.',
+        ].filter(Boolean).join('\n\n');
+
+        const result = await this.executePrompt({
+          prompt,
+          mode: 'build',
+          projectId: options.projectId,
+          providerKey: options.providerKey,
+          modelId: options.modelId,
+          existingFiles: contextFiles,
+          appliedSkills: [],
+          conversationHistory: [],
+          userId: options.userId,
+          signal: options.signal,
+          allowActiveFallback: false,
+        });
+
+        providerUsed = result.providerUsed || providerUsed;
+        modelUsed = result.modelUsed || modelUsed;
+        inputTokens += Number(result.usage?.inputTokens || 0);
+        outputTokens += Number(result.usage?.outputTokens || 0);
+        billedCostUsd += Number(result.usage?.billedCostUsd || 0);
+        lastRaw = result.replyText || lastRaw;
+
+        const exact = result.build?.files?.find((file) => file.path.replace(/\\/g, '/') === targetPath.replace(/\\/g, '/'));
+        const content = exact?.content || this.extractKnownFileContent(result.replyText, targetPath);
+        if (content && this.plausibleFileContent(targetPath, content) && content.trim() !== String(current || '').trim()) {
+          accepted = {
+            path: targetPath,
+            action,
+            content,
+            diff: this.computeDiff(current ?? null, content),
+          };
+        }
+
+        if (!accepted && result.errorReason && ['invalid_key', 'invalid_model', 'rate_limit'].includes(result.errorReason)) break;
+      }
+
+      if (accepted) generated.push(accepted);
+      else failures.push(targetPath + (lastRaw ? ' (resposta incompatível)' : ' (sem resposta utilizável)'));
+    }
+
+    if (generated.length === 0) {
+      return {
+        replyText: failures.length ? 'Não foi possível gerar arquivos válidos para: ' + failures.join(', ') + '.' : 'Não foi possível gerar arquivos válidos para o plano.',
+        mode: 'build',
+        decisionType: 'invalid_response',
+        isDemonstrativeFallback: false,
+        providerUsed: providerUsed || 'Provider ativo',
+        modelUsed,
+        hasErrors: true,
+        invalidResponse: true,
+        errorReason: 'granular_build_failed',
+        usage: { inputTokens, outputTokens, billedCostUsd },
+      };
+    }
+
+    return {
+      replyText: failures.length
+        ? 'Proposta gerada em etapas atômicas. ' + generated.length + ' arquivo(s) foram gerados; ' + failures.length + ' alvo(s) ficaram para uma iteração posterior: ' + failures.join(', ') + '.'
+        : 'Proposta gerada com sucesso em etapas atômicas para ' + generated.length + ' arquivo(s).',
+      mode: 'build',
+      decisionType: 'change',
+      isDemonstrativeFallback: false,
+      providerUsed: providerUsed || 'Provider ativo',
+      modelUsed,
+      hasErrors: false,
+      build: {
+        summary: failures.length ? 'Construção parcial segura do plano' : 'Construção segura do plano',
+        explanation: 'Arquivos gerados em etapas atômicas e preservados como proposta revisável. Nenhum arquivo foi aplicado automaticamente.',
+        files: generated,
+      },
+      usage: { inputTokens, outputTokens, billedCostUsd },
+    };
+  }
+
   /**
    * Main Prompt Execution with Support for "auto" mode
    */
