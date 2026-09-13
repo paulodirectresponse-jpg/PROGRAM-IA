@@ -221,6 +221,33 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                 {meta.agentKey && <span className="text-cyan-500">• {meta.agentKey}</span>}
               </div>
 
+              {!isUser && Array.isArray(meta.workflow?.trace) && meta.workflow.trace.length > 0 && (
+                <div className="mb-1.5 flex flex-wrap gap-1">
+                  {meta.workflow.trace.map((step:any) => (
+                    <span
+                      key={step.id}
+                      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9px] font-mono ${
+                        step.status === 'completed'
+                          ? 'border-emerald-900/70 bg-emerald-950/30 text-emerald-300'
+                          : step.status === 'failed'
+                            ? 'border-rose-900/70 bg-rose-950/30 text-rose-300'
+                            : 'border-slate-800 bg-slate-900 text-slate-400'
+                      }`}
+                      title={step.title}
+                    >
+                      <span>{step.agent_key}</span>
+                      <span className="opacity-60">·</span>
+                      <span>{step.status}</span>
+                      {Array.isArray(step.invocations) && step.invocations.length > 0 && (
+                        <span className="text-slate-500">
+                          · {step.invocations.map((inv:any) => `${inv.profile_key}/${inv.provider_key}`).join(' → ')}
+                        </span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              )}
+
               <div
                 className={`max-w-[95%] rounded-xl p-3 leading-relaxed whitespace-pre-wrap ${
                   isUser
