@@ -13,8 +13,8 @@ let server:Server, base:string, tokenA:string, tokenB:string, userA:string, user
 const id=`http-project-${Date.now()}`;
 before(async()=>{
   initializeDatabase();
-  userA=AuthService.register(`${id}-a@example.test`,'A','test-password-123').id;
-  userB=AuthService.register(`${id}-b@example.test`,'B','test-password-123').id;
+  userA=AuthService.firebaseLogin(`${id}-a@example.test`,'A',`${id}-firebase-a`).user.id;
+  userB=AuthService.firebaseLogin(`${id}-b@example.test`,'B',`${id}-firebase-b`).user.id;
   tokenA=AuthService.createSession(userA).token;
   tokenB=AuthService.createSession(userB).token;
   db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'Private','novo',?,?)").run(id,userA,`ws-${userA}`,new Date().toISOString(),new Date().toISOString());
@@ -23,7 +23,7 @@ before(async()=>{
   base=`http://127.0.0.1:${(server.address() as any).port}/api`;
 });
 after(async()=>{await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()));db.close();});
-test('no anonymous access even when user-default exists',async()=>{
+test('no anonymous access without a Firebase-backed session',async()=>{
   const r=await fetch(`${base}/projects`);assert.equal(r.status,401);
 });
 test('forged Firebase email/uid cannot create a session',async()=>{
