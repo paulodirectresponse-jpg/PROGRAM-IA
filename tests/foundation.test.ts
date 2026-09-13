@@ -205,7 +205,7 @@ test('GitHub branch creation returns the real base SHA instead of a placeholder'
 });
 
 
-test('GitHub push includes deletions for remote files removed locally', async (t) => {
+test('GitHub push preserves binary files while deleting only paths absent locally', async (t) => {
   const originalToken = process.env.GITHUB_TOKEN;
   process.env.GITHUB_TOKEN = 'ghp_test_token';
   t.after(() => { if (originalToken === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = originalToken; });
@@ -219,10 +219,19 @@ test('GitHub push includes deletions for remote files removed locally', async (t
       return new Response(JSON.stringify({tree:{sha:'base-tree-sha'}}), {status: 200});
     }
     if (target.includes('/git/trees/base-tree-sha')) {
-      return new Response(JSON.stringify({tree:[{path:'keep.html', type:'blob'}, {path:'removed.html', type:'blob'}]}), {status: 200});
+      return new Response(JSON.stringify({tree:[
+        {path:'keep.html', type:'blob'},
+        {path:'assets/logo.png', type:'blob'},
+        {path:'removed.html', type:'blob'}
+      ]}), {status: 200});
     }
     if (target.endsWith('/git/blobs') && init?.method === 'POST') {
-      return new Response(JSON.stringify({sha:'blob-keep'}), {status: 201});
+      const body=JSON.parse(String(init.body));
+      if(body.encoding==='base64'){
+        assert.equal(body.content,Buffer.from([0,1,2,255]).toString('base64'));
+        return new Response(JSON.stringify({sha:'blob-binary'}), {status: 201});
+      }
+      return new Response(JSON.stringify({sha:'blob-text'}), {status: 201});
     }
     if (target.endsWith('/git/trees') && init?.method === 'POST') {
       createdTreeBody = JSON.parse(String(init.body));
@@ -236,8 +245,36 @@ test('GitHub push includes deletions for remote files removed locally', async (t
     }
     return new Response('{}', {status: 404});
   });
-  const result = await GitHubService.pushFilesToRepo({owner:'owner', repo:'repo', branch:'main', commitMessage:'sync', files:{'keep.html':'<h1>keep</h1>'}});
+  const result = await GitHubService.pushFilesToRepo({
+    owner:'owner', repo:'repo', branch:'main', commitMessage:'sync',
+    files:{'keep.html':'<h1>keep</h1>'},
+    binaryFiles:{'assets/logo.png':Buffer.from([0,1,2,255])}
+  });
   assert.equal(result.success, true);
   assert.ok(createdTreeBody.tree.some((item: any) => item.path === 'removed.html' && item.sha === null));
-  assert.ok(createdTreeBody.tree.some((item: any) => item.path === 'keep.html' && item.sha === 'blob-keep'));
+  assert.ok(createdTreeBody.tree.some((item: any) => item.path === 'keep.html' && item.sha === 'blob-text'));
+  assert.ok(createdTreeBody.tree.some((item: any) => item.path === 'assets/logo.png' && item.sha === 'blob-binary'));
+});
+
+test('GitHub import returns the real remote head and complete blob path inventory', async (t) => {
+  t.mock.method(globalThis,'fetch',async(url:any)=>{
+    const target=String(url);
+    if(target==='https://api.github.com/repos/owner/repo') return new Response(JSON.stringify({default_branch:'main'}),{status:200});
+    if(target.includes('/commits/main')) return new Response(JSON.stringify({sha:'remote-head-sha',commit:{tree:{sha:'remote-tree-sha'}}}),{status:200});
+    if(target.includes('/git/trees/remote-tree-sha')) return new Response(JSON.stringify({truncated:false,tree:[
+      {path:'src/app.ts',type:'blob',sha:'text-sha',size:20},
+      {path:'assets/logo.png',type:'blob',sha:'binary-sha',size:4},
+      {path:'large.dat',type:'blob',sha:'large-sha',size:3000000}
+    ]}),{status:200});
+    if(target.includes('/git/blobs/text-sha')) return new Response(JSON.stringify({encoding:'base64',content:Buffer.from('export const ok=true;').toString('base64')}),{status:200});
+    if(target.includes('/git/blobs/binary-sha')) return new Response(JSON.stringify({encoding:'base64',content:Buffer.from([0,1,2,3]).toString('base64')}),{status:200});
+    return new Response('{}',{status:404});
+  });
+  const result=await GitHubService.importRepoFiles('owner','repo','main');
+  assert.equal(result.success,true);
+  assert.equal(result.headSha,'remote-head-sha');
+  assert.deepEqual(result.remotePaths,['src/app.ts','assets/logo.png','large.dat']);
+  assert.equal(result.files?.['src/app.ts'],'export const ok=true;');
+  assert.deepEqual(result.binaryFiles?.['assets/logo.png'],Buffer.from([0,1,2,3]));
+  assert.equal('large.dat' in (result.binaryFiles||{}),false);
 });
