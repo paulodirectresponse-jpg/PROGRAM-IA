@@ -532,9 +532,22 @@ router.get('/projects/:id', requireAuth, requireProjectOwner, (req: Request, res
   }
 });
 
-router.delete('/projects/:id', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+router.delete('/projects/:id', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id;
+
+    // Delete the canonical cloud row first. This prevents bootstrap from
+    // resurrecting a locally deleted project on the next refresh/session.
+    if (CloudSyncService.configured()) {
+      try {
+        await CloudSyncService.deleteProject(req.user!.id, projectId);
+      } catch (cloudError:any) {
+        return res.status(502).json({
+          error: 'A exclusão remota falhou; o projeto local foi preservado para evitar ressurreição/inconsistência.',
+          details: String(cloudError?.message || cloudError),
+        });
+      }
+    }
 
     // 1. Delete associated messages
     const convs = db.prepare('SELECT id FROM conversations WHERE project_id = ?').all(projectId) as { id: string }[];
