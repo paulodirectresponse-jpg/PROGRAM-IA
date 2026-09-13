@@ -64,7 +64,7 @@ const SUPPORTED_CREDENTIALS: ServiceDef[] = [
     name: 'GitHub Personal Access Token (PAT)',
     category: 'git',
     desc: 'Token de autenticação do GitHub com permissão repo para commits, push, branches e pull requests.',
-    placeholder: 'ghp_...',
+    placeholder: 'Cole seu token de acesso',
     docsUrl: 'https://github.com/settings/tokens',
   },
   {
@@ -72,7 +72,7 @@ const SUPPORTED_CREDENTIALS: ServiceDef[] = [
     name: 'Firebase / Google Cloud API Key & Project ID',
     category: 'cloud',
     desc: 'Credenciais do projeto Firebase (gen-lang-client-... ou Web API Key) para Firestore e Auth.',
-    placeholder: 'AIzaSy... ou ID do Projeto',
+    placeholder: 'Cole a credencial ou ID do projeto',
     docsUrl: 'https://console.firebase.google.com',
   },
   {
@@ -88,7 +88,7 @@ const SUPPORTED_CREDENTIALS: ServiceDef[] = [
     name: 'Supabase Project Key / Service Role',
     category: 'backend',
     desc: 'Chave de acesso anon ou service_role da sua instância Supabase PostgreSQL.',
-    placeholder: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+    placeholder: 'Cole a chave do projeto Supabase',
     docsUrl: 'https://supabase.com/dashboard/project/_/settings/api',
   },
 ];
@@ -107,15 +107,6 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
   onCredentialsUpdated,
 }) => {
   const [activeTab, setActiveTab] = useState<SettingsTab>(defaultTab);
-
-  // Auth Form State (when not logged in or switching)
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [authName, setAuthName] = useState('');
-  const [authLoading, setAuthLoading] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [authSuccess, setAuthSuccess] = useState<string | null>(null);
 
   // Secrets State
   const [secrets, setSecrets] = useState<SecretSummary[]>([]);
@@ -172,43 +163,6 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
   };
 
   if (!isOpen) return null;
-
-  // Handle Auth Submit
-  const handleAuthSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError(null);
-    setAuthSuccess(null);
-    setAuthLoading(true);
-
-    try {
-      const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
-      const body = authMode === 'login'
-        ? { email: authEmail, password: authPassword }
-        : { email: authEmail, password: authPassword, name: authName };
-
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Erro ao processar autenticação.');
-      }
-
-      setAuthSuccess(authMode === 'login' ? 'Login realizado com sucesso!' : 'Conta criada com sucesso!');
-      onLoginSuccess(data.user);
-      loadSecrets();
-      setTimeout(() => {
-        setAuthSuccess(null);
-      }, 1500);
-    } catch (err: any) {
-      setAuthError(err.message || 'Falha na comunicação com o servidor.');
-    } finally {
-      setAuthLoading(false);
-    }
-  };
 
   const handleLogoutClick = async () => {
     try {
@@ -446,12 +400,9 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
                           </span>
                         </div>
                         <div className="text-xs text-slate-400">{currentUser.email}</div>
-                        <div className="text-[11px] text-slate-500 font-mono mt-0.5">
-                          ID: {currentUser.id}
-                        </div>
+                        <div className="text-[11px] text-slate-500 font-mono mt-0.5">ID: {currentUser.id}</div>
                       </div>
                     </div>
-
                     <button
                       type="button"
                       onClick={handleLogoutClick}
@@ -461,122 +412,31 @@ export const SettingsProfileModal: React.FC<SettingsProfileModalProps> = ({
                       Sair da Conta
                     </button>
                   </div>
-
                   <div className="grid grid-cols-2 gap-3">
                     <div className="p-3 rounded-xl bg-slate-950/50 border border-slate-800 space-y-1">
                       <div className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5">
                         <Lock size={12} className="text-emerald-400" />
-                        Isolamento de Dados
+                        Identidade Firebase
                       </div>
                       <div className="text-xs text-slate-200">
-                        Projetos, arquivos, conversas e chaves vinculados exclusivamente ao seu ID.
+                        A conta Forge usa exclusivamente a identidade autenticada pelo Firebase.
                       </div>
                     </div>
-
                     <div className="p-3 rounded-xl bg-slate-950/50 border border-slate-800 space-y-1">
                       <div className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5">
                         <Key size={12} className="text-cyan-400" />
                         Chaves Criptografadas
                       </div>
                       <div className="text-xs text-slate-200">
-                        {secrets.length} credenciais seguras registradas em cofre AES-256-GCM.
+                        {secrets.length} credenciais seguras registradas no cofre da conta.
                       </div>
                     </div>
                   </div>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  <div className="p-3 rounded-xl bg-cyan-950/30 border border-cyan-800/50 text-xs text-cyan-300 flex items-center gap-2">
-                    <ShieldCheck size={16} className="shrink-0" />
-                    <span>Cadastre-se ou entre para manter seus projetos e credenciais criptografadas salvas.</span>
-                  </div>
-
-                  <div className="flex border-b border-slate-800">
-                    <button
-                      onClick={() => setAuthMode('login')}
-                      className={`flex-1 py-2 text-xs font-semibold text-center border-b-2 transition cursor-pointer ${
-                        authMode === 'login'
-                          ? 'border-cyan-400 text-cyan-300'
-                          : 'border-transparent text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Entrar
-                    </button>
-                    <button
-                      onClick={() => setAuthMode('register')}
-                      className={`flex-1 py-2 text-xs font-semibold text-center border-b-2 transition cursor-pointer ${
-                        authMode === 'register'
-                          ? 'border-cyan-400 text-cyan-300'
-                          : 'border-transparent text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Criar Conta
-                    </button>
-                  </div>
-
-                  {authError && (
-                    <div className="p-2.5 rounded-lg bg-rose-950/60 border border-rose-800 text-rose-300 text-xs flex items-center gap-2">
-                      <AlertCircle size={14} className="shrink-0" />
-                      <span>{authError}</span>
-                    </div>
-                  )}
-
-                  {authSuccess && (
-                    <div className="p-2.5 rounded-lg bg-emerald-950/60 border border-emerald-800 text-emerald-300 text-xs flex items-center gap-2">
-                      <CheckCircle2 size={14} className="shrink-0" />
-                      <span>{authSuccess}</span>
-                    </div>
-                  )}
-
-                  <form onSubmit={handleAuthSubmit} className="space-y-3">
-                    {authMode === 'register' && (
-                      <div className="space-y-1">
-                        <label className="text-[11px] font-medium text-slate-300">Seu Nome</label>
-                        <input
-                          type="text"
-                          required
-                          value={authName}
-                          onChange={(e) => setAuthName(e.target.value)}
-                          placeholder="Ex: Maria Dev"
-                          className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 focus:outline-none focus:border-cyan-600"
-                        />
-                      </div>
-                    )}
-
-                    <div className="space-y-1">
-                      <label className="text-[11px] font-medium text-slate-300">Endereço de E-mail</label>
-                      <input
-                        type="email"
-                        required
-                        value={authEmail}
-                        onChange={(e) => setAuthEmail(e.target.value)}
-                        placeholder="dev@exemplo.com"
-                        className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 focus:outline-none focus:border-cyan-600"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="text-[11px] font-medium text-slate-300">Senha Segura</label>
-                      <input
-                        type="password"
-                        required
-                        minLength={8}
-                        value={authPassword}
-                        onChange={(e) => setAuthPassword(e.target.value)}
-                        placeholder="Mínimo 8 caracteres"
-                        className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 focus:outline-none focus:border-cyan-600"
-                      />
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={authLoading}
-                      className="w-full py-2 px-3 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-slate-950 font-bold text-xs transition cursor-pointer flex items-center justify-center gap-2"
-                    >
-                      {authLoading && <Loader2 size={13} className="animate-spin" />}
-                      {authMode === 'login' ? 'Acessar Conta' : 'Concluir Cadastro'}
-                    </button>
-                  </form>
+                <div className="p-4 rounded-xl bg-amber-950/30 border border-amber-800/50 text-xs text-amber-200 flex items-start gap-2">
+                  <ShieldCheck size={16} className="shrink-0 mt-0.5" />
+                  <span>Sessão Firebase não disponível. Feche esta janela e autentique-se pelo fluxo principal do Forge.</span>
                 </div>
               )}
             </div>
