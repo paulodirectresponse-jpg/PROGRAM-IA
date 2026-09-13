@@ -111,6 +111,34 @@ export class SupabasePersistenceService {
     return{status:'synced',snapshot:{schemaVersion:1,userId,deviceId:'supabase-canonical',createdAt:remote.forge_profiles[0].updated_at,tables,files}};
   }
 
+  static async deleteCanonicalProject(firebaseUid:string,projectId:string){
+    if(!this.configured())return{status:'not_configured' as DirectStatus,deleted:false};
+    if(!firebaseUid)throw Error('Firebase UID ausente; exclusão remota recusada.');
+    const owner=encodeURIComponent(firebaseUid),project=encodeURIComponent(projectId);
+    const metadataResponse=await this.expect(
+      await fetch(this.rest(`forge_project_files?firebase_uid=eq.${owner}&project_id=eq.${project}&select=storage_path`),{headers:this.headers()}),
+      'Supabase project files read before delete'
+    );
+    const metadata=await metadataResponse.json() as Array<{storage_path:string}>;
+    for(const row of metadata){
+      if(!row?.storage_path)continue;
+      const response=await fetch(`${process.env.SUPABASE_URL}/storage/v1/object/forge-project-files/${row.storage_path}`,{
+        method:'DELETE',
+        headers:this.headers(),
+      });
+      // Object may already be gone; metadata/project cascade is still authoritative.
+      if(!response.ok&&response.status!==404)await this.expect(response,'Supabase Storage project file delete');
+    }
+    await this.expect(
+      await fetch(this.rest(`forge_projects?firebase_uid=eq.${owner}&id=eq.${project}`),{
+        method:'DELETE',
+        headers:this.headers({Prefer:'return=minimal'}),
+      }),
+      'Supabase canonical project delete'
+    );
+    return{status:'synced' as DirectStatus,deleted:true,files:metadata.length};
+  }
+
   static async push(userId: string, firebaseUid: string, snapshot: DirectSnapshot): Promise<{status: DirectStatus; records?: number; files?: number}> {
     if (!this.configured()) return { status: 'not_configured' };
     if (!firebaseUid) throw new Error('Firebase UID ausente; persistência direta recusada.');
