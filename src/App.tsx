@@ -314,14 +314,21 @@ export default function App() {
         body: JSON.stringify({ planId }),
       });
       const data = await res.json();
-      if (data.success) {
-        setActiveMode('build');
-        setActivePlan(null);
-        await loadProjectDetails(activeProject.id);
-        setPreviewNonce(Date.now());
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Não foi possível aprovar e construir o plano.');
       }
-    } catch (err) {
+
+      setActiveMode('build');
+      setActivePlan(null);
+      if (data.agentMessage) {
+        setMessages((prev) => [...prev, data.agentMessage]);
+      }
+      setToastMessage({ text: 'Plano aprovado. A proposta de construção foi gerada para sua revisão.', type: 'success' });
+      await loadProjectDetails(activeProject.id);
+      setPreviewNonce(Date.now());
+    } catch (err: any) {
       console.error('Erro ao aprovar plano:', err);
+      setToastMessage({ text: err?.message || 'Erro ao aprovar e construir o plano.', type: 'error' });
     } finally {
       setIsLoading(false);
     }
