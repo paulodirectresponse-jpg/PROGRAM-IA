@@ -1087,10 +1087,11 @@ router.post('/projects/:id/github/push', requireAuth, requireProjectOwner, async
     const projectId = req.params.id;
     const { commitMessage, commitDescription } = req.body;
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    if (!project.repo_url) return res.status(400).json({ error: 'Projeto nÃ£o possui URL do GitHub vinculada.' });
+    const repoContext = projectRepositoryContext(projectId, project);
+    if (!repoContext.repoUrl) return res.status(400).json({ error: 'Projeto não possui URL do GitHub vinculada.' });
 
-    const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) return res.status(400).json({ error: 'URL do repositÃ³rio invÃ¡lida.' });
+    const parsed = GitHubService.parseRepoUrl(repoContext.repoUrl);
+    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
 
     const files = WorkspaceManager.getAllFilesContent(projectId);
     const binaryFiles: Record<string, Buffer> = {};
@@ -1099,35 +1100,28 @@ router.post('/projects/:id/github/push', requireAuth, requireProjectOwner, async
       const content = WorkspaceManager.readBinaryFile(projectId, file.path);
       if (content) binaryFiles[file.path] = content;
     }
+
     const result = await GitHubService.pushFilesToRepo({
       userId: req.user!.id,
       owner: parsed.owner,
       repo: parsed.repo,
-      branch: project.branch || 'main',
-      commitMessage: commitMessage || 'AlteraÃ§Ãµes aplicadas via Forge Agent',
+      branch: repoContext.branch,
+      commitMessage: commitMessage || 'Alterações aplicadas via Forge Agent',
       files,
       binaryFiles,
     });
+    if (!result.success) return res.status(400).json({ error: result.error });
 
-    if (!result.success) {
-      return res.status(400).json({ error: result.error });
-    }
-
-    // Update local head commit hash
     if (result.commitSha) {
-      db.prepare('UPDATE branches SET head_commit_hash = ? WHERE project_id = ? AND name = ?').run(
-        result.commitSha,
-        projectId,
-        project.branch || 'main'
-      );
+      db.prepare('UPDATE branches SET head_commit_hash = ? WHERE project_id = ? AND name = ?')
+        .run(result.commitSha, projectId, repoContext.branch);
     }
 
-    // Create named checkpoint on GitHub push for full rollback control
-    const cpTitle = commitMessage ? `GitHub Push: ${commitMessage}` : 'GitHub Push: AtualizaÃ§Ã£o remota';
-    const cpDesc = commitDescription || `Commit ${result.commitSha ? result.commitSha.slice(0, 7) : 'recente'} enviado para branch ${project.branch || 'main'}`;
+    const cpTitle = commitMessage ? `GitHub Push: ${commitMessage}` : 'GitHub Push: Atualização remota';
+    const cpDesc = commitDescription || `Commit ${result.commitSha ? result.commitSha.slice(0, 7) : 'recente'} enviado para branch ${repoContext.branch}`;
     const cpId = WorkspaceManager.createCheckpoint(projectId, cpTitle, cpDesc);
 
-    res.json({ success: true, commitSha: result.commitSha, checkpointId: cpId });
+    res.json({ success: true, commitSha: result.commitSha, checkpointId: cpId, branch: repoContext.branch });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
