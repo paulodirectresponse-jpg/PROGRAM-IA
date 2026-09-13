@@ -1045,15 +1045,14 @@ router.post('/projects/:id/github/pull', requireAuth, requireProjectOwner, async
   try {
     const projectId = req.params.id;
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    if (!project.repo_url) return res.status(400).json({ error: 'Projeto nÃ£o possui URL do GitHub vinculada.' });
+    const repoContext = projectRepositoryContext(projectId, project);
+    if (!repoContext.repoUrl) return res.status(400).json({ error: 'Projeto não possui URL do GitHub vinculada.' });
 
-    const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) return res.status(400).json({ error: 'URL do repositÃ³rio invÃ¡lida.' });
+    const parsed = GitHubService.parseRepoUrl(repoContext.repoUrl);
+    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
 
-    const result = await GitHubService.importRepoFiles(parsed.owner, parsed.repo, project.branch || 'main', req.user!.id);
-    if (!result.success) {
-      return res.status(400).json({ error: result.error });
-    }
+    const result = await GitHubService.importRepoFiles(parsed.owner, parsed.repo, repoContext.branch, req.user!.id);
+    if (!result.success) return res.status(400).json({ error: result.error });
 
     const remotePaths = new Set((result.remotePaths || []).map(filePath => filePath.replace(/\\/g, '/')));
     if (result.remotePaths) {
@@ -1068,11 +1067,16 @@ router.post('/projects/:id/github/pull', requireAuth, requireProjectOwner, async
       for (const [filePath, buf] of Object.entries(result.binaryFiles)) WorkspaceManager.writeBinaryFile(projectId, filePath, buf);
     }
     if (result.headSha) {
-      db.prepare('UPDATE branches SET head_commit_hash = ? WHERE project_id = ? AND name = ?').run(result.headSha, projectId, project.branch || 'main');
+      db.prepare('UPDATE branches SET head_commit_hash = ? WHERE project_id = ? AND name = ?')
+        .run(result.headSha, projectId, repoContext.branch);
     }
 
-    const cpId = WorkspaceManager.createCheckpoint(projectId, `Git Pull: ${project.branch}`, `Sincronizados ${result.filesCount} arquivos`);
-    res.json({ success: true, count: result.filesCount, checkpointId: cpId });
+    const cpId = WorkspaceManager.createCheckpoint(
+      projectId,
+      `Git Pull: ${repoContext.branch}`,
+      `Sincronizados ${result.filesCount} arquivos`
+    );
+    res.json({ success: true, count: result.filesCount, checkpointId: cpId, headSha: result.headSha });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
