@@ -79,12 +79,15 @@ export class AgentEngine {
       const fallback = await LLMAdapterService.executePrompt({ ...x, providerKey: undefined, allowActiveFallback: false });
       return { ...fallback, agentKey, profileKey: profile };
     }
-    const candidates = available.slice(0, Math.max(1, Number(available[0]?.max_attempts || 1)));
+    const maxAttempts = Math.max(1, Number(available[0]?.max_attempts || 1));
     let last: unknown;
-    for (let i = 0; i < candidates.length; i++) {
+    for (let i = 0; i < maxAttempts; i++) {
       x.signal?.throwIfAborted();
       RunService.recordAttempt(x.stepId);
-      const c = candidates[i];
+      // Try candidates by priority, then cycle again if the profile allows more attempts
+      // than there are configured candidates. This makes max_attempts mean attempts,
+      // not merely "number of distinct candidates".
+      const c = available[i % available.length];
       const started = Date.now();
       try {
         ModelRouter.assertBudget(x.userId, Number(c.max_cost_usd || 0), { runId: x.runId });
