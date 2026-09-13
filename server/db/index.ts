@@ -58,6 +58,13 @@ export function initializeDatabase() {
   ensureColumn('logs', 'user_id', "TEXT");
   ensureColumn('users', 'last_active_project_id', 'TEXT');
   ensureColumn('skills', 'is_custom', "INTEGER DEFAULT 0");
+  // Phase 0 — richer architecture plans without breaking legacy rows.
+  ensureColumn('plans', 'architecture_summary', "TEXT DEFAULT ''");
+  ensureColumn('plans', 'existing_files_json', "TEXT DEFAULT '[]'");
+  ensureColumn('plans', 'new_files_json', "TEXT DEFAULT '[]'");
+  ensureColumn('plans', 'files_to_delete_json', "TEXT DEFAULT '[]'");
+  ensureColumn('plans', 'requirements_json', "TEXT DEFAULT '[]'");
+  ensureColumn('plans', 'task_graph_json', "TEXT DEFAULT '[]'");
   // Migrate the legacy overloaded provider status into independent activity and health states.
   db.exec("UPDATE providers SET is_active = 1 WHERE connection_status = 'active'");
   db.exec("UPDATE providers SET connection_status = CASE WHEN is_configured = 1 THEN 'untested' ELSE 'not_configured' END WHERE connection_status IN ('active','configured')");
@@ -74,9 +81,38 @@ export function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,project_id TEXT NOT NULL,conversation_id TEXT NOT NULL,mode TEXT NOT NULL,status TEXT NOT NULL,budget_usd REAL NOT NULL DEFAULT .5,spent_usd REAL NOT NULL DEFAULT 0,created_at TEXT NOT NULL,finished_at TEXT);
     CREATE TABLE IF NOT EXISTS agent_steps (id TEXT PRIMARY KEY,run_id TEXT NOT NULL,agent_key TEXT NOT NULL,title TEXT NOT NULL,status TEXT NOT NULL,order_index INTEGER NOT NULL,scope_level TEXT NOT NULL DEFAULT 'task',attempt_count INTEGER NOT NULL DEFAULT 0,parent_step_id TEXT,acceptance_json TEXT NOT NULL DEFAULT '[]',context_json TEXT,created_at TEXT NOT NULL,finished_at TEXT);
     CREATE TABLE IF NOT EXISTS tool_executions (id TEXT PRIMARY KEY,run_id TEXT,step_id TEXT,tool_key TEXT NOT NULL,status TEXT NOT NULL,duration_ms INTEGER NOT NULL,summary_json TEXT NOT NULL,created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS requirements (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      conversation_id TEXT,
+      run_id TEXT,
+      plan_id TEXT,
+      requirement_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      priority TEXT NOT NULL DEFAULT 'high',
+      status TEXT NOT NULL DEFAULT 'pending',
+      verification_json TEXT NOT NULL DEFAULT '[]',
+      files_json TEXT NOT NULL DEFAULT '[]',
+      evidence_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(project_id, plan_id, requirement_key)
+    );
+    CREATE INDEX IF NOT EXISTS requirements_project_status ON requirements(project_id,status);
+    CREATE INDEX IF NOT EXISTS requirements_run ON requirements(run_id);
   `);
 
-  // Replace legacy global uniqueness with per-user uniqueness, preserving records.
+  const migration3Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 3').get() as { version: number } | undefined;
+  if (!migration3Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      3,
+      '003_agent_core_requirements_and_architecture_plans',
+      new Date().toISOString()
+    );
+  }
+
+    // Replace legacy global uniqueness with per-user uniqueness, preserving records.
   for (const [table, key] of [['providers', 'provider_key'], ['skills', 'slug']]) {
     const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table) as {sql:string};
     if (row.sql.includes(`${key} TEXT UNIQUE`)) {
