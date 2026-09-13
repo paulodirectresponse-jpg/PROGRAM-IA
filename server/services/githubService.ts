@@ -27,6 +27,8 @@ export interface GitHubImportResult {
   owner?: string;
   repo?: string;
   branch?: string;
+  headSha?: string;
+  remotePaths?: string[];
   filesCount?: number;
   files?: Record<string, string>;
   binaryFiles?: Record<string, Buffer>;
@@ -255,8 +257,22 @@ export class GitHubService {
       const repoData = await repoRes.json() as any;
       const targetBranch = branch || repoData.default_branch || 'main';
 
+      const headRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(targetBranch)}`,
+        { headers }
+      );
+      if (!headRes.ok) {
+        return { success: false, error: `Falha ao resolver o commit atual da branch "${targetBranch}" (HTTP ${headRes.status}).` };
+      }
+      const headData = await headRes.json() as any;
+      const headSha = String(headData.sha || '');
+      const treeSha = String(headData.commit?.tree?.sha || '');
+      if (!headSha || !treeSha) {
+        return { success: false, error: `O GitHub não retornou commit/tree válidos para a branch "${targetBranch}".` };
+      }
+
       const treeRes = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/git/trees/${targetBranch}?recursive=1`,
+        `https://api.github.com/repos/${owner}/${repo}/git/trees/${treeSha}?recursive=1`,
         { headers }
       );
 
@@ -268,21 +284,24 @@ export class GitHubService {
       }
 
       const treeData = await treeRes.json() as any;
+      if (treeData.truncated) {
+        return { success: false, error: 'A árvore do repositório foi truncada pelo GitHub; importação parcial recusada para evitar perda silenciosa de arquivos.' };
+      }
       const filesMap: Record<string, string> = {};
       const binaryFiles: Record<string, Buffer> = {};
+      const remotePaths: string[] = [];
 
       if (Array.isArray(treeData.tree)) {
-        const textExtensions = ['.html', '.css', '.js', '.jsx', '.ts', '.tsx', '.json', '.md', '.svg', '.txt'];
-        const binaryExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.woff', '.woff2', '.ttf'];
+        const binaryExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.pdf', '.zip', '.gz', '.7z', '.mp3', '.wav', '.mp4', '.webm', '.mov'];
 
         for (const item of treeData.tree) {
           if (item.type !== 'blob') continue;
-          if (item.size > 2 * 1024 * 1024) continue; // Skip huge files > 2MB
+          const remotePath = String(item.path || '').replace(/\\/g, '/');
+          if (!remotePath) continue;
+          remotePaths.push(remotePath);
+          if (Number(item.size || 0) > 2 * 1024 * 1024) continue; // Preserve path knowledge; large blob transfer remains deliberately bounded.
 
-          const isText = textExtensions.some(ext => item.path.toLowerCase().endsWith(ext));
-          const isBinary = binaryExtensions.some(ext => item.path.toLowerCase().endsWith(ext));
-
-          if (!isText && !isBinary) continue;
+          const knownBinary = binaryExtensions.some(ext => remotePath.toLowerCase().endsWith(ext));
 
           try {
             // Fetch blob data via GitHub Git API
@@ -291,11 +310,14 @@ export class GitHubService {
               const blobData = await blobRes.json() as any;
               if (blobData.encoding === 'base64') {
                 const buf = Buffer.from(blobData.content, 'base64');
-                if (isBinary) {
-                  binaryFiles[item.path] = buf;
-                } else {
-                  filesMap[item.path] = buf.toString('utf8');
+                let isBinary = knownBinary || buf.includes(0);
+                let decoded = '';
+                if (!isBinary) {
+                  try { decoded = new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+                  catch { isBinary = true; }
                 }
+                if (isBinary) binaryFiles[remotePath] = buf;
+                else filesMap[remotePath] = decoded;
               }
             }
           } catch (e) {
@@ -309,6 +331,8 @@ export class GitHubService {
         owner,
         repo,
         branch: targetBranch,
+        headSha,
+        remotePaths,
         filesCount: Object.keys(filesMap).length + Object.keys(binaryFiles).length,
         files: filesMap,
         binaryFiles,
@@ -328,6 +352,7 @@ export class GitHubService {
     branch: string;
     commitMessage: string;
     files: Record<string, string>;
+    binaryFiles?: Record<string, Buffer>;
   }): Promise<{ success: boolean; commitSha?: string; error?: string }> {
     const token = this.getToken(options.userId);
     if (!token) {
@@ -338,6 +363,7 @@ export class GitHubService {
     }
 
     const { owner, repo, branch, commitMessage, files } = options;
+    const binaryFiles = options.binaryFiles || {};
     const headers = {
       Authorization: `Bearer ${token}`,
       Accept: 'application/vnd.github+json',
@@ -361,7 +387,7 @@ export class GitHubService {
 
       // 3. Create blobs & tree items, including deletions for remote files absent locally.
       const treeItems: any[] = [];
-      const localPaths = new Set(Object.keys(files).map((filePath) => filePath.replace(/\\/g, '/')));
+      const localPaths = new Set([...Object.keys(files), ...Object.keys(binaryFiles)].map((filePath) => filePath.replace(/\\/g, '/')));
       const currentTreeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/${baseTreeSha}?recursive=1`, { headers });
       if (currentTreeRes.ok) {
         const currentTree = await currentTreeRes.json() as any;
@@ -376,24 +402,28 @@ export class GitHubService {
         const blobRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs`, {
           method: 'POST',
           headers,
-          body: JSON.stringify({
-            content,
-            encoding: 'utf-8',
-          }),
+          body: JSON.stringify({ content, encoding: 'utf-8' }),
         });
-
         if (!blobRes.ok) {
           const errText = await blobRes.text();
           return { success: false, error: `Erro ao criar blob para ${filePath}: ${errText.slice(0, 100)}` };
         }
-
         const blobData = await blobRes.json() as any;
-        treeItems.push({
-          path: filePath.replace(/\\/g, '/'),
-          mode: '100644',
-          type: 'blob',
-          sha: blobData.sha,
+        treeItems.push({ path: filePath.replace(/\\/g, '/'), mode: '100644', type: 'blob', sha: blobData.sha });
+      }
+
+      for (const [filePath, content] of Object.entries(binaryFiles)) {
+        const blobRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ content: content.toString('base64'), encoding: 'base64' }),
         });
+        if (!blobRes.ok) {
+          const errText = await blobRes.text();
+          return { success: false, error: `Erro ao criar blob binário para ${filePath}: ${errText.slice(0, 100)}` };
+        }
+        const blobData = await blobRes.json() as any;
+        treeItems.push({ path: filePath.replace(/\\/g, '/'), mode: '100644', type: 'blob', sha: blobData.sha });
       }
 
       // 4. Create tree
