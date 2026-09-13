@@ -1492,14 +1492,46 @@ router.get('/projects/:projectId/preview/status', requireAuth, requireProjectOwn
 });
 
 router.post('/projects/:id/deploy/cloudflare', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  const deploymentId = `deploy-${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
   try {
-    const project = db.prepare('SELECT branch FROM projects WHERE id=?').get(req.params.id) as {branch?:string}|undefined;
-    const result = await IntegrationService.deployCloudflarePages(req.user!.id, project?.branch || 'main');
-    const now = new Date().toISOString();
-    db.prepare('INSERT INTO deployments(id,project_id,target,status,url,error_message,created_at) VALUES(?,?,?,?,?,NULL,?)')
-      .run(`deploy-${crypto.randomUUID()}`, req.params.id, 'cloudflare_pages', result.status, result.url || null, now);
-    res.json(result);
-  } catch (error:any) { res.status(400).json({success:false,error:error.message}); }
+    const project = db.prepare('SELECT * FROM projects WHERE id=?').get(req.params.id) as any;
+    const repoContext = projectRepositoryContext(req.params.id, project);
+    const cloudflare = IntegrationService.summary(req.user!.id, 'cloudflare');
+
+    if (cloudflare.status !== 'connected') {
+      return res.status(409).json({
+        success:false,
+        error:'Teste e confirme a integração Cloudflare antes de publicar.',
+      });
+    }
+    if (!repoContext.repoUrl) {
+      return res.status(409).json({
+        success:false,
+        error:'O deploy Cloudflare atual dispara um Pages conectado a Git. Vincule um repositório ao projeto antes de publicar.',
+      });
+    }
+
+    db.prepare('INSERT INTO deployments(id,project_id,target,status,url,error_message,created_at) VALUES(?,?,?,?,NULL,NULL,?)')
+      .run(deploymentId, req.params.id, 'cloudflare_pages_git', 'pending', now);
+
+    const result = await IntegrationService.deployCloudflarePages(req.user!.id, repoContext.branch);
+    const status = ['success','active'].includes(String(result.status)) ? 'active' : String(result.status || 'pending');
+    db.prepare('UPDATE deployments SET status=?,url=?,error_message=NULL WHERE id=?')
+      .run(status, result.url || null, deploymentId);
+
+    res.json({...result, deploymentId, mode:'git_trigger'});
+  } catch (error:any) {
+    const message = String(error?.message || 'Falha no deploy Cloudflare.');
+    const existing = db.prepare('SELECT id FROM deployments WHERE id=?').get(deploymentId);
+    if (existing) {
+      db.prepare("UPDATE deployments SET status='failed',error_message=? WHERE id=?").run(message.slice(0,1000), deploymentId);
+    } else {
+      db.prepare('INSERT INTO deployments(id,project_id,target,status,url,error_message,created_at) VALUES(?,?,?,?,NULL,?,?)')
+        .run(deploymentId, req.params.id, 'cloudflare_pages_git', 'failed', message.slice(0,1000), now);
+    }
+    res.status(400).json({success:false,error:message,deploymentId});
+  }
 });
 
 router.post('/conversations/:projectId/reject-proposal', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
