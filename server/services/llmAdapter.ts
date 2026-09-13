@@ -1156,34 +1156,66 @@ Responda sempre em português claro, elegante e profissional.`;
     const systemPrompt = this.buildSystemPrompt(context.mode, context.skillsText, context.filesList, context.existingFiles);
     const useStreaming = /omniroute/i.test(config.name);
 
-    const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...context.conversationHistory.slice(-6).map((h: any) => ({
+        role: h.sender === 'user' ? 'user' : 'assistant',
+        content: h.content,
+      })),
+      { role: 'user', content: context.prompt },
+    ];
+    const endpoint = `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+    const callSignal = () => context.signal
+      ? AbortSignal.any([context.signal, AbortSignal.timeout(this.requestTimeoutMs())])
+      : AbortSignal.timeout(this.requestTimeoutMs());
+    const send = (body: any) => fetch(endpoint, {
       method: 'POST',
-      signal: context.signal ? AbortSignal.any([context.signal, AbortSignal.timeout(this.requestTimeoutMs())]) : AbortSignal.timeout(this.requestTimeoutMs()),
+      signal: callSignal(),
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify({
-        model: config.modelId,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...context.conversationHistory.slice(-6).map((h: any) => ({
-            role: h.sender === 'user' ? 'user' : 'assistant',
-            content: h.content,
-          })),
-          { role: 'user', content: context.prompt },
-        ],
-        temperature: 0.2,
-        ...(useStreaming ? { stream: true, stream_options: { include_usage: true } } : {}),
-      }),
+      body: JSON.stringify(body),
     });
+
+    let requestBody: any = {
+      model: config.modelId,
+      messages,
+      temperature: 0.2,
+      ...(useStreaming ? { stream: true, stream_options: { include_usage: true } } : {}),
+    };
+    let response = await send(requestBody);
+
+    if (!response.ok && useStreaming && [400, 415, 422].includes(response.status)) {
+      const firstError = await response.text();
+      const lower = firstError.toLowerCase();
+      if (lower.includes('stream_options') || lower.includes('unsupported') || lower.includes('unknown field')) {
+        requestBody = { ...requestBody, stream: true };
+        delete requestBody.stream_options;
+        response = await send(requestBody);
+      }
+    }
+
+    if (!response.ok && [400, 415, 422].includes(response.status)) {
+      const secondError = await response.text();
+      const lower = secondError.toLowerCase();
+      if (lower.includes('temperature') || lower.includes('unsupported parameter')) {
+        requestBody = { ...requestBody };
+        delete requestBody.temperature;
+        response = await send(requestBody);
+      } else {
+        const clean = this.cleanProviderErrorBody(secondError);
+        throw new Error(`API retornou HTTP ${response.status}: ${clean || 'resposta incompatível do provedor'}`);
+      }
+    }
 
     if (!response.ok) {
       const errText = await response.text();
+      const clean = this.cleanProviderErrorBody(errText);
       if (response.status === 524 && useStreaming) {
-        throw new Error('OmniRoute excedeu o tempo limite do túnel Cloudflare (HTTP 524). Tente novamente ou use um modelo/provider mais rápido para esta etapa.');
+        throw new Error('OmniRoute excedeu o tempo limite do túnel Cloudflare (HTTP 524).');
       }
-      throw new Error(`API retornou HTTP ${response.status}: ${errText.substring(0, 300)}`);
+      throw new Error(`API retornou HTTP ${response.status}: ${clean || 'erro do provedor'}`);
     }
 
     let textContent = '';
