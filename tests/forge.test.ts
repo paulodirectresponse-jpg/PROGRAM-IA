@@ -14,111 +14,98 @@ describe('Forge Agent Complete Verification Suite (50+ Scenarios)', () => {
   });
 
   // =========================================================================
-  // 1. AUTENTICAÇÃO E ISOLAMENTO MULTIUSUÁRIO (12 cenários)
+  // 1. AUTENTICAÇÃO FIREBASE E ISOLAMENTO MULTIUSUÁRIO
   // =========================================================================
-  describe('1. Autenticação e Isolamento Multiusuário', () => {
+  describe('1. Autenticação Firebase e Isolamento Multiusuário', () => {
     const userAEmail = `user_a_${Date.now()}@forge.dev`;
     const userBEmail = `user_b_${Date.now()}@forge.dev`;
-    const strongPassword = 'StrongPassword123!';
+    const firebaseUidA = `firebase-a-${Date.now()}`;
+    const firebaseUidB = `firebase-b-${Date.now()}`;
     let userAId = '';
     let userBId = '';
     let userASessionToken = '';
 
-    test('1.1: Registro com e-mail e senha válida cria usuário com scrypt hash', () => {
-      const user = AuthService.register(userAEmail, 'Dev User A', strongPassword);
+    test('1.1: Firebase provisiona identidade estável sem autenticação local paralela', () => {
+      const {user} = AuthService.firebaseLogin(userAEmail, 'Dev User A', firebaseUidA);
       assert.ok(user.id);
       assert.equal(user.email, userAEmail);
       assert.equal(user.name, 'Dev User A');
       userAId = user.id;
-
-      // Verify scrypt format (scrypt$salt$hash)
-      const stored = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(user.id) as any;
-      assert.ok(stored.password_hash);
-      assert.ok(stored.password_hash.startsWith('scrypt$'));
-      assert.equal(stored.password_hash.split('$').length, 3);
+      assert.match(user.id, /^usr-firebase-[a-f0-9]{32}$/);
     });
 
-    test('1.2: Rejeição de registro com e-mail duplicado', () => {
-      assert.throws(
-        () => AuthService.register(userAEmail, 'Duplicado', strongPassword),
-        /já está em uso/i
-      );
-    });
-
-    test('1.3: Rejeição de registro com senha curta (< 8 caracteres)', () => {
-      assert.throws(
-        () => AuthService.register(`short_${Date.now()}@forge.dev`, 'Short', '12345'),
-        /no mínimo 8 caracteres/i
-      );
-    });
-
-    test('1.4: Login com credenciais válidas gera sessão e token seguro', () => {
-      const { user, session } = AuthService.login(userAEmail, strongPassword);
+    test('1.2: O mesmo Firebase UID resolve para a mesma conta', () => {
+      const {user} = AuthService.firebaseLogin(userAEmail, 'Dev User A', firebaseUidA);
       assert.equal(user.id, userAId);
+    });
+
+    test('1.3: O mesmo e-mail não pode ser tomado por outro Firebase UID', () => {
+      assert.throws(
+        () => AuthService.firebaseLogin(userAEmail, 'Intruso', `other-${firebaseUidA}`),
+        /outra identidade/i
+      );
+    });
+
+    test('1.4: Sessão Forge é criada após identidade Firebase validada', () => {
+      const session = AuthService.createSession(userAId);
       assert.ok(session.token);
       assert.ok(session.token.length >= 32);
       userASessionToken = session.token;
     });
 
-    test('1.5: Login com senha incorreta falha com erro de credenciais', () => {
-      assert.throws(
-        () => AuthService.login(userAEmail, 'WrongPassword999!'),
-        /inválid[ao]s/i
-      );
-    });
-
-    test('1.6: Login com e-mail inexistente falha com erro de credenciais', () => {
-      assert.throws(
-        () => AuthService.login('nobody@forge.dev', strongPassword),
-        /inválid[ao]s/i
-      );
-    });
-
-    test('1.7: Validação de token de sessão ativo via validateSession', () => {
+    test('1.5: Sessão ativa resolve o usuário autenticado', () => {
       const validated = AuthService.validateSession(userASessionToken);
       assert.ok(validated);
       assert.equal(validated.id, userAId);
       assert.equal(validated.email, userAEmail);
     });
 
-    test('1.8: Token inválido ou adulterado retorna null', () => {
-      const validated = AuthService.validateSession('invalid-random-token-xyz');
-      assert.equal(validated, null);
+    test('1.6: Token inexistente não autentica', () => {
+      assert.equal(AuthService.validateSession('invalid-random-token-xyz'), null);
     });
 
-    test('1.9: Logout invalida a sessão específica no banco', () => {
+    test('1.7: Logout revoga a sessão específica', () => {
       AuthService.logout(userASessionToken);
-      const recheck = AuthService.validateSession(userASessionToken);
-      assert.equal(recheck, null, 'Sessão revogada não deve ser mais válida.');
+      assert.equal(AuthService.validateSession(userASessionToken), null);
     });
 
-    test('1.10: Criação do Usuário B e isolamento de projetos', () => {
-      const userB = AuthService.register(userBEmail, 'Dev User B', strongPassword);
-      userBId = userB.id;
+    test('1.8: Firebase provisiona um segundo usuário isolado', () => {
+      const {user} = AuthService.firebaseLogin(userBEmail, 'Dev User B', firebaseUidB);
+      userBId = user.id;
       assert.notEqual(userAId, userBId);
     });
 
-    test('1.11: Tentativa de acesso a projeto de outro usuário é negada', () => {
-      const projAId = `proj-a-${Date.now()}`;
-      const now = new Date().toISOString();
-      db.prepare(`
-        INSERT INTO projects (id, workspace_id, user_id, name, description, origin, branch, status, created_at, updated_at)
-        VALUES (?, 'ws-default', ?, 'Projeto Privado A', 'Desc', 'novo', 'main', 'active', ?, ?)
-      `).run(projAId, userAId, now, now);
-
-      const ownerA = WorkspaceManager.verifyProjectOwnership(projAId, userAId);
-      assert.equal(ownerA, true, 'Usuário A é o proprietário legítimo.');
-
-      const ownerB = WorkspaceManager.verifyProjectOwnership(projAId, userBId);
-      assert.equal(ownerB, false, 'Usuário B NÃO deve ter acesso ao projeto do Usuário A.');
+    test('1.9: Cada usuário possui workspace próprio', () => {
+      const workspaceA = db.prepare('SELECT id FROM workspaces WHERE user_id = ? LIMIT 1').get(userAId) as any;
+      const workspaceB = db.prepare('SELECT id FROM workspaces WHERE user_id = ? LIMIT 1').get(userBId) as any;
+      assert.ok(workspaceA?.id);
+      assert.ok(workspaceB?.id);
+      assert.notEqual(workspaceA.id, workspaceB.id);
     });
 
-    test('1.12: Listagem de projetos isolada por usuário', () => {
+    test('1.10: Tentativa de acesso a projeto de outro usuário é negada', () => {
+      const projAId = `proj-a-${Date.now()}`;
+      const now = new Date().toISOString();
+      const workspaceA = (db.prepare('SELECT id FROM workspaces WHERE user_id = ? LIMIT 1').get(userAId) as any).id;
+      db.prepare(`
+        INSERT INTO projects (id, workspace_id, user_id, name, description, origin, branch, status, created_at, updated_at)
+        VALUES (?, ?, ?, 'Projeto Privado A', 'Desc', 'novo', 'main', 'active', ?, ?)
+      `).run(projAId, workspaceA, userAId, now, now);
+
+      assert.equal(WorkspaceManager.verifyProjectOwnership(projAId, userAId), true);
+      assert.equal(WorkspaceManager.verifyProjectOwnership(projAId, userBId), false);
+    });
+
+    test('1.11: Listagem de projetos permanece isolada por usuário', () => {
       const userAProjects = db.prepare('SELECT id FROM projects WHERE user_id = ?').all(userAId) as any[];
       const userBProjects = db.prepare('SELECT id FROM projects WHERE user_id = ?').all(userBId) as any[];
-
       assert.ok(userAProjects.length >= 1);
-      assert.equal(userBProjects.length, 0, 'Usuário B não deve ver projetos do Usuário A.');
+      assert.equal(userBProjects.length, 0);
+    });
+
+    test('1.12: user-default e ws-default não são provisionados automaticamente', () => {
+      assert.equal(db.prepare('SELECT id FROM users WHERE id = ?').get('user-default'), undefined);
+      assert.equal(db.prepare('SELECT id FROM workspaces WHERE id = ?').get('ws-default'), undefined);
     });
   });
 
