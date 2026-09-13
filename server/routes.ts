@@ -1228,19 +1228,20 @@ router.post('/projects/:id/github/branch', requireAuth, requireProjectOwner, asy
 router.post('/projects/:id/github/pull-request', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   try {
     const { title, base = 'main', body } = req.body;
-    if (!title) return res.status(400).json({ error: 'TÃ­tulo do Pull Request Ã© obrigatÃ³rio.' });
+    if (!title) return res.status(400).json({ error: 'Título do Pull Request é obrigatório.' });
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any;
-    if (!project || !project.repo_url) {
-      return res.status(400).json({ error: 'RepositÃ³rio GitHub nÃ£o configurado.' });
-    }
-    const parsed = GitHubService.parseRepoUrl(project.repo_url);
-    if (!parsed) return res.status(400).json({ error: 'URL do repositÃ³rio invÃ¡lida.' });
+    if (!project) return res.status(404).json({ error: 'Projeto não encontrado.' });
+    const repoContext = projectRepositoryContext(req.params.id, project);
+    if (!repoContext.repoUrl) return res.status(400).json({ error: 'Repositório GitHub não configurado.' });
 
-    const headBranch = project.branch || 'main';
+    const parsed = GitHubService.parseRepoUrl(repoContext.repoUrl);
+    if (!parsed) return res.status(400).json({ error: 'URL do repositório inválida.' });
+
+    const headBranch = repoContext.branch;
     if (headBranch === base) {
       return res.status(400).json({
-        error: `A branch atual (${headBranch}) Ã© a mesma que a branch base (${base}). Crie uma nova branch antes de abrir o PR.`,
+        error: `A branch atual (${headBranch}) é a mesma que a branch base (${base}). Crie uma nova branch antes de abrir o PR.`,
       });
     }
 
@@ -1254,7 +1255,7 @@ router.post('/projects/:id/github/pull-request', requireAuth, requireProjectOwne
       body: body || `Criado automaticamente pelo Forge Agent para a branch ${headBranch}`,
     });
 
-    res.json(result);
+    res.status(result.success ? 200 : 400).json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
