@@ -846,17 +846,16 @@ export class LLMAdapterService {
     while ((match = mentionedPathRegex.exec(prompt)) !== null) add(match[1]);
 
     if (out.length === 0) {
+      const isPlaceholder=(path:string)=>path==='index.html'&&/forge-placeholder:\s*preview-only/i.test(String(existingFiles[path]||''));
       const core = existingPaths
-        .filter((path) => this.isSafeBuildTarget(path))
+        .filter((path) => this.isSafeBuildTarget(path) && !isPlaceholder(path))
         .sort((a, b) => this.buildTargetPriority(a) - this.buildTargetPriority(b));
       for (const path of core) add(path);
     }
 
     if (out.length === 0) {
-      // A scratch project may contain only the Forge preview placeholder. That file
-      // is preview scaffolding, not product architecture, so it must not become the
-      // implicit build target. Legacy/static projects that own a real index.html can
-      // still use it as a last-resort target.
+      // A scratch project containing only Forge's preview placeholder intentionally
+      // returns no implicit target. Planning must select a real architecture first.
       const onlyIndex = existingPaths.length === 1 && existingPaths[0] === 'index.html';
       const indexContent = String(existingFiles['index.html'] || '');
       const isForgePlaceholder = /forge-placeholder:\s*preview-only/i.test(indexContent);
