@@ -309,14 +309,18 @@ export class WorkspaceManager {
     const candidates: Array<{ sourcePath: string; entry: any }> = [];
     zip.forEach((rawPath, entry) => {
       if (entry.dir) return;
+      const originalPath = String((entry as any).unsafeOriginalName || rawPath).replace(/\\/g, '/');
+      const originalSegments = originalPath.split('/');
+      if (
+        originalPath.startsWith('/') ||
+        originalPath.includes('\0') ||
+        originalSegments.some((segment) => segment === '..')
+      ) {
+        throw new Error(`Caminho inseguro detectado no ZIP: ${originalPath}`);
+      }
       const relPath = rawPath.replace(/\\/g, '/').replace(/^\.\//, '');
       const segments = relPath.split('/');
-      if (
-        !relPath ||
-        relPath.startsWith('/') ||
-        relPath.includes('\0') ||
-        segments.some((segment) => segment === '..' || segment === '')
-      ) {
+      if (!relPath || relPath.startsWith('/') || relPath.includes('\0') || segments.some((segment) => segment === '..' || segment === '')) {
         throw new Error(`Caminho inseguro detectado no ZIP: ${rawPath}`);
       }
       const permissions = typeof (entry as any).unixPermissions === 'number' ? (entry as any).unixPermissions : 0;
