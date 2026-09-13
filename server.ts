@@ -13,10 +13,16 @@ dotenv.config();
 
 // Initialize SQLite database and run migrations
 initializeDatabase();
-if (process.env.FORGE_REQUIRE_CLOUD_SYNC === 'true') CloudSyncService.assertPersistentConfiguration();
+
+if (process.env.FORGE_REQUIRE_CLOUD_SYNC === 'true') {
+  CloudSyncService.assertPersistentConfiguration();
+}
 
 const app = express();
-const PORT = 3000;
+
+// Railway injeta PORT automaticamente.
+// Localmente continua usando 3000.
+const PORT = Number(process.env.PORT || 3000);
 
 // Security Headers
 app.use((req, res, next) => {
@@ -27,7 +33,8 @@ app.use((req, res, next) => {
   next();
 });
 
-// Middleware for cookies and parsing JSON with generous size limit for project files/diffs
+// Middleware for cookies and parsing JSON with generous size limit
+// for project files/diffs
 app.use(cookieParser());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -35,53 +42,70 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // CSRF Protection & Token Distribution
 app.use((req, res, next) => {
   let csrfToken = req.cookies?.['forge_csrf'];
+
   if (!csrfToken) {
     csrfToken = crypto.randomBytes(24).toString('hex');
+
     res.cookie('forge_csrf', csrfToken, {
-      httpOnly: false, // Accessible to client JS for header inclusion
+      httpOnly: false,
       sameSite: 'lax',
       secure: process.env.NODE_ENV === 'production',
       path: '/',
     });
   }
+
   next();
 });
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), app: 'Forge Agent' });
+app.get('/api/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    app: 'Forge Agent',
+  });
 });
 
 // Mount API routes
 app.use('/api', apiRouter);
 
-
 // Vite middleware setup
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+      },
       appType: 'spa',
     });
+
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
+
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Forge Agent full-stack server running on http://0.0.0.0:${PORT}`);
+    console.log(
+      `Forge Agent full-stack server running on http://0.0.0.0:${PORT}`
+    );
   });
+
   const shutdown = async () => {
     await RuntimeManager.stopAll();
-    server.close(() => process.exit(0));
+
+    server.close(() => {
+      process.exit(0);
+    });
   };
+
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
 }
 
 startServer();
-
