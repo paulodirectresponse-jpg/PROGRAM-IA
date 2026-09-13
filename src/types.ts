@@ -93,6 +93,29 @@ export interface Message {
     runId?: string;
     agentKey?: string;
     profileKey?: string;
+    workflow?: {
+      runId?: string;
+      status?: string;
+      shipRequested?: boolean;
+      steps?: string[];
+      trace?: Array<{
+        id: string;
+        agent_key: string;
+        title: string;
+        status: string;
+        attempt_count?: number;
+        invocations?: Array<{
+          id: string;
+          profile_key?: string;
+          provider_key?: string;
+          model_id?: string;
+          status?: string;
+          error_code?: string;
+          latency_ms?: number;
+          cost_usd?: number;
+        }>;
+      }>;
+    };
     validation?: {passed:boolean;status:'passed'|'failed'|'unverified';results:Array<{tool:string;status:string;summary?:string}>;advisory?:{status:string;checks:string[];issues:string[]}}|null;
   };
 }
