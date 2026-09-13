@@ -204,9 +204,6 @@ export class WorkspaceManager {
 
     db.prepare('UPDATE projects SET current_checkpoint_id = ?, updated_at = ? WHERE id = ?').run(cpId, now, projectId);
 
-    // Temporary compatibility until the remaining legacy security tests move to ValidatorEngine.
-    this.recordCheckpointSecurityGate(projectId, cpId, snapshot);
-
     return cpId;
   }
 
@@ -236,30 +233,6 @@ export class WorkspaceManager {
     for (const [rel, encoded] of Object.entries(binary)) this.writeBinaryFile(projectId,rel,Buffer.from(encoded,'base64'));
     this.createCheckpoint(projectId,`Restaurado: ${checkpointId}`,'Restauração local concluída. Sincronize para criar um novo commit no GitHub.');
     return true;
-  }
-
-  private static recordCheckpointSecurityGate(projectId: string, checkpointId: string, files: Record<string, string>) {
-    const assignment = /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|key)\b\s*[:=]\s*["'][^"'\r\n]{16,}["']/gi;
-    let leakedFile = '';
-    for (const [fileName, source] of Object.entries(files)) {
-      if (assignment.test(source)) { leakedFile = fileName; break; }
-      assignment.lastIndex = 0;
-    }
-    const failed = Boolean(leakedFile);
-    db.prepare(
-      "INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at) VALUES (?, ?, ?, 'security', ?, ?, ?)"
-    ).run(
-      'ver-sec-' + crypto.randomUUID(),
-      projectId,
-      checkpointId,
-      failed ? 'fail' : 'pass',
-      JSON.stringify({
-        executed: true,
-        compatibility: true,
-        message: failed ? `Possível chave secreta exposta no arquivo ${leakedFile}` : 'Nenhuma credencial aparente exposta no código.',
-      }),
-      new Date().toISOString()
-    );
   }
 
   static deleteProject(projectId: string): void {
