@@ -1234,50 +1234,149 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
 });
 
 router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
-  try {
-    const { proposalId, summary = 'AlteraÃ§Ãµes aprovadas pelo usuÃ¡rio' } = req.body;
-    const projectId = req.params.projectId;
+  const projectId = req.params.projectId;
+  let rollbackCheckpointId: string | null = null;
+  let workspaceMutated = false;
+  let proposalMessage: any = null;
+  let metadata: any = null;
 
-    if (!proposalId) return res.status(400).json({error:'Identificador da proposta Ã© obrigatÃ³rio.'});
-    const conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
-    const rows=conversation?db.prepare("SELECT id,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[]:[];
-    const proposalMessage=rows.find((row:any)=>{try{return JSON.parse(row.metadata_json||'{}')?.proposal?.id===proposalId;}catch{return false;}});
-    if(!proposalMessage)return res.status(404).json({error:'Proposta nÃ£o encontrada nesta conversa.'});
-    const metadata=JSON.parse(proposalMessage.metadata_json||'{}');
-    if(metadata.proposal?.status!=='pending')return res.status(409).json({error:`Esta proposta nÃ£o estÃ¡ mais disponÃ­vel (${metadata.proposal?.status||'estado invÃ¡lido'}).`});
+  try {
+    const { proposalId, summary = 'Alterações aprovadas pelo usuário' } = req.body;
+    if (!proposalId) return res.status(400).json({ error: 'Identificador da proposta é obrigatório.' });
+
+    const conversation = db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+    const rows = conversation
+      ? db.prepare("SELECT id,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[]
+      : [];
+
+    proposalMessage = rows.find((row: any) => {
+      try { return JSON.parse(row.metadata_json || '{}')?.proposal?.id === proposalId; }
+      catch { return false; }
+    });
+    if (!proposalMessage) return res.status(404).json({ error: 'Proposta não encontrada nesta conversa.' });
+
+    metadata = JSON.parse(proposalMessage.metadata_json || '{}');
+    if (metadata.proposal?.status !== 'pending') {
+      return res.status(409).json({ error: `Esta proposta não está mais disponível (${metadata.proposal?.status || 'estado inválido'}).` });
+    }
+
     const files = metadata.proposal.files;
-    if (!Array.isArray(files) || files.length === 0) return res.status(409).json({error:'A proposta armazenada estÃ¡ vazia ou corrompida.'});
-    metadata.proposal.status='previewing';
-    db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
+    if (!Array.isArray(files) || files.length === 0) {
+      return res.status(409).json({ error: 'A proposta armazenada está vazia ou corrompida.' });
+    }
 
     for (const file of files) {
       WorkspaceManager.resolveSafePath(projectId, file.path);
-      if (!['create', 'update', 'delete', 'modify'].includes(file.action) || (file.action !== 'delete' && typeof file.content !== 'string')) return res.status(400).json({error:'Arquivo proposto invÃ¡lido.'});
-    }
-    const rollbackCheckpointId=WorkspaceManager.createCheckpoint(projectId, `Antes: ${summary.slice(0, 60)}`);
-    for (const file of files) {
-      if (file.action === 'delete') {
-        WorkspaceManager.deleteFile(projectId, file.path);
-      } else if (typeof file.content === 'string') {
-        WorkspaceManager.writeFile(projectId, file.path, file.content);
+      if (!['create', 'update', 'delete', 'modify'].includes(file.action)) {
+        return res.status(400).json({ error: 'A proposta contém uma ação de arquivo inválida.' });
       }
+      if (file.action !== 'delete' && typeof file.content !== 'string') {
+        return res.status(400).json({ error: 'A proposta contém arquivo sem conteúdo válido.' });
+      }
+    }
+
+    rollbackCheckpointId = WorkspaceManager.createCheckpoint(projectId, `Antes: ${summary.slice(0, 60)}`);
+    metadata.proposal.status = 'previewing';
+    metadata.hasErrors = false;
+    delete metadata.errorMessage;
+    db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
+
+    workspaceMutated = true;
+    for (const file of files) {
+      if (file.action === 'delete') WorkspaceManager.deleteFile(projectId, file.path);
+      else WorkspaceManager.writeFile(projectId, file.path, file.content);
     }
 
     const checkpointId = WorkspaceManager.createCheckpoint(projectId, summary.slice(0, 100), summary);
     const workflowRunId = metadata.workflow?.runId || null;
-    const validationStepId = workflowRunId ? RunService.createStep(workflowRunId, 'SENTINEL', 'Executar ValidatorEngine após aplicação', 90, 'micro', { proposalId, checkpointId }) : undefined;
-    const validation=await ValidatorEngine.validate({projectId,checkpointId,runId:workflowRunId||undefined,stepId:validationStepId});
-    if(validationStepId) RunService.finishStep(validationStepId, validation.status === 'failed' ? 'failed' : 'completed', { validator:'ValidatorEngine', status:validation.status, failedGate:validation.results.find((item:any)=>item.status==='fail')?.tool || null, security:validation.security?.status });
-    if(validation.status==='failed'){
-      const evidenceStepId = workflowRunId ? RunService.createStep(workflowRunId, 'SENTINEL', 'Diagnosticar falha real de validação', 91, 'micro', RunService.context('micro', { objective:'Explicar rollback por gate executado', errors:[validation.results.find((item:any)=>item.status==='fail')?.output || validation.security?.issues?.join('; ') || 'Gate executado falhou'], constraints:['Sem revisão genérica','Correção automática limitada a uma nova tentativa quando houver evidência nova'] })) : undefined;
-      if(evidenceStepId) RunService.finishStep(evidenceStepId,'completed');
-      if(workflowRunId) RunService.finish(workflowRunId,evidenceStepId||validationStepId||'', 'failed');
-      WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);metadata.proposal.status='failed_validation';metadata.validation=validation;metadata.hasErrors=true;metadata.errorMessage='Uma verificaÃ§Ã£o executada falhou; a alteraÃ§Ã£o foi revertida.';db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);return res.status(422).json({error:metadata.errorMessage,validation});}
-    if(workflowRunId) RunService.finish(workflowRunId,validationStepId||'', 'completed');
-    metadata.proposal.status='applied';metadata.validation=validation;metadata.checkpointId=checkpointId;db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
-    res.json({ success: true, checkpointId, validation, message: validation.status==='unverified'?'AlteraÃ§Ãµes aplicadas. ValidaÃ§Ã£o automÃ¡tica nÃ£o disponÃ­vel para este projeto.':'AlteraÃ§Ãµes aplicadas e verificadas com sucesso.' });
+    const validationStepId = workflowRunId
+      ? RunService.createStep(workflowRunId, 'SENTINEL', 'Executar ValidatorEngine após aplicação', 90, 'micro', { proposalId, checkpointId })
+      : undefined;
+
+    const validation = await ValidatorEngine.validate({
+      projectId,
+      checkpointId,
+      runId: workflowRunId || undefined,
+      stepId: validationStepId,
+    });
+
+    if (validationStepId) {
+      RunService.finishStep(
+        validationStepId,
+        validation.status === 'failed' ? 'failed' : 'completed',
+        {
+          validator: 'ValidatorEngine',
+          status: validation.status,
+          failedGate: validation.results.find((item: any) => item.status === 'fail')?.tool || null,
+          security: validation.security?.status,
+        }
+      );
+    }
+
+    if (validation.status === 'failed') {
+      const evidenceStepId = workflowRunId
+        ? RunService.createStep(
+            workflowRunId,
+            'SENTINEL',
+            'Diagnosticar falha real de validação',
+            91,
+            'micro',
+            RunService.context('micro', {
+              objective: 'Explicar rollback por gate executado',
+              errors: [
+                validation.results.find((item: any) => item.status === 'fail')?.output ||
+                validation.security?.issues?.join('; ') ||
+                'Gate executado falhou',
+              ],
+              constraints: ['Sem revisão genérica', 'Sem aplicar arquivo que falhou em validação'],
+            })
+          )
+        : undefined;
+
+      if (evidenceStepId) RunService.finishStep(evidenceStepId, 'completed');
+      if (workflowRunId) RunService.finish(workflowRunId, evidenceStepId || validationStepId || '', 'failed');
+
+      WorkspaceManager.restoreCheckpoint(projectId, rollbackCheckpointId);
+      workspaceMutated = false;
+      metadata.proposal.status = 'failed_validation';
+      metadata.validation = validation;
+      metadata.hasErrors = true;
+      metadata.errorMessage = 'Uma verificação executada falhou; a alteração foi revertida integralmente.';
+      db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
+      return res.status(422).json({ error: metadata.errorMessage, validation });
+    }
+
+    if (workflowRunId) RunService.finish(workflowRunId, validationStepId || '', 'completed');
+    metadata.proposal.status = 'applied';
+    metadata.validation = validation;
+    metadata.checkpointId = checkpointId;
+    metadata.hasErrors = false;
+    db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
+
+    workspaceMutated = false;
+    res.json({
+      success: true,
+      checkpointId,
+      validation,
+      message: validation.status === 'unverified'
+        ? 'Alterações aplicadas. Validação automática não disponível para este projeto.'
+        : 'Alterações aplicadas e verificadas com sucesso.',
+    });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    if (workspaceMutated && rollbackCheckpointId) {
+      try { WorkspaceManager.restoreCheckpoint(projectId, rollbackCheckpointId); } catch {}
+    }
+
+    if (proposalMessage && metadata?.proposal) {
+      try {
+        metadata.proposal.status = 'pending';
+        metadata.hasErrors = true;
+        metadata.errorMessage = 'A aplicação falhou e o workspace foi restaurado. Você pode tentar novamente.';
+        db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
+      } catch {}
+    }
+
+    res.status(500).json({ error: 'A aplicação falhou de forma segura; nenhuma alteração parcial foi mantida.' });
   }
 });
 
