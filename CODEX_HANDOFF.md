@@ -16,9 +16,9 @@ Este arquivo contém somente pendências reais. Não trate itens já implementad
 
 ## Fase 1 — Context Engine V2
 
-O core isolado da Fase 1 já está implementado e validado. O handoff operacional exclusivo está em `PHASE1_CODEX_HANDOFF.md`.
+A Fase 1 está integrada localmente. `ContextEngineV2` alimenta SCOUT, STUDIO, FORGE e SENTINEL; `ContextPack` entra no prompt real do provider; requirements sobrevivem ao workflow; ContextCommit registra transitions materiais; workspace/import/checkpoint invalidam índice por hash; model_invocations guarda metadata contextual.
 
-**Não reimplementar** `ProjectFileIndex`, `ArchitectureGraphService`, `ContextCommitService`, `ContextCompiler`, schemas ou APIs do Context Engine V2. A responsabilidade restante é a integração profunda desses contratos nos fluxos existentes.
+**Não reimplementar** `ProjectFileIndex`, `ArchitectureGraphService`, `ContextCommitService`, `ContextCompiler`, schemas ou APIs do Context Engine V2. Próximos trabalhos devem partir desse contrato já validado.
 
 ## C — Runtime de frameworks e preview executável
 
@@ -83,5 +83,8 @@ O fluxo operacional usa persistência canônica normalizada. `forge_sync_snapsho
 
 ## Validação local desta rodada
 
-- Suíte direcionada `foundation/http/directPersistence/regression/agentEngine`: 67/67 PASS.
-- Os demais gates devem ser registrados no relatório final da rodada.
+- Fase 1 isolada/integrada: 10/10 PASS.
+- Suíte direcionada `foundation/http/directPersistence/regression/agentEngine/phase0/phase1`: 104/104 PASS.
+- `npm test`: 64/64 PASS.
+- `npm run build`: PASS.
+- `npx playwright test`: 1/1 PASS.

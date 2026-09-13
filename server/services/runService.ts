@@ -71,12 +71,12 @@ export class RunService{
   static trace(runId:string){
     const steps=db.prepare(`SELECT id,agent_key,title,status,order_index,scope_level,attempt_count,context_json,created_at,finished_at
       FROM agent_steps WHERE run_id=? ORDER BY order_index ASC, created_at ASC`).all(runId) as any[];
-    const invocations=db.prepare(`SELECT id,step_id,agent_key,profile_key,provider_key,model_id,status,error_code,retry_index,latency_ms,cost_usd,created_at
+    const invocations=db.prepare(`SELECT id,step_id,agent_key,profile_key,provider_key,model_id,status,error_code,retry_index,latency_ms,cost_usd,context_pack_id,context_scope,project_hash,context_tokens,context_selected_files_json,context_omitted_files_count,created_at
       FROM model_invocations WHERE run_id=? ORDER BY created_at ASC`).all(runId) as any[];
     return steps.map(step=>({
       ...step,
       context:(()=>{try{return step.context_json?JSON.parse(step.context_json):null;}catch{return null;}})(),
-      invocations:invocations.filter(inv=>inv.step_id===step.id),
+      invocations:invocations.filter(inv=>inv.step_id===step.id).map(inv=>({ ...inv, context_selected_files:(()=>{try{return JSON.parse(inv.context_selected_files_json||'[]')}catch{return[]}})() })),
     }));
   }
   static context(scope:'micro'|'local'|'task',x:{objective:string;acceptanceCriteria?:string[];snippets?:unknown[];diff?:unknown;errors?:unknown[];previousAttempt?:string;constraints?:string[];budgetRemaining?:number}){return{scope,objective:x.objective,acceptanceCriteria:x.acceptanceCriteria||[],relevantFilesOrSnippets:x.snippets||[],currentDiff:x.diff||null,errorEvidence:x.errors||[],previousAttemptSummary:x.previousAttempt||'',constraints:x.constraints||[],budgetRemaining:x.budgetRemaining??0};}

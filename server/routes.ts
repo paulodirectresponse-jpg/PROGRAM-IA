@@ -51,6 +51,12 @@ function upsertRepository(projectId: string, remoteUrl: string, branch: string, 
   }
 }
 
+
+function workflowRequirementIds(projectId: string, runId?: string | null, planId?: string | null): string[] {
+  const rows = runId ? RequirementLedgerService.listByRun(runId) : (planId ? RequirementLedgerService.listByPlan(projectId, planId) : []);
+  return rows.map(row => row.requirement_key).filter(Boolean);
+}
+
 function projectRepositoryContext(projectId: string, legacyProject?: any) {
   const repository = db.prepare(
     'SELECT remote_url, default_branch FROM repositories WHERE project_id = ? AND is_connected = 1 ORDER BY created_at DESC LIMIT 1'
@@ -1676,11 +1682,13 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
 
     const checkpointId = WorkspaceManager.createCheckpoint(projectId, summary.slice(0, 100), summary);
     const workflowRunId = metadata.workflow?.runId || metadata.runId || null;
+    const activeRequirementIds = workflowRequirementIds(projectId, workflowRunId, metadata.planId || null);
     const requirementUpdate=(status:'pending'|'implemented'|'verified'|'failed'|'waived',evidence?:any,changedFiles?:string[])=>{
       if(workflowRunId) RequirementLedgerService.setStatusForRun(workflowRunId,status,evidence,changedFiles);
       else if(metadata.planId) RequirementLedgerService.setStatusForPlan(projectId,metadata.planId,status,evidence,changedFiles);
     };
     requirementUpdate('implemented',{type:'proposal_applied',checkpointId,at:new Date().toISOString()},files.map((file:any)=>file.path));
+    if (workflowRunId) ContextEngineV2.recordCommit({ projectId, runId: workflowRunId, agentKey: 'FORGE', scope: 'TASK', task: metadata.originalRequest || summary, changedFiles: files.map((file:any)=>file.path), requirementIds: activeRequirementIds, validation: { status: 'applied', checkpointId }, nextState: { next: 'VALIDATE' } });
     if (workflowRunId) RunService.resume(workflowRunId);
     const validationStepId = workflowRunId
       ? RunService.createStep(workflowRunId, 'SENTINEL', 'Executar ValidatorEngine após aplicação', RunService.nextOrderIndex(workflowRunId), 'micro', { proposalId, checkpointId })
@@ -1694,6 +1702,7 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
     });
 
     if (validationStepId) {
+      ContextEngineV2.recordCommit({ projectId, runId: workflowRunId || null, taskId: validationStepId, agentKey: 'SENTINEL', scope: 'MICRO', task: 'ValidatorEngine após aplicação', changedFiles: files.map((file:any)=>file.path), requirementIds: activeRequirementIds, validation, blockers: validation.status === 'failed' ? [String(validation.results.find((item:any)=>item.status==='fail')?.output || 'validation_failed')] : [], nextState: { status: validation.status } });
       RunService.finishStep(validationStepId, validation.status === 'failed' ? 'failed' : 'completed', {
         validator: 'ValidatorEngine',
         status: validation.status,
@@ -1723,7 +1732,10 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
             constraints: ['Sem revisão genérica', 'Sem carregar projeto inteiro', 'Sem aplicar terceira tentativa automática'],
           }))
         : undefined;
-      if (evidenceStepId) RunService.finishStep(evidenceStepId, 'completed', diagnosis);
+      if (evidenceStepId) {
+        ContextEngineV2.recordCommit({ projectId, runId: workflowRunId || null, taskId: evidenceStepId, agentKey: 'SENTINEL', scope: 'MICRO', task: 'Diagnóstico de falha real de validação', decisions: [diagnosis.cause, diagnosis.repairInstruction], changedFiles: affectedFiles, requirementIds: activeRequirementIds, validation, blockers: [errorOutput], nextState: { next: 'FORGE_REPAIR' } });
+        RunService.finishStep(evidenceStepId, 'completed', diagnosis);
+      }
 
       if (workflowRunId) {
         let repairStepId: string | null = null;
@@ -1748,6 +1760,8 @@ Falha concreta: ${errorOutput}`,
             userId: req.user!.id,
             runId: workflowRunId,
             stepId: repairStepId,
+            requirementIds: activeRequirementIds,
+            focusPaths: affectedFiles,
           }, { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true, repair: true });
           const repairFiles = repairResult.build?.files || repairResult.proposal?.files || [];
           if (!Array.isArray(repairFiles) || repairFiles.length === 0) throw new Error('Repair não retornou arquivos aplicáveis.');
@@ -1762,8 +1776,10 @@ Falha concreta: ${errorOutput}`,
             else WorkspaceManager.writeFile(projectId, file.path, file.content);
           }
           const repairCheckpointId = WorkspaceManager.createCheckpoint(projectId, `Repair: ${summary.slice(0, 70)}`, 'Correção automática bounded após falha real do ValidatorEngine.');
+          ContextEngineV2.recordCommit({ projectId, runId: workflowRunId, taskId: repairStepId, agentKey: 'FORGE', scope: 'LOCAL', task: 'Repair automático bounded aplicado', decisions: ['Corrigir somente falha evidenciada pelo ValidatorEngine'], changedFiles: repairFiles.map((file:any)=>file.path), requirementIds: activeRequirementIds, validation: { status: 'repair_applied', checkpointId: repairCheckpointId }, blockers: [], nextState: { next: 'REVALIDATE' } });
           const revalidationStepId = RunService.createStep(workflowRunId, 'SENTINEL', 'Reexecutar ValidatorEngine após repair', RunService.nextOrderIndex(workflowRunId), 'micro', { proposalId, repairCheckpointId });
           const repairValidation = await ValidatorEngine.validate({ projectId, checkpointId: repairCheckpointId, runId: workflowRunId, stepId: revalidationStepId });
+          ContextEngineV2.recordCommit({ projectId, runId: workflowRunId, taskId: revalidationStepId, agentKey: 'SENTINEL', scope: 'MICRO', task: 'Revalidação após repair', changedFiles: repairFiles.map((file:any)=>file.path), requirementIds: activeRequirementIds, validation: repairValidation, blockers: repairValidation.status === 'failed' ? ['repair_validation_failed'] : [], nextState: { status: repairValidation.status } });
           RunService.finishStep(revalidationStepId, repairValidation.status === 'failed' ? 'failed' : 'completed', { validator: 'ValidatorEngine', status: repairValidation.status });
           if (repairValidation.status === 'failed') {
             WorkspaceManager.restoreCheckpoint(projectId, repairRollbackId);
@@ -1841,6 +1857,8 @@ Falha concreta: ${errorOutput}`,
       db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
       return res.status(422).json({ error: metadata.errorMessage, validation });
     }
+
+    if (workflowRunId) ContextEngineV2.recordCommit({ projectId, runId: workflowRunId, agentKey: 'SENTINEL', scope: 'TASK', task: 'Aplicação concluída após validação', changedFiles: files.map((file:any)=>file.path), requirementIds: activeRequirementIds, validation, blockers: [], nextState: { status: validation.status === 'passed' ? 'completed' : 'needs_verification' } });
 
     if (metadata.workflow?.shipRequested && workflowRunId && validation.status === 'passed') {
       const ship = RunService.createStep(workflowRunId, 'SHIP', 'Preparar publicação solicitada após validação', RunService.nextOrderIndex(workflowRunId), 'task', { requested: true, status: 'waiting_for_publish_adapter' });
@@ -2498,6 +2516,7 @@ router.post('/conversations/:projectId/reject-proposal', requireAuth, requirePro
   metadata.proposal.status = 'rejected';
   const workflowRunId = metadata.workflow?.runId || metadata.runId || null;
   if (workflowRunId) {
+    ContextEngineV2.recordCommit({ projectId: req.params.projectId, runId: workflowRunId, agentKey: 'PROGRAM', scope: 'TASK', task: 'Proposta rejeitada pelo usuário', decisions: ['Usuário rejeitou a proposta antes da aplicação'], changedFiles: [], requirementIds: workflowRequirementIds(req.params.projectId, workflowRunId, metadata.planId || null), validation: null, blockers: [], nextState: { status: 'rejected' } });
     const rejectedStep = RunService.createStep(workflowRunId, 'PROGRAM', 'Proposta rejeitada pelo usuário', RunService.nextOrderIndex(workflowRunId), 'task', { proposalId });
     RunService.finishStep(rejectedStep, 'rejected');
     RunService.finish(workflowRunId, rejectedStep, 'rejected');

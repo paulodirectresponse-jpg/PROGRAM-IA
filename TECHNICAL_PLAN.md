@@ -47,6 +47,8 @@ Ainda falta WebSocket/HMR autenticado e E2E real por framework.
 
 ## 5. Agent Engine
 
+O Context Engine V2 é a fonte primária de contexto para chamadas de agente. Cada step material compila um ContextPack por escopo, requirements e arquivos de foco; o provider recebe uma serialização compacta desse pack, e a invocation registra referência/context telemetry.
+
 Papéis:
 - SCOUT — contexto/plano;
 - STUDIO — direção visual quando aplicável;
@@ -54,7 +56,7 @@ Papéis:
 - SENTINEL — interpretação de falha concreta;
 - SHIP — publicação solicitada.
 
-Estado atual: state machine determinística básica implementada, com `forcedAgentKey` e vínculo ao ValidatorEngine na aplicação da proposta. Próximo gate: repair localizado bounded, escalonamento por step e benchmark real.
+Estado atual: state machine determinística implementada com `forcedAgentKey`, vínculo ao ValidatorEngine, repair bounded/escalonamento local e Context Engine V2 integrado ao prompt real. Próximo gate fora da Fase 1: WebSocket/HMR, E2E framework real e benchmark real.
 
 ## 6. Validação
 

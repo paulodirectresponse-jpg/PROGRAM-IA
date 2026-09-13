@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { db } from '../db/index.js';
+import { ContextEngineV2 } from '../context-engine/contextEngine.js';
 
 const DATA_DIR = path.resolve(process.env.FORGE_DATA_DIR || path.join(process.cwd(), '.data'), 'projects');
 
@@ -21,6 +22,14 @@ const BINARY_EXTENSIONS = new Set([
 ]);
 
 export class WorkspaceManager {
+  private static syncContextIndex(projectId: string): void {
+    try {
+      ContextEngineV2.syncProject({ projectId, files: this.getAllFilesContent(projectId) });
+    } catch {
+      // Context index is operational memory; workspace mutations remain source of truth.
+    }
+  }
+
   static normalizeImportedFiles<T>(files: Record<string, T>): Record<string, T> {
     const entries = Object.entries(files).filter(([name]) => name && !name.endsWith('/'));
     if (!entries.length) return {};
@@ -140,6 +149,7 @@ export class WorkspaceManager {
       fs.mkdirSync(parentDir, { recursive: true });
     }
     fs.writeFileSync(fullPath, content, 'utf8');
+    this.syncContextIndex(projectId);
   }
 
   static writeBinaryFile(projectId: string, relativePath: string, buffer: Buffer): void {
@@ -149,12 +159,14 @@ export class WorkspaceManager {
       fs.mkdirSync(parentDir, { recursive: true });
     }
     fs.writeFileSync(fullPath, buffer);
+    this.syncContextIndex(projectId);
   }
 
   static deleteFile(projectId: string, relativePath: string): boolean {
     const fullPath = this.resolveSafePath(projectId, relativePath);
     if (fs.existsSync(fullPath)) {
       fs.unlinkSync(fullPath);
+      this.syncContextIndex(projectId);
       return true;
     }
     return false;
@@ -232,6 +244,7 @@ export class WorkspaceManager {
 
     for (const [rel, encoded] of Object.entries(binary)) this.writeBinaryFile(projectId,rel,Buffer.from(encoded,'base64'));
     this.createCheckpoint(projectId,`Restaurado: ${checkpointId}`,'Restauração local concluída. Sincronize para criar um novo commit no GitHub.');
+    this.syncContextIndex(projectId);
     return true;
   }
 
@@ -254,6 +267,7 @@ export class WorkspaceManager {
           if (content !== null) this.writeFile(targetProjectId, file.path, content);
         }
       }
+      this.syncContextIndex(targetProjectId);
       return true;
     } catch {
       return false;
@@ -329,6 +343,7 @@ export class WorkspaceManager {
     }
 
     this.createCheckpoint(projectId, 'Importação de Arquivo ZIP', `Importados ${importedFiles.length} arquivos com sucesso.`);
+    this.syncContextIndex(projectId);
     return { fileCount: importedFiles.length, importedFiles };
   }
 

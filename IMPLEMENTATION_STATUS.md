@@ -1,6 +1,6 @@
 # PROGRAM-IA — Implementation status
 
-Atualizado em 2026-09-13 após endurecimento local de runtime, Agent Engine e Cloudflare Direct Upload.
+Atualizado em 2026-09-13 após integração final local da Fase 1 — Context Engine V2.
 
 A `main` está em consolidação para release. O CI remoto precisa terminar `success`; `cancelled`, `skipped` ou timeout não contam como verde.
 
@@ -15,7 +15,7 @@ A `main` está em consolidação para release. O CI remoto precisa terminar `suc
 - `RuntimeManager` = runtime controlado de preview para projetos com framework.
 - `LLMAdapterService` = execução de providers.
 - `ModelRouter` = perfis, candidates, budget, circuit breaker e telemetria.
-- Agent Engine = state machine determinística básica com feature flag.
+- Agent Engine = state machine determinística com Context Engine V2 como fonte primária de contexto dos agentes.
 
 ## Consolidado
 
@@ -80,15 +80,19 @@ Ainda faltam correção automática localizada com revalidação, escalonamento 
 - Firestore operacional removido;
 - remoções destrutivas de snapshot/colunas espelho continuam bloqueadas por reconciliação real.
 
-### Fase 1 — Context Engine V2 core
-- ProjectFileIndex incremental por hash implementado;
+### Fase 1 — Context Engine V2
+- ProjectFileIndex incremental por hash implementado e integrado ao workspace;
 - Architecture Graph persistente implementado;
-- Context Commit durável implementado;
+- Context Commit durável implementado e gravado em transitions materiais;
 - Context Scopes MICRO/LOCAL/TASK/PROJECT implementados;
 - Context Compiler V2 + ContextPack + telemetria implementados;
-- APIs de sync/snapshot/compile/commit/telemetry implementadas;
+- APIs de sync/snapshot/compile/commit/telemetry preservadas;
+- ContextPack agora alimenta SCOUT, STUDIO, FORGE e SENTINEL como fonte primária do prompt real;
+- continue, repair, waiting_approval/resume, apply-proposal, validation e checkpoint restore preservam continuidade via ContextCommit/Requirement Ledger;
+- model_invocations registra metadata contextual por ID de ContextPack;
+- ZIP/imports/checkpoints/workspace mutations sincronizam o índice;
 - nenhum limite lógico de quantidade de arquivos foi introduzido;
-- integração profunda de agentes, continue, repair, imports e checkpoints permanece para o Codex conforme `PHASE1_CODEX_HANDOFF.md`.
+- suíte da Fase 1 cobre integração real, invalidação, requirements, stale context e budget explícito.
 
 ## Pendências que bloqueiam “release completa”
 

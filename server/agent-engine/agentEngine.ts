@@ -4,6 +4,7 @@ import { RunService } from '../services/runService.js';
 import { ProgressRetryController, type AttemptEvidence } from '../services/progressRetryController.js';
 import { contractPrompt } from './agentContracts.js';
 import { selectAgent } from './agentRegistry.js';
+import { ContextEngineV2, type ContextAgentKey, type ContextPack, type ContextScope } from '../context-engine/contextEngine.js';
 
 type Input = {
   prompt: string;
@@ -16,6 +17,10 @@ type Input = {
   runId: string;
   stepId: string;
   signal?: AbortSignal;
+  requirementIds?: string[];
+  focusPaths?: string[];
+  contextPack?: ContextPack;
+  contextBrief?: string;
   reliableBuild?: {
     requestedFiles: string[];
     objective: string;
@@ -46,6 +51,117 @@ function reducedRetryFiles(files:Record<string,string>,maxFiles=12){
       return score(a)-score(b);
     })
     .slice(0,maxFiles));
+}
+
+
+function contextScopeFor(agentKey: string, mode: AgentMode, repair?: boolean, filesCount = 0): ContextScope {
+  if (agentKey === 'SENTINEL') return repair ? 'LOCAL' : 'MICRO';
+  if (agentKey === 'STUDIO') return 'LOCAL';
+  if (agentKey === 'SHIP') return 'TASK';
+  if (agentKey === 'SCOUT') return mode === 'plan' || filesCount > 80 ? 'PROJECT' : 'TASK';
+  if (agentKey === 'FORGE') return repair ? 'LOCAL' : 'TASK';
+  return 'TASK';
+}
+
+function normalizeFocus(paths: string[] = []) {
+  return [...new Set(paths.filter(Boolean).map(path => path.replace(/\\/g,'/').replace(/^\.\//,'')))];
+}
+
+function compileContextForStep(x: Input, agentKey: string, options: ExecuteOptions): ContextPack {
+  ContextEngineV2.syncProject({ projectId: x.projectId, files: x.existingFiles });
+  const focusPaths = normalizeFocus([
+    ...(x.focusPaths || []),
+    ...(x.reliableBuild?.requestedFiles || []),
+  ]);
+  return ContextEngineV2.compile({
+    projectId: x.projectId,
+    runId: x.runId,
+    stepId: x.stepId,
+    agentKey: agentKey as ContextAgentKey,
+    scope: contextScopeFor(agentKey, x.mode, options.repair, Object.keys(x.existingFiles).length),
+    task: {
+      objective: x.prompt,
+      title: x.reliableBuild?.objective || x.prompt.slice(0, 120),
+      acceptanceCriteria: x.reliableBuild?.acceptanceCriteria || [],
+      currentFile: focusPaths[0],
+      changedFiles: focusPaths,
+    },
+    requirementIds: x.requirementIds || [],
+    focusPaths,
+  });
+}
+
+function contextSelectedFiles(x: Input, pack: ContextPack): Record<string,string> {
+  const selected = new Set(pack.selectedFiles.map(item => item.file.path));
+  for (const path of x.reliableBuild?.requestedFiles || []) selected.add(path.replace(/\\/g,'/').replace(/^\.\//,''));
+  for (const path of x.focusPaths || []) selected.add(path.replace(/\\/g,'/').replace(/^\.\//,''));
+  const out: Record<string,string> = {};
+  for (const [path, content] of Object.entries(x.existingFiles)) {
+    const normalized = path.replace(/\\/g,'/').replace(/^\.\//,'');
+    if (selected.has(normalized)) out[normalized] = content;
+  }
+  return out;
+}
+
+function serializeContextPack(pack: ContextPack) {
+  const fileLines = pack.selectedFiles.map(item => [
+    `- ${item.file.path}`,
+    `  language=${item.file.language}; module=${item.file.moduleKey}; tokens≈${item.estimatedTokens}`,
+    item.file.summary ? `  summary=${item.file.summary}` : '',
+    item.file.symbols.length ? `  symbols=${item.file.symbols.slice(0,20).join(', ')}` : '',
+    item.file.imports.length ? `  imports=${item.file.imports.slice(0,20).join(', ')}` : '',
+    item.file.exports.length ? `  exports=${item.file.exports.slice(0,20).join(', ')}` : '',
+    item.reasons.length ? `  selectedBecause=${item.reasons.join(', ')}` : '',
+  ].filter(Boolean).join('\n')).join('\n');
+  const commits = pack.recentCommits.map(commit => [
+    `- ${commit.agentKey || 'SYSTEM'}: ${commit.task}`,
+    commit.requirementIds?.length ? `  requirements=${commit.requirementIds.join(', ')}` : '',
+    commit.changedFiles?.length ? `  files=${commit.changedFiles.join(', ')}` : '',
+    commit.decisions?.length ? `  decisions=${commit.decisions.join(' | ')}` : '',
+    commit.blockers?.length ? `  blockers=${commit.blockers.join(' | ')}` : '',
+    commit.nextState ? `  nextState=${JSON.stringify(commit.nextState).slice(0,600)}` : '',
+  ].filter(Boolean).join('\n')).join('\n');
+  const graph = pack.architecture;
+  return [
+    `ContextPack ${pack.id}`,
+    `agent=${pack.agentKey}; scope=${pack.scope}; projectHash=${pack.projectHash}; estimatedTokens=${pack.estimatedTokens}/${pack.tokenBudget}`,
+    pack.requirementIds.length ? `requirements=${pack.requirementIds.join(', ')}` : 'requirements=none',
+    `task=${pack.task.objective}`,
+    '',
+    'Selected files:',
+    fileLines || '- nenhum arquivo selecionado',
+    pack.omittedFiles.length ? `\nOmitted by explicit budget (${pack.omittedFiles.length}):\n${pack.omittedFiles.slice(0,40).map(f=>`- ${f.path}: ${f.reason} (${f.estimatedTokens})`).join('\n')}` : '',
+    '',
+    `Architecture slice: modules=${graph.modules.length}; services=${graph.services.length}; routes=${graph.routes.length}; models=${graph.models.length}; components=${graph.components.length}; integrations=${graph.integrations.length}; dependencies=${graph.dependencies.length}`,
+    commits ? `\nRelevant context commits:\n${commits}` : '\nRelevant context commits: none',
+  ].filter(Boolean).join('\n');
+}
+
+function withCompiledContext(x: Input, agentKey: string, options: ExecuteOptions): Input {
+  const pack = x.contextPack || compileContextForStep(x, agentKey, options);
+  return {
+    ...x,
+    existingFiles: contextSelectedFiles(x, pack),
+    contextPack: pack,
+    contextBrief: serializeContextPack(pack),
+  };
+}
+
+function recordContextCommitFromStep(x: Input, agentKey: string, scope: ContextScope, task: string, details: { decisions?: string[]; changedFiles?: string[]; validation?: unknown; blockers?: string[]; nextState?: unknown } = {}) {
+  ContextEngineV2.recordCommit({
+    projectId: x.projectId,
+    runId: x.runId,
+    taskId: x.stepId,
+    agentKey,
+    scope,
+    task,
+    decisions: details.decisions || [],
+    changedFiles: details.changedFiles || [],
+    requirementIds: x.requirementIds || [],
+    validation: details.validation ?? null,
+    blockers: details.blockers || [],
+    nextState: details.nextState ?? null,
+  });
 }
 
 function needsStudio(prompt: string, mode: AgentMode) {
@@ -95,7 +211,8 @@ export class AgentEngine {
           { kind: 'capacity', reason: 'no_candidate' }
         );
       }
-      const fallback = await LLMAdapterService.executePrompt({ ...x, providerKey: undefined, allowActiveFallback: false });
+      const contextual = withCompiledContext(x, agentKey, options);
+      const fallback = await LLMAdapterService.executePrompt({ ...contextual, providerKey: undefined, allowActiveFallback: false });
       return { ...fallback, agentKey, profileKey: profile };
     }
     const maxAttempts = Math.max(1, Number(available[0]?.max_attempts || 1));
@@ -108,12 +225,13 @@ export class AgentEngine {
       const candidateIndex=retryStrategy==='next_candidate' ? Math.min(i,available.length-1) : i % available.length;
       const candidate = available[candidateIndex];
       const started = Date.now();
+      const contextBase = withCompiledContext(x, agentKey, options);
       try {
         ModelRouter.assertBudget(x.userId, Number(candidate.max_cost_usd || 0), { runId: x.runId });
         const attemptInput = retryStrategy==='reduce_context' || retryStrategy==='fragment_task'
           ? {
-              ...x,
-              existingFiles: reducedRetryFiles(x.existingFiles, retryStrategy==='fragment_task'?8:12),
+              ...contextBase,
+              existingFiles: reducedRetryFiles(contextBase.existingFiles, retryStrategy==='fragment_task'?8:12),
               conversationHistory: x.conversationHistory.slice(-2),
               prompt: [
                 x.prompt,
@@ -122,7 +240,7 @@ export class AgentEngine {
                   : 'RETRY STRATEGY: a tentativa anterior falhou operacionalmente. Use o contexto reduzido e responda de forma objetiva e estruturada.',
               ].join('\n\n'),
             }
-          : x;
+          : contextBase;
         const result = attemptInput.reliableBuild && attemptInput.mode === 'build'
           ? await LLMAdapterService.buildApprovedPlanReliably({
               projectId: attemptInput.projectId,
@@ -135,6 +253,8 @@ export class AgentEngine {
               scopeIn: attemptInput.reliableBuild.scopeIn,
               scopeOut: attemptInput.reliableBuild.scopeOut,
               acceptanceCriteria: attemptInput.reliableBuild.acceptanceCriteria,
+              contextBrief: attemptInput.contextBrief,
+              contextPackId: attemptInput.contextPack?.id,
               signal: attemptInput.signal,
               onProgress:(event)=>RunService.appendProgressEvent(attemptInput.stepId,event),
             })
@@ -142,6 +262,8 @@ export class AgentEngine {
               ...attemptInput,
               providerKey: candidate.provider_key,
               modelId: candidate.model_id === 'auto' ? undefined : candidate.model_id,
+              contextBrief: attemptInput.contextBrief,
+              contextPackId: attemptInput.contextPack?.id,
             });
         if (result.isDemonstrativeFallback || result.hasErrors) {
           const reason = String(result.errorReason || result.errorMessage || 'provider_error');
@@ -164,6 +286,12 @@ export class AgentEngine {
           latencyMs: Date.now() - started,
           status: 'success',
           retryIndex: i,
+          contextPackId: attemptInput.contextPack?.id,
+          contextScope: attemptInput.contextPack?.scope,
+          projectHash: attemptInput.contextPack?.projectHash,
+          contextTokens: attemptInput.contextPack?.estimatedTokens,
+          contextSelectedFiles: attemptInput.contextPack?.selectedFiles.map(item=>item.file.path),
+          contextOmittedFilesCount: attemptInput.contextPack?.omittedFiles.length,
         });
         return { ...result, agentKey, profileKey: profile };
       } catch (e: any) {
@@ -184,6 +312,12 @@ export class AgentEngine {
           status: x.signal?.aborted ? 'aborted' : 'failed',
           errorCode: x.signal?.aborted ? 'aborted' : kind,
           retryIndex: i,
+          contextPackId: contextBase.contextPack?.id,
+          contextScope: contextBase.contextPack?.scope,
+          projectHash: contextBase.contextPack?.projectHash,
+          contextTokens: contextBase.contextPack?.estimatedTokens,
+          contextSelectedFiles: contextBase.contextPack?.selectedFiles.map(item=>item.file.path),
+          contextOmittedFilesCount: contextBase.contextPack?.omittedFiles.length,
         });
         if (x.signal?.aborted) throw e;
 
@@ -295,6 +429,7 @@ export class AgentWorkflowEngine extends AgentEngine {
         scoutSource = 'model';
       }
     } catch {}
+    recordContextCommitFromStep(x, 'SCOUT', 'TASK', 'SCOUT briefing concluído', { decisions: [scoutBrief], nextState: { next: needsStudio(x.prompt, x.mode) ? 'STUDIO' : 'FORGE' } });
     RunService.finishStep(x.stepId, 'completed', {
       ...RunService.context('task', {
         objective: x.prompt,
@@ -372,6 +507,7 @@ export class AgentWorkflowEngine extends AgentEngine {
           studioSource = 'model';
         }
       } catch {}
+      recordContextCommitFromStep({ ...x, stepId: studio }, 'STUDIO', 'LOCAL', 'Direção visual definida', { decisions: [studioGuidance], nextState: { next: 'FORGE' } });
       RunService.finishStep(studio, 'completed', {
         guidance: studioGuidance,
         source: studioSource,
@@ -412,6 +548,7 @@ export class AgentWorkflowEngine extends AgentEngine {
         { ...x, prompt: forgePrompt, reliableBuild, stepId: forge },
         { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true }
       );
+      recordContextCommitFromStep({ ...x, stepId: forge }, 'FORGE', 'TASK', 'Proposta de código gerada', { changedFiles: result.build?.files?.map(f => f.path) || result.proposal?.files?.map(f => f.path) || [], nextState: { next: result.hasErrors ? 'failed' : 'waiting_approval' } });
       RunService.finishStep(forge, result.hasErrors ? 'failed' : 'completed', {
         decisionType: result.decisionType,
         providerUsed: result.providerUsed,
@@ -454,6 +591,7 @@ export class AgentWorkflowEngine extends AgentEngine {
       }
     );
     steps.push(sentinelStatus);
+    recordContextCommitFromStep({ ...x, stepId: sentinelStatus }, 'SENTINEL', 'MICRO', hasReviewableChanges ? 'Aguardar aprovação para validação' : 'Sem alteração validável', { nextState: { status: hasReviewableChanges ? 'waiting_approval' : 'completed' } });
     RunService.finishStep(sentinelStatus, 'completed');
 
     return {
