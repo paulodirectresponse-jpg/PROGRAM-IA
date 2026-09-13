@@ -9,7 +9,6 @@ import { CheckpointsModal } from './components/CheckpointsModal';
 import { AuthModal } from './components/AuthModal';
 import { SettingsProfileModal, SettingsTab } from './components/SettingsProfileModal';
 import { DeleteProjectModal } from './components/DeleteProjectModal';
-import { testFirestoreConnection, deleteFirestoreProjectDoc } from './lib/firebase';
 import { CheckCircle2, AlertCircle, X } from 'lucide-react';
 import {
   Project,
@@ -440,9 +439,6 @@ export default function App() {
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'Falha ao excluir o projeto no servidor.');
       }
-
-      // Sync Firestore removal in background if configured
-      deleteFirestoreProjectDoc(projectId).catch(() => {});
 
       const remaining = projects.filter((p) => p.id !== projectId);
       setProjects(remaining);
