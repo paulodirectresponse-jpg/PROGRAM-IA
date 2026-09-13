@@ -170,6 +170,79 @@ test('approving a draft plan generates a reviewable build proposal without apply
 });
 
 
+test('plan approval retries malformed build formatting only once and preserves review-before-apply',async()=>{
+  const now=new Date(Date.now()+7000).toISOString();
+  const conversation=`plan-repair-conversation-${Date.now()}`;
+  const planId=`plan-repair-${Date.now()}`;
+
+  db.prepare('INSERT INTO conversations(id,project_id,title,mode,created_at,updated_at) VALUES(?,?,?,?,?,?)')
+    .run(conversation,id,'Plan format repair','plan',now,now);
+  db.prepare(`INSERT INTO plans(
+    id,task_id,project_id,objective,scope_in,scope_out,files_affected_json,integrations_json,risks_json,acceptance_criteria_json,status,created_at,updated_at
+  ) VALUES(?,NULL,?,?,?,?,?,?,?,?,'draft',?,?)`)
+    .run(
+      planId,id,'Criar gestão da loja','Dashboard e fluxo de caixa','Deploy externo',
+      JSON.stringify(['index.html']),JSON.stringify([]),JSON.stringify([]),JSON.stringify(['Dashboard funcional']),now,now
+    );
+
+  WorkspaceManager.writeFile(id,'index.html','<html><body>ORIGINAL_REPAIR</body></html>');
+  SecretService.saveSecret(userA,'omniroute','test-omniroute-key-format-repair');
+  db.prepare('UPDATE providers SET is_active=0 WHERE user_id=?').run(userA);
+  db.prepare("UPDATE providers SET is_active=1,is_configured=1,connection_status='connected',model_id='auto' WHERE user_id=? AND provider_key='omniroute'")
+    .run(userA);
+
+  const originalExecute=LLMAdapterService.executePrompt;
+  let calls=0;
+  LLMAdapterService.executePrompt=async()=>{
+    calls+=1;
+    if(calls===1){
+      return {
+        replyText:'Segue a implementação em um formato não estruturado.',
+        mode:'build',
+        decisionType:'invalid_response',
+        isDemonstrativeFallback:false,
+        providerUsed:'OmniRoute (Free Pool)',
+        modelUsed:'auto',
+        hasErrors:true,
+        invalidResponse:true,
+        errorReason:'O modelo não retornou arquivos válidos ou estruturados no modo de construção.'
+      } as any;
+    }
+    return {
+      replyText:'{"summary":"Dashboard","files":[{"path":"index.html","action":"modify","content":"<html><body>REPAIRED_PROPOSAL</body></html>"}]}',
+      mode:'build',
+      decisionType:'change',
+      isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute (Free Pool)',
+      modelUsed:'auto',
+      hasErrors:false,
+      build:{
+        summary:'Dashboard',
+        explanation:'Resposta reparada',
+        files:[{path:'index.html',action:'modify',content:'<html><body>REPAIRED_PROPOSAL</body></html>'}]
+      }
+    } as any;
+  };
+
+  try {
+    const response=await fetch(`${base}/conversations/${id}/plan/approve`,{
+      method:'POST',
+      headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
+      body:JSON.stringify({planId})
+    });
+    assert.equal(response.status,200);
+    assert.equal(calls,2);
+    const body=await response.json();
+    assert.equal(body.proposal.status,'pending');
+    assert.match(WorkspaceManager.readFile(id,'index.html')||'',/ORIGINAL_REPAIR/);
+    const message=db.prepare("SELECT metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC LIMIT 1").get(conversation) as any;
+    const metadata=JSON.parse(message.metadata_json);
+    assert.equal(metadata.formatRepairAttempted,true);
+  } finally {
+    LLMAdapterService.executePrompt=originalExecute;
+  }
+});
+
 
 test('framework runtime starts, proxies preview, filters Forge secrets and stops cleanly', async () => {
   const runtimeProject = `runtime-project-${Date.now()}`;
