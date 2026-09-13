@@ -298,54 +298,60 @@ export class WorkspaceManager {
     const zip = await JSZip.loadAsync(zipBuffer);
 
     const MAX_FILES = 1000;
-    const MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024; // 100MB
+    const MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024;
+    const ignored = (name: string) =>
+      name.includes('.git/') ||
+      name.includes('node_modules/') ||
+      name.includes('__MACOSX') ||
+      name.endsWith('.DS_Store') ||
+      name.endsWith('Thumbs.db');
 
-    let totalFiles = 0;
-    let totalBytes = 0;
-    const importedFiles: string[] = [];
-
-    // First pass: validation (zip bomb & path traversal)
-    zip.forEach((relPath, entry) => {
+    const candidates: Array<{ sourcePath: string; entry: any }> = [];
+    zip.forEach((rawPath, entry) => {
       if (entry.dir) return;
-      totalFiles++;
-      if (totalFiles > MAX_FILES) {
-        throw new Error(`Arquivo ZIP contém arquivos em excesso (limite: ${MAX_FILES}).`);
+      const relPath = rawPath.replace(/\\/g, '/').replace(/^\.\//, '');
+      const segments = relPath.split('/');
+      if (
+        !relPath ||
+        relPath.startsWith('/') ||
+        relPath.includes('\0') ||
+        segments.some((segment) => segment === '..' || segment === '')
+      ) {
+        throw new Error(`Caminho inseguro detectado no ZIP: ${rawPath}`);
       }
-      if (relPath.includes('..') || relPath.startsWith('/') || relPath.startsWith('\\')) {
-        throw new Error(`Caminho inseguro detectado no ZIP: ${relPath}`);
-      }
+      const permissions = typeof (entry as any).unixPermissions === 'number' ? (entry as any).unixPermissions : 0;
+      if ((permissions & 0o170000) === 0o120000) throw new Error(`Link simbólico não permitido no ZIP: ${rawPath}`);
+      if (ignored(relPath)) return;
+      candidates.push({ sourcePath: relPath, entry });
+      if (candidates.length > MAX_FILES) throw new Error(`Arquivo ZIP contém arquivos em excesso (limite: ${MAX_FILES}).`);
     });
 
-    // Second pass: extraction
-    const entries = Object.keys(zip.files);
-    for (const entryPath of entries) {
-      const entry = zip.files[entryPath];
-      if (entry.dir) continue;
+    if (!candidates.length) throw new Error('O ZIP não contém arquivos importáveis.');
 
-      // Filter unwanted metadata / system files
-      if (
-        entryPath.includes('.git/') ||
-        entryPath.includes('node_modules/') ||
-        entryPath.includes('__MACOSX') ||
-        entryPath.endsWith('.DS_Store') ||
-        entryPath.endsWith('Thumbs.db')
-      ) {
-        continue;
-      }
+    const roots = new Set(candidates.map(({ sourcePath }) => sourcePath.split('/')[0]));
+    const protectedRoots = new Set(['src', 'public', 'dist', 'build', 'app', 'pages', 'components', 'assets', 'server', 'client']);
+    const onlyRoot = roots.size === 1 ? [...roots][0] : '';
+    const stripWrapper = Boolean(
+      onlyRoot &&
+      !protectedRoots.has(onlyRoot.toLowerCase()) &&
+      candidates.every(({ sourcePath }) => sourcePath.includes('/'))
+    );
 
+    let totalBytes = 0;
+    const importedFiles: string[] = [];
+    for (const { sourcePath, entry } of candidates) {
+      const targetPath = stripWrapper ? sourcePath.slice(sourcePath.indexOf('/') + 1) : sourcePath;
+      this.resolveSafePath(projectId, targetPath);
       const buffer = await entry.async('nodebuffer');
       totalBytes += buffer.length;
       if (totalBytes > MAX_UNCOMPRESSED_BYTES) {
         throw new Error('Tamanho total descompactado do ZIP excede o limite permitido (100MB).');
       }
-
-      this.writeBinaryFile(projectId, entryPath, buffer);
-      importedFiles.push(entryPath);
+      this.writeBinaryFile(projectId, targetPath, buffer);
+      importedFiles.push(targetPath);
     }
 
-    // Create a checkpoint after successful import
     this.createCheckpoint(projectId, 'Importação de Arquivo ZIP', `Importados ${importedFiles.length} arquivos com sucesso.`);
-
     return { fileCount: importedFiles.length, importedFiles };
   }
 
