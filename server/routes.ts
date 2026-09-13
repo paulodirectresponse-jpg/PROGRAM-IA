@@ -1043,6 +1043,50 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       signal: controller.signal,
     }) : await AgentWorkflowEngine.executeWorkflow({prompt:content,mode:mode as AgentMode,projectId,existingFiles,appliedSkills,conversationHistory:history,userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal});
     controller.signal.throwIfAborted();
+
+    const effectiveIntent = mode === 'auto' ? LLMAdapterService.classifyIntent(content) : (mode as AgentMode);
+    const explicitPlanIntent = /\b(planej|plano|arquitetura|roadmap|especifica[cç][aã]o)\b/i.test(content);
+
+    if (!agentEngineEnabled && mode === 'auto' && explicitPlanIntent && !result.plan && !result.build && !result.hasErrors) {
+      result.plan = LLMAdapterService.extractPlan(result.replyText) || {
+        objective: content.trim().slice(0, 500),
+        scope_in: String(result.replyText || content).trim().slice(0, 2500),
+        scope_out: '',
+        files_affected: [],
+        integrations: [],
+        risks: [],
+        acceptance_criteria: ['Implementação funcional', 'Validação sem erros críticos'],
+      };
+      result.decisionType = 'plan';
+    }
+
+    const recoverableBuildFailure =
+      !agentEngineEnabled &&
+      effectiveIntent === 'build' &&
+      (
+        result.invalidResponse === true ||
+        result.errorReason === 'timeout' ||
+        (
+          result.errorReason === 'provider_error' &&
+          /524|context|token|too large|response|upstream/i.test(String(result.errorMessage || result.replyText || ''))
+        )
+      );
+
+    if (recoverableBuildFailure) {
+      result = await LLMAdapterService.buildApprovedPlanReliably({
+        projectId,
+        providerKey,
+        modelId,
+        userId: req.user!.id,
+        existingFiles,
+        requestedFiles: [],
+        objective: content,
+        acceptanceCriteria: ['Atender integralmente ao pedido do usuário', 'Preservar compatibilidade com o projeto existente'],
+        signal: controller.signal,
+      });
+      controller.signal.throwIfAborted();
+    }
+
     if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
       return res.status(409).json({error:'Os arquivos mudaram durante a revisÃ£o. Envie novamente para usar a versÃ£o atual.'});
     }
@@ -1159,6 +1203,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       profileKey: (result as any).profileKey,
       workflow: (result as any).workflow,
       validation,
+      buildDiagnostics: result.diagnostics,
     };
 
     db.prepare(`
