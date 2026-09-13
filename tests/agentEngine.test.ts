@@ -200,6 +200,76 @@ test('workflow forced FORGE keeps agent_steps and model_invocations agent_key co
   }
 });
 
+test('BASE_FREE max_attempts retries the same configured candidate before paid escalation', async (t) => {
+  const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
+  const userId=`agent-retry-user-${unique}`;
+  const projectId=`agent-retry-project-${unique}`;
+  const conversationId=`agent-retry-conv-${unique}`;
+  const now=new Date().toISOString();
+  db.prepare("INSERT INTO providers(id,user_id,provider_key,name,base_url,model_id,is_configured,connection_status,context_limit,created_at) VALUES(?,?,?,?,?,?,1,'connected',128000,?)")
+    .run(`prov-${unique}`,userId,'omniroute','OmniRoute','https://example.test/v1','auto',now);
+  db.prepare('INSERT INTO model_profiles(id,user_id,profile_key,level,max_attempts,max_cost_usd,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(`profile-${unique}`,userId,'BASE_FREE',0,2,0,1,now,now);
+  db.prepare('INSERT INTO model_candidates(id,profile_id,provider_key,model_id,priority,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+    .run(`candidate-${unique}`,`profile-${unique}`,'omniroute','auto',0,1,now,now);
+  SecretService.saveSecret(userId,'omniroute','retry-secret');
+  let calls=0;
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>{
+    calls+=1;
+    if(calls===1) return {
+      replyText:'invalid',
+      mode:'build',
+      decisionType:'invalid_response',
+      isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute',
+      modelUsed:'auto',
+      hasErrors:true,
+      invalidResponse:true,
+      errorReason:'incompatible_response',
+      errorMessage:'Resposta incompatível',
+    } as any;
+    return {
+      replyText:'ok',
+      mode:'build',
+      decisionType:'change',
+      isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute',
+      modelUsed:'auto',
+      hasErrors:false,
+      build:{summary:'ok',explanation:'ok',files:[{path:'index.html',action:'modify',content:'<html>ok</html>'}]},
+      usage:{inputTokens:1,outputTokens:1,billedCostUsd:0},
+    } as any;
+  });
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'build',0.5);
+  try {
+    const result=await AgentEngine.execute({
+      prompt:'construa',
+      mode:'build',
+      projectId,
+      existingFiles:{'index.html':'<html>old</html>'},
+      appliedSkills:[],
+      conversationHistory:[],
+      userId,
+      runId,
+      stepId,
+    },{profile:'BASE_FREE',forcedAgentKey:'FORGE',allowExpertEscalation:true});
+    assert.equal(calls,2);
+    assert.equal(result.profileKey,'BASE_FREE');
+    const invocations=db.prepare('SELECT status,retry_index FROM model_invocations WHERE run_id=? ORDER BY created_at').all(runId) as any[];
+    assert.equal(invocations.length,2);
+    assert.equal(invocations[0].status,'failed');
+    assert.equal(invocations[1].status,'success');
+  } finally {
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    db.prepare('DELETE FROM model_candidates WHERE profile_id=?').run(`profile-${unique}`);
+    db.prepare('DELETE FROM model_profiles WHERE id=?').run(`profile-${unique}`);
+    db.prepare('DELETE FROM user_secrets WHERE user_id=?').run(userId);
+    db.prepare('DELETE FROM providers WHERE id=?').run(`prov-${unique}`);
+  }
+});
+
 test('abort before repair/provider attempt records no invocation or attempt', async (t) => {
   const unique = Date.now().toString(36) + Math.random().toString(36).slice(2);
   const userId = `agent-abort-user-${unique}`;
