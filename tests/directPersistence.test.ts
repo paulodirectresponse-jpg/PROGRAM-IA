@@ -209,6 +209,40 @@ test('canonical model routing mapper preserves legacy profile, candidate and inv
   }finally{restore('SUPABASE_URL',oldUrl);restore('SUPABASE_SECRET_KEY',oldKey);}
 });
 
+test('canonical skills preserve custom flag across push and pull snapshots', async (t) => {
+  const oldUrl=process.env.SUPABASE_URL,oldKey=process.env.SUPABASE_SECRET_KEY;
+  process.env.SUPABASE_URL='https://canonical.example.test';process.env.SUPABASE_SECRET_KEY='server-secret-value';
+  const snapshot=fullSnapshot();
+  (snapshot.tables.skills as any[])=[
+    {...snapshot.tables.skills[0],id:'skill-custom-001',name:'FASE A SKILL CLOUD TEST 001',slug:'fase-a-skill-cloud-test-001',is_custom:1},
+    {...snapshot.tables.skills[0],id:'skill-default-001',name:'Skill padrão',slug:'skill-padrao',is_custom:0},
+  ];
+  const pushedSkills:any[]=[];
+  t.mock.method(globalThis,'fetch',async(input:string|URL|Request,init?:RequestInit)=>{
+    const url=String(input);
+    if(url.includes('/storage/v1/object/forge-project-files/')) return new Response(Buffer.from('<main>ok</main>'),{status:200});
+    const table=url.match(/\/rest\/v1\/([^?]+)/)?.[1];
+    if(table==='forge_skills'&&init?.body){pushedSkills.push(...JSON.parse(String(init.body)));return new Response('{}',{status:201});}
+    if(init?.method==='POST') return new Response('{}',{status:201});
+    const rows:Record<string,any[]>={
+      forge_profiles:[{firebase_uid:'fb1',email:'a@example.test',display_name:'A',updated_at:stamp}],
+      forge_projects:[{id:'p1',firebase_uid:'fb1',name:'P',origin:'scratch',status:'active',revision:1,created_at:stamp,updated_at:stamp}],
+      forge_skills:pushedSkills,
+      forge_project_files:[],
+    };
+    return new Response(JSON.stringify(rows[table||'']||[]),{status:200});
+  });
+  try{
+    const pushed=await SupabasePersistenceService.pushCanonical('u1','fb1',snapshot);
+    assert.equal(pushed.status,'synced');
+    assert.equal(pushedSkills.find((skill)=>skill.id==='skill-custom-001')?.is_custom,true);
+    assert.equal(pushedSkills.find((skill)=>skill.id==='skill-default-001')?.is_custom,false);
+    const pulled=await SupabasePersistenceService.pullCanonical('u1','fb1');
+    assert.equal(pulled.status,'synced');
+    assert.equal(pulled.snapshot?.tables.skills.find((skill:any)=>skill.id==='skill-custom-001')?.is_custom,1);
+    assert.equal(pulled.snapshot?.tables.skills.find((skill:any)=>skill.id==='skill-default-001')?.is_custom,0);
+  }finally{restore('SUPABASE_URL',oldUrl);restore('SUPABASE_SECRET_KEY',oldKey);}
+});
 test('migration reconciliation blocks count and file hash divergences',()=>{
   const local=fullSnapshot();
   const missingSkill=fullSnapshot();
