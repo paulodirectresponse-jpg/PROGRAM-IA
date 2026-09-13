@@ -43,6 +43,8 @@ export class CloudSyncService{
   private static firebaseUid(userId:string){return (db.prepare('SELECT firebase_uid FROM users WHERE id=?').get(userId) as any)?.firebase_uid||'';}
   static async pushDirect(userId:string){return SupabasePersistenceService.pushCanonical(userId,this.firebaseUid(userId),this.export(userId));}
   static async deleteProject(userId:string,projectId:string){
+    const pending=this.timer.get(userId);
+    if(pending){clearTimeout(pending);this.timer.delete(userId);}
     if(!this.configured())return{status:'not_configured' as const,deleted:false};
     return SupabasePersistenceService.deleteCanonicalProject(this.firebaseUid(userId),projectId);
   }
