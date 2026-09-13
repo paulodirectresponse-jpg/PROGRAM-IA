@@ -1,8 +1,13 @@
-import { test } from 'node:test';
+import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { SupabasePersistenceService } from '../server/services/supabasePersistenceService.js';
+import { CloudSyncService } from '../server/services/cloudSyncService.js';
 import { compareSnapshots } from '../server/services/persistenceMigrationService.js';
+import { db, initializeDatabase } from '../server/db/index.js';
+import { AuthService } from '../server/services/authService.js';
+
+before(()=>initializeDatabase());
 
 function restore(name: 'SUPABASE_URL' | 'SUPABASE_SECRET_KEY', value: string | undefined) {
   if (value === undefined) delete process.env[name]; else process.env[name] = value;
@@ -137,4 +142,73 @@ test('migration reconciliation blocks count and file hash divergences',()=>{
   assert.ok(divergences.some((x)=>x.includes('skill1 ausente')));
   const fileDivergences=compareSnapshots(local,changedFile,'u1');
   assert.ok(fileDivergences.some((x)=>x.includes('files:p1/index.html hash')));
+});
+
+
+function configureCloudEnv(){
+  const saved={url:process.env.SUPABASE_URL,key:process.env.SUPABASE_SECRET_KEY,master:process.env.SECRETS_MASTER_KEY};
+  process.env.SUPABASE_URL='https://phase-a.example.test';
+  process.env.SUPABASE_SECRET_KEY='test-service-role';
+  process.env.SECRETS_MASTER_KEY='stable-master-key-for-bootstrap-tests-32';
+  return ()=>{restore('SUPABASE_URL',saved.url);restore('SUPABASE_SECRET_KEY',saved.key);if(saved.master===undefined)delete process.env.SECRETS_MASTER_KEY;else process.env.SECRETS_MASTER_KEY=saved.master;};
+}
+function makeBootstrapUser(label:string){return AuthService.firebaseLogin(`${label}-${Date.now()}-${Math.random()}@example.test`,label,`fb-${label}-${Date.now()}-${Math.random()}`).user;}
+function missingLegacyTable(){return new Response(JSON.stringify({code:'PGRST205',message:"Could not find the table 'public.forge_sync_snapshots' in the schema cache"}),{status:404});}
+
+test('bootstrap treats empty canonical plus missing legacy table as no legacy snapshot, not error',async(t)=>{
+  const cleanup=configureCloudEnv(),user=makeBootstrapUser('empty-canonical');
+  t.mock.method(CloudSyncService,'pullDirect',async()=>({status:'local_only',source:'canonical'}));
+  t.mock.method(globalThis,'fetch',async()=>missingLegacyTable());
+  try{const result=await CloudSyncService.bootstrap(user.id);assert.notEqual(result.status,'error');assert.equal(result.status,'local_only');}
+  finally{cleanup();}
+});
+
+test('new empty account can load when canonical is empty and legacy table is absent',async(t)=>{
+  const cleanup=configureCloudEnv(),user=makeBootstrapUser('new-account');
+  t.mock.method(CloudSyncService,'pullDirect',async()=>({status:'local_only'}));
+  t.mock.method(globalThis,'fetch',async()=>missingLegacyTable());
+  try{const result=await CloudSyncService.bootstrap(user.id);assert.deepEqual({status:result.status,device:Boolean((result as any).deviceId)},{status:'local_only',device:true});}
+  finally{cleanup();}
+});
+
+test('bootstrap pushes canonical when canonical is empty, legacy is absent, and local data exists',async(t)=>{
+  const cleanup=configureCloudEnv(),user=makeBootstrapUser('local-data'),now=new Date().toISOString();
+  const ws=(db.prepare('SELECT id FROM workspaces WHERE user_id=? LIMIT 1').get(user.id) as any).id;
+  db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'Local data','novo',?,?)").run(`local-${Date.now()}`,user.id,ws,now,now);
+  let pushed=false;
+  t.mock.method(CloudSyncService,'pullDirect',async()=>({status:'local_only'}));
+  t.mock.method(CloudSyncService,'pushDirect',async()=>{pushed=true;return{status:'synced',source:'canonical',records:1,files:0};});
+  t.mock.method(globalThis,'fetch',async()=>missingLegacyTable());
+  try{const result=await CloudSyncService.bootstrap(user.id);assert.equal(result.status,'synced');assert.equal(pushed,true);}
+  finally{cleanup();}
+});
+
+test('bootstrap restores directly when canonical persistence is populated',async(t)=>{
+  const cleanup=configureCloudEnv(),user=makeBootstrapUser('canonical-full');
+  t.mock.method(CloudSyncService,'pullDirect',async()=>({status:'synced',restored:true,source:'canonical'}));
+  t.mock.method(globalThis,'fetch',async()=>{throw Error('legacy fallback should not be called');});
+  try{const result=await CloudSyncService.bootstrap(user.id);assert.equal(result.status,'synced');assert.equal((result as any).source,'canonical');}
+  finally{cleanup();}
+});
+
+test('legacy snapshot fallback still migrates when a valid legacy snapshot exists',async(t)=>{
+  const cleanup=configureCloudEnv(),user=makeBootstrapUser('legacy-valid');
+  const payload=fullSnapshot();payload.userId=user.id;payload.tables.user_secrets=[];
+  let imported=false,pushed=false;
+  t.mock.method(CloudSyncService,'pullDirect',async()=>({status:'local_only'}));
+  t.mock.method(CloudSyncService,'import',()=>{imported=true;});
+  t.mock.method(CloudSyncService,'pushDirect',async()=>{pushed=true;return{status:'synced'};});
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify([{user_id:user.id,revision:3,device_id:'legacy-device',schema_version:1,payload,updated_at:new Date().toISOString()}]),{status:200}));
+  try{const result=await CloudSyncService.bootstrap(user.id);assert.equal(result.status,'synced');assert.equal((result as any).source,'legacy-migrated');assert.equal(imported,true);assert.equal(pushed,true);}
+  finally{cleanup();}
+});
+
+test('real Supabase errors during legacy fallback still return bootstrap error',async(t)=>{
+  for(const status of [401,403,500]){
+    const cleanup=configureCloudEnv(),user=makeBootstrapUser(`real-error-${status}`);
+    t.mock.method(CloudSyncService,'pullDirect',async()=>({status:'local_only'}));
+    t.mock.method(globalThis,'fetch',async()=>new Response('real outage',{status}));
+    try{const result=await CloudSyncService.bootstrap(user.id);assert.equal(result.status,'error');assert.match((result as any).message,new RegExp(String(status)));}
+    finally{cleanup();t.mock.reset();}
+  }
 });
