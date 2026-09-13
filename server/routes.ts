@@ -21,6 +21,7 @@ import { RuntimeManager } from './services/runtimeManager.js';
 
 export const router = express.Router();
 const activeProjects = new Set<string>();
+const activeProjectControllers = new Map<string, AbortController>();
 
 function ensureUserWorkspace(userId: string) {
   const id = `ws-${userId}`;
@@ -258,6 +259,15 @@ router.get('/agent-runs',requireAuth,(req,res)=>{
   const runs=(projectId
     ? db.prepare('SELECT * FROM agent_runs WHERE user_id=? AND project_id=? ORDER BY created_at DESC LIMIT 30').all(req.user!.id,projectId)
     : db.prepare('SELECT * FROM agent_runs WHERE user_id=? ORDER BY created_at DESC LIMIT 30').all(req.user!.id)) as any[];
+
+  for (const run of runs) {
+    if (run.status === 'running' && !activeProjects.has(run.project_id)) {
+      db.prepare("UPDATE agent_runs SET status='aborted', finished_at=?, updated_at=? WHERE id=? AND status='running'")
+        .run(new Date().toISOString(), new Date().toISOString(), run.id);
+      run.status = 'aborted';
+    }
+  }
+
   res.json({runs:runs.map(run=>({...run,trace:RunService.trace(run.id)}))});
 });
 
@@ -776,8 +786,8 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
 
   activeProjects.add(projectId);
   const controller = new AbortController();
+  activeProjectControllers.set(projectId, controller);
   let execution: { runId: string; stepId: string } | null = null;
-  res.on('close', () => { if (!res.writableEnded) controller.abort(); });
 
   const parseStoredList = (value: unknown): string[] => {
     if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
@@ -962,6 +972,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
     }
   } finally {
     activeProjects.delete(projectId);
+    activeProjectControllers.delete(projectId);
   }
 });
 
@@ -969,8 +980,8 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
   if (activeProjects.has(req.params.projectId)) return res.status(409).json({error:'JÃ¡ hÃ¡ uma execuÃ§Ã£o neste projeto. Aguarde ou cancele antes de enviar outro pedido.'});
   activeProjects.add(req.params.projectId);
   const controller = new AbortController();
+  activeProjectControllers.set(req.params.projectId, controller);
   let execution: {runId:string;stepId:string}|null=null;
-  res.on('close', () => { if (!res.writableEnded) controller.abort(); });
   try {
     const { content, mode = 'auto', appliedSkills = [] } = req.body;
     if (!content || content.trim().length === 0) {
@@ -1283,7 +1294,20 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
   } catch (err: any) {
     if(execution)RunService.finish(execution.runId,execution.stepId,controller.signal.aborted?'aborted':'failed');
     if (!res.destroyed) res.status(500).json({ error: err.message });
-  } finally { activeProjects.delete(req.params.projectId); }
+  } finally {
+    activeProjects.delete(req.params.projectId);
+    activeProjectControllers.delete(req.params.projectId);
+  }
+});
+
+router.post('/conversations/:projectId/abort', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  const projectId = req.params.projectId;
+  const controller = activeProjectControllers.get(projectId);
+  if (!controller) {
+    return res.status(404).json({ success: false, error: 'Nenhuma execução ativa para cancelar neste projeto.' });
+  }
+  controller.abort(new DOMException('Cancelado explicitamente pelo usuário', 'AbortError'));
+  res.json({ success: true });
 });
 
 router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
