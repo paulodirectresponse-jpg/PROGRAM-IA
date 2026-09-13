@@ -100,6 +100,75 @@ test('canonical persistence writes normalized domains and Storage without legacy
   finally{restore('SUPABASE_URL',oldUrl);restore('SUPABASE_SECRET_KEY',oldKey);}
 });
 
+
+test('canonical project file metadata writes use firebase ownership and canonical conflict target', async (t) => {
+  const oldUrl=process.env.SUPABASE_URL,oldKey=process.env.SUPABASE_SECRET_KEY;
+  process.env.SUPABASE_URL='https://canonical.example.test';process.env.SUPABASE_SECRET_KEY='server-secret-value';
+  const fileWrites:{url:string;body:any[]}[]=[];
+  t.mock.method(globalThis,'fetch',async(input:string|URL|Request,init?:RequestInit)=>{
+    const url=String(input);
+    if(url.includes('/forge_project_files?')) fileWrites.push({url,body:JSON.parse(String(init?.body||'[]'))});
+    return new Response('{}',{status:201});
+  });
+  try{
+    const result=await SupabasePersistenceService.pushCanonical('legacy-local-user','stable-firebase-uid',fullSnapshot());
+    assert.equal(result.status,'synced');
+    assert.equal(fileWrites.length,1);
+    assert.ok(fileWrites[0].url.includes('on_conflict=firebase_uid,project_id,path'));
+    assert.equal(fileWrites[0].url.includes('on_conflict=user_id,project_id,path'),false);
+    assert.deepEqual(Object.keys(fileWrites[0].body[0]).sort(),['content_type','firebase_uid','path','project_id','sha256','size_bytes','storage_path','updated_at'].sort());
+    assert.equal(fileWrites[0].body[0].firebase_uid,'stable-firebase-uid');
+    assert.equal(fileWrites[0].body[0].project_id,'p1');
+    assert.equal(fileWrites[0].body[0].path,'index.html');
+    assert.equal('user_id' in fileWrites[0].body[0],false);
+  }finally{restore('SUPABASE_URL',oldUrl);restore('SUPABASE_SECRET_KEY',oldKey);}
+});
+
+test('canonical push does not regress to forge_project_files_user_id_fkey dependency', async (t) => {
+  const oldUrl=process.env.SUPABASE_URL,oldKey=process.env.SUPABASE_SECRET_KEY;
+  process.env.SUPABASE_URL='https://canonical.example.test';process.env.SUPABASE_SECRET_KEY='server-secret-value';
+  t.mock.method(globalThis,'fetch',async(input:string|URL|Request,init?:RequestInit)=>{
+    const url=String(input);
+    if(url.includes('/forge_project_files?')){
+      const body=JSON.parse(String(init?.body||'[]'));
+      if(body.some((row:any)=>'user_id' in row)||url.includes('on_conflict=user_id,project_id,path')){
+        return new Response(JSON.stringify({code:'23503',message:'insert or update on table "forge_project_files" violates foreign key constraint "forge_project_files_user_id_fkey"'}),{status:409});
+      }
+    }
+    return new Response('{}',{status:201});
+  });
+  try{
+    const result=await SupabasePersistenceService.pushCanonical('user-without-forge-account','fb-with-profile',fullSnapshot());
+    assert.equal(result.status,'synced');
+    assert.equal(result.files,1);
+  }finally{restore('SUPABASE_URL',oldUrl);restore('SUPABASE_SECRET_KEY',oldKey);}
+});
+
+test('canonical pull still restores project files by firebase uid', async (t) => {
+  const oldUrl=process.env.SUPABASE_URL,oldKey=process.env.SUPABASE_SECRET_KEY;
+  process.env.SUPABASE_URL='https://canonical.example.test';process.env.SUPABASE_SECRET_KEY='server-secret-value';
+  const content=Buffer.from('<main>restored</main>');
+  const sha256=crypto.createHash('sha256').update(content).digest('hex');
+  const reads:string[]=[];
+  t.mock.method(globalThis,'fetch',async(input:string|URL|Request)=>{
+    const url=String(input);reads.push(url);
+    if(url.includes('/storage/v1/object/forge-project-files/')) return new Response(content,{status:200});
+    const table=url.match(/\/rest\/v1\/([^?]+)/)?.[1];
+    const rows:Record<string,any[]>={
+      forge_profiles:[{firebase_uid:'fb1',email:'a@example.test',display_name:'A',updated_at:stamp}],
+      forge_projects:[{id:'p1',firebase_uid:'fb1',name:'P',origin:'scratch',status:'active',revision:1,created_at:stamp,updated_at:stamp}],
+      forge_project_files:[{firebase_uid:'fb1',project_id:'p1',path:'index.html',storage_path:'fb1/p1/index.html',sha256}],
+    };
+    return new Response(JSON.stringify(rows[table||'']||[]),{status:200});
+  });
+  try{
+    const result=await SupabasePersistenceService.pullCanonical('u1','fb1');
+    assert.equal(result.status,'synced');
+    assert.equal(result.snapshot?.files.p1['index.html'],content.toString('base64'));
+    assert.ok(reads.some((url)=>url.includes('/forge_project_files?firebase_uid=eq.fb1&select=*')));
+  }finally{restore('SUPABASE_URL',oldUrl);restore('SUPABASE_SECRET_KEY',oldKey);}
+});
+
 test('canonical model routing mapper preserves legacy profile, candidate and invocation fields', async (t)=>{
   const oldUrl=process.env.SUPABASE_URL,oldKey=process.env.SUPABASE_SECRET_KEY;
   process.env.SUPABASE_URL='https://canonical.example.test';process.env.SUPABASE_SECRET_KEY='server-secret-value';

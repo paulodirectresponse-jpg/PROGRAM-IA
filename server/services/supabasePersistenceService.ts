@@ -78,7 +78,7 @@ export class SupabasePersistenceService {
     for(const [projectId,items] of Object.entries(snapshot.files))for(const [filePath,base64] of Object.entries(items)){
       const content=Buffer.from(base64,'base64'),storagePath=this.storagePath(firebaseUid,projectId,filePath),sha256=crypto.createHash('sha256').update(content).digest('hex');
       await this.expect(await fetch(`${process.env.SUPABASE_URL}/storage/v1/object/forge-project-files/${storagePath}`,{method:'POST',headers:this.headers({'Content-Type':'application/octet-stream','x-upsert':'true'}),body:content}),'Supabase Storage upload');
-      await repo.upsert('forge_project_files',[{user_id:userId,firebase_uid:firebaseUid,project_id:projectId,path:filePath,storage_path:storagePath,sha256,size_bytes:content.length,content_type:'application/octet-stream',updated_at:snapshot.createdAt}], 'user_id,project_id,path'); files++;
+      await repo.upsert('forge_project_files',[{firebase_uid:firebaseUid,project_id:projectId,path:filePath,storage_path:storagePath,sha256,size_bytes:content.length,content_type:'application/octet-stream',updated_at:snapshot.createdAt}], 'firebase_uid,project_id,path'); files++;
     }
     return{status:'synced' as DirectStatus,records:Object.values(rows).reduce((n,x)=>n+(x?.length||0),0),files};
   }
