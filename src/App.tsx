@@ -428,12 +428,16 @@ export default function App() {
   };
 
   // Abort execution
-  const handleAbort = () => {
+  const handleAbort = async () => {
+    if (!activeProject) return;
+    try {
+      await fetch(`/api/conversations/${activeProject.id}/abort`, { method: 'POST' });
+    } catch {}
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
-      setIsLoading(false);
       abortControllerRef.current = null;
     }
+    setIsLoading(false);
   };
 
   // Restore checkpoint
