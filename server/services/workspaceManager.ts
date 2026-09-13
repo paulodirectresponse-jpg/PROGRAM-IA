@@ -204,9 +204,6 @@ export class WorkspaceManager {
 
     db.prepare('UPDATE projects SET current_checkpoint_id = ?, updated_at = ? WHERE id = ?').run(cpId, now, projectId);
 
-    // Run verification quality gates
-    this.runQualityGates(projectId, cpId, snapshot);
-
     return cpId;
   }
 
@@ -236,126 +233,6 @@ export class WorkspaceManager {
     for (const [rel, encoded] of Object.entries(binary)) this.writeBinaryFile(projectId,rel,Buffer.from(encoded,'base64'));
     this.createCheckpoint(projectId,`Restaurado: ${checkpointId}`,'Restauração local concluída. Sincronize para criar um novo commit no GitHub.');
     return true;
-  }
-
-  /**
-   * Full Quality Gates & Reviewer Loop verification
-   */
-  static runQualityGates(projectId: string, checkpointId: string, files: Record<string, string>) {
-    const now = new Date().toISOString();
-
-    // 1. Secret Leak Detection
-    let hasLeakedKey = false;
-    let leakedInfo = '';
-    const secretPattern = /(AIza[0-9A-Za-z-_]{35}|sk-[a-zA-Z0-9]{32,}|ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{60,})/;
-
-    for (const [fileName, content] of Object.entries(files)) {
-      if (secretPattern.test(content)) {
-        hasLeakedKey = true;
-        leakedInfo = `Possível chave secreta exposta no arquivo ${fileName}`;
-        break;
-      }
-    }
-
-    db.prepare(`
-      INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
-      VALUES (?, ?, ?, 'security', ?, ?, ?)
-    `).run(
-      'ver-sec-' + crypto.randomUUID(),
-      projectId,
-      checkpointId,
-      hasLeakedKey ? 'fail' : 'pass',
-      JSON.stringify({
-        rule: 'Proteção contra chaves expostas (Secret Leak Scan)',
-        message: hasLeakedKey ? leakedInfo : 'Nenhum token ou secret privado exposto no código.',
-      }),
-      now
-    );
-
-    // 2. Build & Structure Check
-    const hasHtmlEntry = Object.keys(files).some(k => k.endsWith('index.html') || k.endsWith('App.tsx') || k.endsWith('main.tsx'));
-    db.prepare(`
-      INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
-      VALUES (?, ?, ?, 'build', ?, ?, ?)
-    `).run(
-      'ver-bld-' + crypto.randomUUID(),
-      projectId,
-      checkpointId,
-      'warn',
-      JSON.stringify({
-        rule: 'Ponto de entrada da aplicação',
-        message: hasHtmlEntry ? 'Ponto de entrada detectado. Build ainda não executado.' : 'Aviso: index.html não localizado.',
-      }),
-      now
-    );
-
-    // 3. Syntax & Schema integrity
-    let syntaxPass = true;
-    for (const [fileName, content] of Object.entries(files)) {
-      if (fileName.endsWith('.json')) {
-        try {
-          JSON.parse(content);
-        } catch {
-          syntaxPass = false;
-        }
-      }
-    }
-
-    db.prepare(`
-      INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
-      VALUES (?, ?, ?, 'typecheck', ?, ?, ?)
-    `).run(
-      'ver-typ-' + crypto.randomUUID(),
-      projectId,
-      checkpointId,
-      syntaxPass ? 'warn' : 'fail',
-      JSON.stringify({
-        rule: 'Integridade de Sintaxe & Schemas',
-        message: syntaxPass ? 'JSON válido. Compilação e checagem de tipos ainda não executadas.' : 'Falha: arquivos de configuração JSON inválidos.',
-      }),
-      now
-    );
-
-    // 4. Accessibility check (WCAG basic checks on HTML)
-    let a11yPass = true;
-    let a11yNotes = 'Controles semânticos e viewport validados.';
-    const htmlFile = files['index.html'];
-    if (htmlFile) {
-      if (!htmlFile.includes('lang=')) {
-        a11yPass = false;
-        a11yNotes = 'Tag <html> sem atributo lang definido.';
-      }
-    }
-
-    db.prepare(`
-      INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
-      VALUES (?, ?, ?, 'a11y', ?, ?, ?)
-    `).run(
-      'ver-a11y-' + Date.now(),
-      projectId,
-      checkpointId,
-      a11yPass ? 'pass' : 'warn',
-      JSON.stringify({
-        rule: 'Critérios Básicos de Acessibilidade (WCAG)',
-        message: a11yNotes,
-      }),
-      now
-    );
-
-    // 5. Preview Sandbox readiness
-    db.prepare(`
-      INSERT INTO verifications (id, project_id, checkpoint_id, gate_type, status, details_json, created_at)
-      VALUES (?, ?, ?, 'preview', 'warn', ?, ?)
-    `).run(
-      'ver-prv-' + crypto.randomUUID(),
-      projectId,
-      checkpointId,
-      JSON.stringify({
-        rule: 'Live Preview Sandbox',
-        message: 'Verificação visual ainda não executada em navegador.',
-      }),
-      now
-    );
   }
 
   static deleteProject(projectId: string): void {
