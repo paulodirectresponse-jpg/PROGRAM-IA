@@ -109,9 +109,9 @@ test('agent workflow skips STUDIO for backend-only work and only adds SHIP when 
       mode:'publish',projectId,existingFiles:{'server.ts':'export {}'},appliedSkills:[],conversationHistory:[],userId,runId,stepId
     });
     const keys=(db.prepare('SELECT agent_key FROM agent_steps WHERE run_id=? ORDER BY order_index').all(runId) as any[]).map(x=>x.agent_key);
-    assert.deepEqual(keys,['SCOUT','FORGE','SENTINEL']);
+    assert.deepEqual(keys,['SHIP']);
     assert.equal(keys.includes('STUDIO'),false);
-    assert.equal(keys.includes('SHIP'),false);
+    assert.equal(result.agentKey,'SHIP');
     assert.equal(result.workflow.shipRequested,true);
   } finally {
     db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
@@ -120,6 +120,39 @@ test('agent workflow skips STUDIO for backend-only work and only adds SHIP when 
   }
 });
 
+
+test('manual plan and review modes are owned by SCOUT and SENTINEL instead of FORGE', async () => {
+  for (const scenario of [
+    {mode:'plan' as const, agent:'SCOUT'},
+    {mode:'review' as const, agent:'SENTINEL'},
+  ]) {
+    const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
+    const userId=`agent-role-user-${scenario.mode}-${unique}`;
+    const projectId=`agent-role-project-${unique}`;
+    const conversationId=`agent-role-conv-${unique}`;
+    const {runId,stepId}=RunService.start(userId,projectId,conversationId,scenario.mode,0.5);
+    try {
+      const result=await AgentWorkflowEngine.executeWorkflow({
+        prompt:scenario.mode==='plan'?'planeje um painel':'revise este código',
+        mode:scenario.mode,
+        projectId,
+        existingFiles:{'index.html':'<html></html>'},
+        appliedSkills:[],
+        conversationHistory:[],
+        userId,
+        runId,
+        stepId,
+      });
+      const steps=db.prepare('SELECT agent_key FROM agent_steps WHERE run_id=? ORDER BY order_index').all(runId) as any[];
+      assert.deepEqual(steps.map(s=>s.agent_key),[scenario.agent]);
+      assert.equal(result.agentKey,scenario.agent);
+    } finally {
+      db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+      db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+      db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    }
+  }
+});
 
 test('workflow forced FORGE keeps agent_steps and model_invocations agent_key consistent', async (t) => {
   const unique = Date.now().toString(36) + Math.random().toString(36).slice(2);
