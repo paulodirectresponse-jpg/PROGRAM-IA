@@ -882,7 +882,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       }
     }
     if(checkpointCreatedId){
-      validation=await ValidatorEngine.validate({projectId,runId:execution?.runId,stepId:execution?.stepId,signal:controller.signal});
+      validation=await ValidatorEngine.validate({projectId,checkpointId:checkpointCreatedId,runId:execution?.runId,stepId:execution?.stepId,signal:controller.signal});
       if(validation.status==='failed'&&rollbackCheckpointId){
         WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);
         result.hasErrors=true;
@@ -995,7 +995,7 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
     }
 
     const checkpointId = WorkspaceManager.createCheckpoint(projectId, summary.slice(0, 100), summary);
-    const validation=await ValidatorEngine.validate({projectId});
+    const validation=await ValidatorEngine.validate({projectId,checkpointId});
     if(validation.status==='failed'){WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);metadata.proposal.status='failed_validation';metadata.validation=validation;metadata.hasErrors=true;metadata.errorMessage='Uma verificaÃ§Ã£o executada falhou; a alteraÃ§Ã£o foi revertida.';db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);return res.status(422).json({error:metadata.errorMessage,validation});}
     metadata.proposal.status='applied';metadata.validation=validation;metadata.checkpointId=checkpointId;db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
     res.json({ success: true, checkpointId, validation, message: validation.status==='unverified'?'AlteraÃ§Ãµes aplicadas. ValidaÃ§Ã£o automÃ¡tica nÃ£o disponÃ­vel para este projeto.':'AlteraÃ§Ãµes aplicadas e verificadas com sucesso.' });
