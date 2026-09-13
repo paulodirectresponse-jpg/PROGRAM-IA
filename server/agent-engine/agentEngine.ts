@@ -207,30 +207,64 @@ export class AgentWorkflowEngine extends AgentEngine {
       }
     }
 
-    // SCOUT is the orchestration/context phase for build/auto runs.
+    // SCOUT analyzes the request before FORGE. It prefers a real BASE_FREE call,
+    // but falls back to deterministic context if no free model is usable.
     RunService.assignAgent(x.stepId, 'SCOUT');
     const visibleFiles = relevantFiles(x.existingFiles, 12);
-    const scoutContext = RunService.context('task', {
-      objective: x.prompt,
-      acceptanceCriteria: [
-        'Atender ao pedido sem ampliar escopo',
-        'Preservar o projeto existente',
-        'Produzir alteração revisável antes da aplicação',
-        'Rodar ValidatorEngine após aplicação real',
-      ],
-      snippets: visibleFiles,
-      constraints: [
-        'Não publicar sem solicitação explícita',
-        'Não aplicar arquivos antes da aprovação quando houver proposta',
-        'Manter contexto limitado aos arquivos relevantes',
-      ],
+    const deterministicScout = [
+      'Objetivo: ' + x.prompt,
+      'Arquivos visíveis: ' + (visibleFiles.map(item => item.file).join(', ') || 'nenhum'),
+      'Restrições: preservar o projeto existente, não ampliar escopo e manter a alteração revisável.',
+    ].join('\n');
+    let scoutBrief = deterministicScout;
+    let scoutSource = 'deterministic_fallback';
+    try {
+      const scoutResult = await AgentEngine.execute(
+        {
+          ...x,
+          mode: 'review',
+          prompt: [
+            'Atue como SCOUT interno do fluxo de programação.',
+            'Analise o pedido e o workspace e produza um briefing curto para o próximo agente.',
+            'Inclua: objetivo real, arquivos/áreas provavelmente relevantes, dependências, riscos e critérios de aceite.',
+            'Não gere código. Não altere arquivos. Não responda ao usuário final.',
+            '',
+            'PEDIDO:',
+            x.prompt,
+          ].join('\n'),
+          stepId: x.stepId,
+        },
+        { profile: 'BASE_FREE', forcedAgentKey: 'SCOUT', allowExpertEscalation: false }
+      );
+      if (!scoutResult.hasErrors && !scoutResult.isDemonstrativeFallback && scoutResult.replyText?.trim()) {
+        scoutBrief = scoutResult.replyText.trim();
+        scoutSource = 'model';
+      }
+    } catch {}
+    RunService.finishStep(x.stepId, 'completed', {
+      ...RunService.context('task', {
+        objective: x.prompt,
+        acceptanceCriteria: [
+          'Atender ao pedido sem ampliar escopo',
+          'Preservar o projeto existente',
+          'Produzir alteração revisável antes da aplicação',
+          'Rodar ValidatorEngine após aplicação real',
+        ],
+        snippets: visibleFiles,
+        constraints: [
+          'Não publicar sem solicitação explícita',
+          'Não aplicar arquivos antes da aprovação quando houver proposta',
+          'Manter contexto limitado aos arquivos relevantes',
+        ],
+      }),
+      brief: scoutBrief,
+      source: scoutSource,
     });
-    RunService.finishStep(x.stepId, 'completed', scoutContext);
     let order = RunService.nextOrderIndex(x.runId);
 
     let studioGuidance = '';
     if (needsStudio(x.prompt, x.mode)) {
-      studioGuidance = [
+      const deterministicStudio = [
         'Critérios do STUDIO para esta implementação:',
         '- preservar hierarquia visual clara e consistência entre seções',
         '- garantir responsividade mobile e desktop',
@@ -256,9 +290,37 @@ export class AgentWorkflowEngine extends AgentEngine {
         })
       );
       steps.push(studio);
+      studioGuidance = deterministicStudio;
+      let studioSource = 'deterministic_fallback';
+      try {
+        const studioResult = await AgentEngine.execute(
+          {
+            ...x,
+            mode: 'review',
+            prompt: [
+              'Atue como STUDIO interno do fluxo de programação.',
+              'Transforme o pedido visual e o briefing do SCOUT em critérios objetivos para o FORGE.',
+              'Foque em composição, hierarquia, responsividade, estados, consistência e regressões visuais prováveis.',
+              'Não gere código. Não altere arquivos. Não responda ao usuário final.',
+              '',
+              'PEDIDO:',
+              x.prompt,
+              '',
+              'BRIEF DO SCOUT:',
+              scoutBrief,
+            ].join('\n'),
+            stepId: studio,
+          },
+          { profile: 'BASE_FREE', forcedAgentKey: 'STUDIO', allowExpertEscalation: false }
+        );
+        if (!studioResult.hasErrors && !studioResult.isDemonstrativeFallback && studioResult.replyText?.trim()) {
+          studioGuidance = studioResult.replyText.trim();
+          studioSource = 'model';
+        }
+      } catch {}
       RunService.finishStep(studio, 'completed', {
         guidance: studioGuidance,
-        source: 'deterministic_visual_guardrails',
+        source: studioSource,
       });
     }
 
@@ -277,7 +339,11 @@ export class AgentWorkflowEngine extends AgentEngine {
     );
     steps.push(forge);
 
-    const forgePrompt = studioGuidance ? `${x.prompt}\n\n${studioGuidance}` : x.prompt;
+    const forgePrompt = [
+      x.prompt,
+      'BRIEF INTERNO DO SCOUT:\n' + scoutBrief,
+      studioGuidance ? 'CRITÉRIOS INTERNOS DO STUDIO:\n' + studioGuidance : '',
+    ].filter(Boolean).join('\n\n');
     const reliableBuild = x.reliableBuild
       ? {
           ...x.reliableBuild,
