@@ -1189,38 +1189,45 @@ Responda sempre em português claro, elegante e profissional.`;
       temperature: 0.2,
       ...(useStreaming ? { stream: true, stream_options: { include_usage: true } } : {}),
     };
-    let response = await send(requestBody);
+    let response: Response | null = null;
 
-    if (!response.ok && useStreaming && [400, 415, 422].includes(response.status)) {
-      const firstError = await response.text();
-      const lower = firstError.toLowerCase();
-      if (lower.includes('stream_options') || lower.includes('unsupported') || lower.includes('unknown field')) {
-        requestBody = { ...requestBody, stream: true };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      response = await send(requestBody);
+      if (response.ok) break;
+
+      const errorText = await response.text();
+      const lower = errorText.toLowerCase();
+
+      if (
+        useStreaming &&
+        requestBody.stream_options &&
+        [400, 415, 422].includes(response.status) &&
+        (lower.includes('stream_options') || lower.includes('unsupported') || lower.includes('unknown field'))
+      ) {
+        requestBody = { ...requestBody };
         delete requestBody.stream_options;
-        response = await send(requestBody);
+        continue;
       }
-    }
 
-    if (!response.ok && [400, 415, 422].includes(response.status)) {
-      const secondError = await response.text();
-      const lower = secondError.toLowerCase();
-      if (lower.includes('temperature') || lower.includes('unsupported parameter')) {
+      if (
+        requestBody.temperature !== undefined &&
+        [400, 415, 422].includes(response.status) &&
+        (lower.includes('temperature') || lower.includes('unsupported parameter'))
+      ) {
         requestBody = { ...requestBody };
         delete requestBody.temperature;
-        response = await send(requestBody);
-      } else {
-        const clean = this.cleanProviderErrorBody(secondError);
-        throw new Error(`API retornou HTTP ${response.status}: ${clean || 'resposta incompatível do provedor'}`);
+        continue;
       }
-    }
 
-    if (!response.ok) {
-      const errText = await response.text();
-      const clean = this.cleanProviderErrorBody(errText);
+      const clean = this.cleanProviderErrorBody(errorText);
       if (response.status === 524 && useStreaming) {
         throw new Error('OmniRoute excedeu o tempo limite do túnel Cloudflare (HTTP 524).');
       }
       throw new Error(`API retornou HTTP ${response.status}: ${clean || 'erro do provedor'}`);
+    }
+
+    if (!response || !response.ok) {
+      throw new Error('API não aceitou uma configuração compatível após tentativas limitadas.');
     }
 
     let textContent = '';
