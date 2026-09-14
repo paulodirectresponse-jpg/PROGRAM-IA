@@ -120,14 +120,24 @@ export class SupabasePersistenceService {
       'Supabase project files read before delete'
     );
     const metadata=await metadataResponse.json() as Array<{storage_path:string}>;
+    let storageCleanupFailures=0;
     for(const row of metadata){
       if(!row?.storage_path)continue;
-      const response=await fetch(`${process.env.SUPABASE_URL}/storage/v1/object/forge-project-files/${row.storage_path}`,{
-        method:'DELETE',
-        headers:this.headers(),
-      });
-      // Object may already be gone; metadata/project cascade is still authoritative.
-      if(!response.ok&&response.status!==404)await this.expect(response,'Supabase Storage project file delete');
+      try{
+        const response=await fetch(`${process.env.SUPABASE_URL}/storage/v1/object/forge-project-files/${row.storage_path}`,{
+          method:'DELETE',
+          headers:this.headers(),
+        });
+        // Storage cleanup is best-effort. The canonical project row is the
+        // source of truth and its FK cascades remove file metadata.
+        if(!response.ok&&response.status!==404){
+          storageCleanupFailures++;
+          console.warn(`Supabase Storage cleanup skipped for project ${projectId}: HTTP ${response.status}`);
+        }
+      }catch{
+        storageCleanupFailures++;
+        console.warn(`Supabase Storage cleanup skipped for project ${projectId}: request failed`);
+      }
     }
     await this.expect(
       await fetch(this.rest(`forge_projects?firebase_uid=eq.${owner}&id=eq.${project}`),{
@@ -136,7 +146,7 @@ export class SupabasePersistenceService {
       }),
       'Supabase canonical project delete'
     );
-    return{status:'synced' as DirectStatus,deleted:true,files:metadata.length};
+    return{status:'synced' as DirectStatus,deleted:true,files:metadata.length,storageCleanupFailures};
   }
 
   static async push(userId: string, firebaseUid: string, snapshot: DirectSnapshot): Promise<{status: DirectStatus; records?: number; files?: number}> {
