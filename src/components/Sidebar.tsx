@@ -39,6 +39,7 @@ interface SidebarProps {
   onExportZip?: (id: string) => void;
   activeProvider: Provider | null;
   githubStatus: GitHubStatus | null;
+  onCollapsedChange?: (collapsed: boolean) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -66,7 +67,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <aside
       id="forge-sidebar"
-      className={`${collapsed?'w-16':'w-64'} bg-slate-950 border-r border-slate-800/80 flex flex-col justify-between select-none shrink-0 h-full transition-[width] duration-200`}
+      className={`${collapsed?'w-[72px]':'w-64'} bg-slate-950 border-r border-slate-800/80 flex flex-col justify-between select-none shrink-0 h-full transition-[width] duration-200`}
     >
       {/* Top Header & Brand */}
       <div className={`${collapsed?'p-2':'p-4'} space-y-4`}>
