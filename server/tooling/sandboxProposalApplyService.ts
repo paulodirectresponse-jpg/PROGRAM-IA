@@ -206,7 +206,7 @@ export class SandboxProposalApplyService {
       },{
         toolKey:'browser.inspect_page',
         input:{},
-        idempotencyKey:input.runId?`browser-quality:${proposal.id}:${attempt}`:null,
+        idempotencyKey:null,
       });
       if(execution.status==='aborted')throw Object.assign(new Error('Browser quality cancelado.'),{name:'AbortError'});
       if(execution.status!=='succeeded'){
