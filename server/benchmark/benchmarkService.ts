@@ -181,7 +181,18 @@ function aggregate(runId:string):BenchmarkRunSummary{
   const firstPass=completed.filter(row=>Number(row.attempts)<=1&&Number(row.repairs)===0);
   const expert=completed.filter(row=>Number(row.expert_escalations)>0);
   const repaired=completed.filter(row=>Number(row.repairs)>0);
-  const verified=completed.filter(row=>row.validator_status==='passed'||row.browser_status==='passed'||['plan','review'].includes(row.mode));
+  const verified=completed.filter(row=>{
+    const definition=PHASE4_BENCHMARK_CASES.find(item=>item.id===row.case_id);
+    if(!definition)return false;
+    if(['plan','review'].includes(row.mode))return Number(row.passed)===1;
+    const validatorRequired=definition.checks.requireValidatorPass===true;
+    const browserRequired=definition.checks.requireBrowserPass===true;
+    if(validatorRequired||browserRequired){
+      return (!validatorRequired||row.validator_status==='passed')
+        && (!browserRequired||row.browser_status==='passed');
+    }
+    return Number(row.passed)===1;
+  });
   const totalCost=rows.reduce((sum,row)=>sum+Number(row.cost_usd||0),0);
   const avgScore=completed.length?completed.reduce((sum,row)=>sum+Number(row.score||0),0)/completed.length:0;
   const avgLatency=completed.length?completed.reduce((sum,row)=>sum+Number(row.latency_ms||0),0)/completed.length:0;
@@ -414,9 +425,13 @@ export class BenchmarkService {
     const run=this.get(id,userId);
     if(!run)return null;
     const cases=run.cases as any[];
-    const summary=run.summary as BenchmarkRunSummary;
+    const summary=aggregate(id);
     const fullCatalog=new Set(PHASE4_BENCHMARK_CASES.map(item=>item.id));
-    const fullSuite=run.totalCases===30&&cases.length===30&&cases.every(item=>fullCatalog.has(item.caseId));
+    const caseIds=new Set(cases.map(item=>item.caseId));
+    const fullSuite=run.totalCases===30
+      && cases.length===30
+      && caseIds.size===30
+      && [...fullCatalog].every(caseId=>caseIds.has(caseId));
     const allReal=cases.length===30&&cases.every(item=>item.providerReal===true);
     const repairsBounded=cases.every(item=>Number(item.repairs||0)<=2);
     const categoryFloor=Object.values(summary.categoryBreakdown||{}).every((entry:any)=>entry.cases>0&&(entry.passed/entry.cases)>=0.60);
