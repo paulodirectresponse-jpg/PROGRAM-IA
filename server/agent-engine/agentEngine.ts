@@ -459,13 +459,7 @@ export class AgentEngine {
               signal: attemptInput.signal,
               onProgress:(event)=>RunService.appendProgressEvent(attemptInput.stepId,event),
             })
-          : await LLMAdapterService.executePrompt({
-              ...attemptInput,
-              providerKey: candidate.provider_key,
-              modelId: candidate.model_id === 'auto' ? undefined : candidate.model_id,
-              contextBrief: attemptInput.contextBrief,
-              contextPackId: attemptInput.contextPack?.id,
-            });
+          : await executePromptWithReadTools(attemptInput,candidate,agentKey);
         if (result.isDemonstrativeFallback || result.hasErrors) {
           const reason = String(result.errorReason || result.errorMessage || 'provider_error');
           const operational = /timeout|network|rate_limit|provider_error|429|5\d\d/i.test(reason);
