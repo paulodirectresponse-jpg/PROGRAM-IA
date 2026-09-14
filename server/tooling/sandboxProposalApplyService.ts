@@ -116,12 +116,20 @@ export class SandboxProposalApplyService {
       return {success:false,statusCode:422,error:'A proposta falhou na validação do sandbox; o workspace oficial não foi alterado.',validation,sandboxId};
     }
 
-    const merge=SandboxManager.mergeAtomic({
-      sandboxId,userId:input.userId,projectId:input.projectId,title:input.summary,
-      description:'Aplicação atômica de proposta previamente validada em sandbox.',
-    });
+    let merge:any;
+    try{
+      merge=SandboxManager.mergeAtomic({
+        sandboxId,userId:input.userId,projectId:input.projectId,title:input.summary,
+        description:'Aplicação aprovada a partir do ambiente isolado.',
+      });
+    }catch(error:any){
+      if(error?.code==='stale_base_revision'){
+        return {success:false,statusCode:409,error:'A revisão-base mudou. Atualize a proposta antes de aplicar.',validation,sandboxId,errorCode:'stale_base_revision'};
+      }
+      throw error;
+    }
 
-    const changedFiles=merge.changedFiles.map(item=>item.path);
+    const changedFiles=merge.changedFiles.map((item:any)=>item.path);
     if(input.runId){
       RequirementLedgerService.setStatusForRun(input.runId,validation.status==='passed'?'verified':'implemented',{
         type:validation.status==='passed'?'sandbox_merge_verified':'sandbox_merge_unverified',
