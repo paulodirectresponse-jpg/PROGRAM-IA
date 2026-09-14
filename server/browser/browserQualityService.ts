@@ -124,25 +124,36 @@ async function inspectViewport(input:{browser:Browser;baseUrl:string;viewport:{n
     await page.goto(input.baseUrl,{waitUntil:'domcontentloaded',timeout:NAVIGATION_TIMEOUT_MS});
     await page.waitForLoadState('networkidle',{timeout:NETWORK_IDLE_TIMEOUT_MS}).catch(()=>undefined);
     input.signal?.throwIfAborted();
-    const dom=await page.evaluate(()=>{
-      const body=document.body,doc=document.documentElement;
-      const interactive=[...document.querySelectorAll('button,a,input,select,textarea,[role="button"],[role="link"]')] as HTMLElement[];
-      const accessible=(el:HTMLElement)=>{
+    const dom=await page.evaluate(`(() => {
+      const body=document.body;
+      const doc=document.documentElement;
+      const interactive=Array.from(document.querySelectorAll('button,a,input,select,textarea,[role="button"],[role="link"]'));
+      let unlabeledInteractiveCount=0;
+      for(const el of interactive){
         const aria=el.getAttribute('aria-label')||el.getAttribute('aria-labelledby')||'';
-        const text=(el.innerText||el.getAttribute('title')||el.getAttribute('alt')||'').trim();
-        const name=(el as HTMLInputElement).name||'';return `${aria} ${text} ${name}`.trim();
-      };
-      const counts=new Map<string,number>();
-      for(const id of [...document.querySelectorAll('[id]')].map(el=>el.id).filter(Boolean))counts.set(id,(counts.get(id)||0)+1);
-      const images=[...document.querySelectorAll('img')];
+        const text=((el.innerText||'')||el.getAttribute('title')||el.getAttribute('alt')||'').trim();
+        const name=el.getAttribute('name')||'';
+        if(!(`${aria} ${text} ${name}`.trim()))unlabeledInteractiveCount++;
+      }
+      const counts={};
+      for(const el of Array.from(document.querySelectorAll('[id]'))){
+        const id=el.id;
+        if(id)counts[id]=(counts[id]||0)+1;
+      }
+      const duplicateIds=Object.keys(counts).filter(id=>counts[id]>1);
+      const images=Array.from(document.querySelectorAll('img'));
+      let imagesWithoutAlt=0;
+      for(const image of images)if(!image.hasAttribute('alt'))imagesWithoutAlt++;
       return {
-        title:document.title||'',bodyTextChars:(body?.innerText||'').trim().length,
-        interactiveCount:interactive.length,unlabeledInteractiveCount:interactive.filter(el=>!accessible(el)).length,
-        imagesWithoutAlt:images.filter(img=>!img.hasAttribute('alt')).length,
-        duplicateIds:[...counts.entries()].filter(([,count])=>count>1).map(([id])=>id),
-        horizontalOverflowPx:Math.max(0,(doc?.scrollWidth||0)-window.innerWidth),
+        title:document.title||'',
+        bodyTextChars:((body&&body.innerText)||'').trim().length,
+        interactiveCount:interactive.length,
+        unlabeledInteractiveCount,
+        imagesWithoutAlt,
+        duplicateIds,
+        horizontalOverflowPx:Math.max(0,((doc&&doc.scrollWidth)||0)-window.innerWidth),
       };
-    });
+    })()`) as any;
     const screenshotPath=safeArtifactPath(input.artifactRunId,input.viewport.name);
     fs.mkdirSync(path.dirname(screenshotPath),{recursive:true});await page.screenshot({path:screenshotPath,fullPage:true});
     const screenshot=fs.readFileSync(screenshotPath);
