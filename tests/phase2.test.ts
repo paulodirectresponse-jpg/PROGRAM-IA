@@ -184,3 +184,30 @@ test('phase2 sensitive project files are not exposed to sandbox tools and surviv
     assert.equal(WorkspaceManager.readFile(env.projectId,'.env'),'PRIVATE_TOKEN=keep-me');
   } finally { cleanup(env); }
 });
+
+
+test('phase2 patch tool is deterministic and idempotency prevents repeated side effects', async () => {
+  const env=setupProject();
+  try {
+    WorkspaceManager.writeFile(env.projectId,'src/a.ts','const value = 1;');
+    const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-patch',stepId:'step-patch'});
+    const request={
+      toolKey:'workspace.apply_patch',
+      input:{patch:JSON.stringify({path:'src/a.ts',search:'value = 1',replace:'value = 2'})},
+      idempotencyKey:'patch-once',
+    };
+    const first=await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-patch',stepId:'step-patch',sandboxId:sandbox.id},
+      request
+    );
+    assert.equal(first.status,'succeeded');
+    const second=await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-patch',stepId:'step-patch',sandboxId:sandbox.id},
+      request
+    );
+    assert.equal(second.executionId,first.executionId);
+    assert.equal(SandboxManager.readFile(sandbox.id,env.userId,'src/a.ts',env.projectId),'const value = 2;');
+    assert.equal(WorkspaceManager.readFile(env.projectId,'src/a.ts'),'const value = 1;');
+    assert.equal((db.prepare("SELECT COUNT(*) c FROM tool_executions WHERE run_id='run-patch' AND idempotency_key='patch-once'").get() as any).c,1);
+  } finally { cleanup(env); }
+});
