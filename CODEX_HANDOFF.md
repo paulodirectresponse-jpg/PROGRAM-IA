@@ -50,6 +50,25 @@ Contrato existente:
 
 
 
+
+## Fase 4 — Benchmark real + qualidade
+
+A Fase 4 está **em implementação** na branch `codex/phase4-benchmark-quality`.
+
+Leia `PHASE4_IMPLEMENTATION.md`.
+
+Não reimplementar:
+- catálogo `phase4-v1-30`;
+- BenchmarkService;
+- benchmark persistence;
+- scoring;
+- preflight;
+- release gate v1;
+- recovery/cancel/resume.
+
+Pendência material: executar e auditar providers reais. Nenhum mock pode ser usado para declarar o gate final aprovado.
+
+
 ## C — Runtime de frameworks e preview executável
 
 ### Implementado localmente
