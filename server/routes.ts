@@ -155,7 +155,7 @@ function sessionAuthMiddleware(req: Request, res: Response, next: NextFunction) 
  */
 function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!req.user) {
-    return res.status(401).json({ error: 'NÃ£o autenticado. FaÃ§a login para acessar este recurso.' });
+    return res.status(401).json({ error: 'Não autenticado. Faça login para acessar este recurso.' });
   }
   next();
 }
@@ -172,7 +172,7 @@ function csrfProtection(req: Request, res: Response, next: NextFunction) {
       const csrfHeader = req.headers['x-csrf-token'];
       const sameOrigin = req.headers['sec-fetch-site']==='same-origin' && (!req.headers.origin || new URL(req.headers.origin).host===req.headers.host);
       if (!sameOrigin && (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader)) {
-        return res.status(403).json({ error: 'Falha de validaÃ§Ã£o CSRF (token invÃ¡lido).' });
+        return res.status(403).json({ error: 'Falha de validação CSRF (token inválido).' });
       }
     }
   }
@@ -187,16 +187,16 @@ function requireProjectOwner(req: Request, res: Response, next: NextFunction) {
   if (!projectId) return next();
 
   if (!req.user) {
-    return res.status(401).json({ error: 'NÃ£o autenticado.' });
+    return res.status(401).json({ error: 'Não autenticado.' });
   }
 
   const project = db.prepare('SELECT user_id FROM projects WHERE id = ?').get(projectId) as { user_id?: string } | undefined;
   if (!project) {
-    return res.status(404).json({ error: 'Projeto nÃ£o encontrado.' });
+    return res.status(404).json({ error: 'Projeto não encontrado.' });
   }
 
   if (project.user_id !== req.user.id) {
-    return res.status(403).json({ error: 'Este projeto pertence a outro usuÃ¡rio.' });
+    return res.status(403).json({ error: 'Este projeto pertence a outro usuário.' });
   }
 
   next();
@@ -265,11 +265,11 @@ router.post('/sync/pull',requireAuth,async(req,res)=>{try{res.json(await CloudSy
 
 router.get('/integrations', requireAuth, (req, res) => {
   try { res.json({integrations: Object.keys(integrationFields).map(key => IntegrationService.summary(req.user!.id, key))}); }
-  catch { res.status(500).json({error:'NÃ£o foi possÃ­vel carregar integraÃ§Ãµes.'}); }
+  catch { res.status(500).json({error:'Não foi possível carregar integrações.'}); }
 });
 router.put('/integrations/:service', requireAuth, (req, res) => {
   try { res.json(IntegrationService.save(req.user!.id, req.params.service, req.body.fields || {})); }
-  catch { res.status(400).json({error:'ConfiguraÃ§Ã£o invÃ¡lida. Confira os campos e o JSON da conta de serviÃ§o.'}); }
+  catch { res.status(400).json({error:'Configuração inválida. Confira os campos e o JSON da conta de serviço.'}); }
 });
 router.post('/integrations/:service/test', requireAuth, async (req, res) => {
   try { res.json(await IntegrationService.test(req.user!.id, req.params.service)); }
@@ -333,7 +333,7 @@ router.post('/secrets', requireAuth, (req: Request, res: Response) => {
   try {
     const { providerKey, secretValue } = req.body;
     if (!providerKey || !secretValue) {
-      return res.status(400).json({ error: 'Provedor e valor da chave sÃ£o obrigatÃ³rios.' });
+      return res.status(400).json({ error: 'Provedor e valor da chave são obrigatórios.' });
     }
 
     SecretService.saveSecret(req.user!.id, providerKey, secretValue);
@@ -371,7 +371,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
   try {
     const { name, description, origin = 'novo', repo_url = '', branch = 'main', initialFiles = {}, zipData = '' } = req.body;
     if (!name || name.trim().length === 0) {
-      return res.status(400).json({ error: 'O nome do projeto Ã© obrigatÃ³rio.' });
+      return res.status(400).json({ error: 'O nome do projeto é obrigatório.' });
     }
 
     const projectId = 'proj-' + Date.now();
@@ -383,13 +383,13 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
     // 1. GITHUB REPOSITORY IMPORT
     if (origin === 'github') {
       if (!repo_url || repo_url.trim().length === 0) {
-        return res.status(400).json({ error: 'URL do repositÃ³rio GitHub Ã© obrigatÃ³ria para importaÃ§Ã£o.' });
+        return res.status(400).json({ error: 'URL do repositório GitHub é obrigatória para importação.' });
       }
 
       const parsed = GitHubService.parseRepoUrl(repo_url);
       if (!parsed) {
         return res.status(400).json({
-          error: 'URL do GitHub invÃ¡lida. Formatos aceitos: https://github.com/usuario/repo ou usuario/repo',
+          error: 'URL do GitHub inválida. Formatos aceitos: https://github.com/usuario/repo ou usuario/repo',
         });
       }
 
@@ -397,7 +397,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       const importResult = await GitHubService.importRepoFiles(parsed.owner, parsed.repo, effectiveBranch, userId);
       if (!importResult.success) {
         return res.status(400).json({
-          error: importResult.error || 'Falha ao importar arquivos do repositÃ³rio especificado.',
+          error: importResult.error || 'Falha ao importar arquivos do repositório especificado.',
         });
       }
 
@@ -440,12 +440,12 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       `).run(
         'msg-' + Date.now(),
         convId,
-        `RepositÃ³rio **${parsed.owner}/${parsed.repo}** importado com sucesso!\n\nForam carregados **${importResult.filesCount || 0} arquivos** no workspace. Estou pronto para analisar e implementar o que vocÃª precisar.`,
+        `Repositório **${parsed.owner}/${parsed.repo}** importado com sucesso!\n\nForam carregados **${importResult.filesCount || 0} arquivos** no workspace. Estou pronto para analisar e implementar o que você precisar.`,
         JSON.stringify({ isWelcome: true, mode: 'auto' }),
         now
       );
 
-      WorkspaceManager.createCheckpoint(projectId, 'ImportaÃ§Ã£o do GitHub', `Importado de ${parsed.owner}/${parsed.repo}`);
+      WorkspaceManager.createCheckpoint(projectId, 'Importação do GitHub', `Importado de ${parsed.owner}/${parsed.repo}`);
       return res.json(projectResponse(projectId, userId));
     }
 
@@ -460,7 +460,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       let importedCount = 0;
       if (zipData) {
         const encoded = String(zipData);
-        if (!/^[A-Za-z0-9+/=]+$/.test(encoded) || encoded.length > 36_000_000) throw new Error('Arquivo ZIP invÃ¡lido ou acima do limite permitido.');
+        if (!/^[A-Za-z0-9+/=]+$/.test(encoded) || encoded.length > 36_000_000) throw new Error('Arquivo ZIP inválido ou acima do limite permitido.');
         importedCount = (await WorkspaceManager.importZip(projectId, Buffer.from(encoded, 'base64'))).fileCount;
       } else {
         const normalizedInitialFiles = WorkspaceManager.normalizeImportedFiles(initialFiles as Record<string,string>);
@@ -487,12 +487,12 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       `).run(
         'msg-' + Date.now(),
         convId,
-        `Arquivo **${name}** extraÃ­do com sucesso!\n\nForam criados **${importedCount} arquivos** no workspace.`,
+        `Arquivo **${name}** extraído com sucesso!\n\nForam criados **${importedCount} arquivos** no workspace.`,
         JSON.stringify({ isWelcome: true, mode: 'auto' }),
         now
       );
 
-      if (!zipData) WorkspaceManager.createCheckpoint(projectId, 'ImportaÃ§Ã£o de Arquivo ZIP', `ExtraÃ§Ã£o de ${importedCount} arquivos`);
+      if (!zipData) WorkspaceManager.createCheckpoint(projectId, 'Importação de Arquivo ZIP', `Extração de ${importedCount} arquivos`);
       return res.json(projectResponse(projectId, userId));
     }
 
@@ -520,7 +520,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
     `).run(
       'msg-' + Date.now(),
       convId,
-      `Projeto **${name}** pronto!\n\nEstou operando no modo **AutomÃ¡tico**. Diga o que deseja construir, modificar ou entender.`,
+      `Projeto **${name}** pronto!\n\nEstou operando no modo **Automático**. Diga o que deseja construir, modificar ou entender.`,
       JSON.stringify({ isWelcome: true, mode: 'auto' }),
       now
     );
@@ -532,7 +532,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${starterTitle} â Live Preview</title>
+  <title>${starterTitle} — Live Preview</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
@@ -542,15 +542,15 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 <body class="p-6 md:p-8 min-h-screen flex flex-col justify-between">
   <div class="max-w-3xl mx-auto w-full space-y-6">
     <div class="border-b border-slate-800 pb-4">
-      <span class="text-xs font-mono text-cyan-400">Sandbox Preview â¢ Forge Agent</span>
+      <span class="text-xs font-mono text-cyan-400">Sandbox Preview • Forge Agent</span>
       <h1 class="text-2xl font-bold mt-1 text-slate-100">${starterTitle}</h1>
       <p class="text-xs text-slate-400 mt-1">${description || 'Projeto criado com sucesso. Converse com o agente para construir telas e fluxos.'}</p>
     </div>
     <div class="p-6 rounded-xl bg-slate-900/90 border border-slate-800 text-center space-y-3">
       <div class="w-10 h-10 rounded-full bg-cyan-950/80 border border-cyan-700/60 text-cyan-400 mx-auto flex items-center justify-center font-bold">â</div>
-      <h2 class="text-base font-semibold text-slate-200">Workspace Pronto para IteraÃ§Ãµes</h2>
+      <h2 class="text-base font-semibold text-slate-200">Workspace Pronto para Iterações</h2>
       <p class="text-xs text-slate-400 max-w-md mx-auto">
-        Envie sua instruÃ§Ã£o no painel ao lado. Seus arquivos serÃ£o atualizados e renderizados aqui em tempo real.
+        Envie sua instrução no painel ao lado. Seus arquivos serão atualizados e renderizados aqui em tempo real.
       </p>
     </div>
   </div>
@@ -559,7 +559,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 </html>`;
 
     WorkspaceManager.writeFile(projectId, 'index.html', initialHtml);
-    WorkspaceManager.createCheckpoint(projectId, 'CriaÃ§Ã£o do Projeto', 'Setup inicial do workspace');
+    WorkspaceManager.createCheckpoint(projectId, 'Criação do Projeto', 'Setup inicial do workspace');
 
     res.json(projectResponse(projectId, userId));
   } catch (err: any) {
@@ -870,17 +870,17 @@ router.get('/projects/:id/files', requireAuth, requireProjectOwner, (req: Reques
 router.get('/projects/:id/files/content', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   try {
     const filePath = req.query.path as string;
-    if (!filePath) return res.status(400).json({ error: 'ParÃ¢metro path ausente.' });
+    if (!filePath) return res.status(400).json({ error: 'Parâmetro path ausente.' });
 
     if (WorkspaceManager.isBinaryPath(filePath)) {
       const buffer = WorkspaceManager.readBinaryFile(req.params.id, filePath);
-      if (buffer === null) return res.status(404).json({ error: 'Arquivo nÃ£o encontrado.' });
+      if (buffer === null) return res.status(404).json({ error: 'Arquivo não encontrado.' });
       return res.json({ path: filePath, isBinary: true, base64: buffer.toString('base64') });
     }
 
     const content = WorkspaceManager.readFile(req.params.id, filePath);
     if (content === null) {
-      return res.status(404).json({ error: 'Arquivo nÃ£o encontrado.' });
+      return res.status(404).json({ error: 'Arquivo não encontrado.' });
     }
     res.json({ path: filePath, isBinary: false, content });
   } catch (err: any) {
@@ -892,10 +892,10 @@ router.post('/projects/:id/files', requireAuth, requireProjectOwner, (req: Reque
   try {
     const { path: filePath, content } = req.body;
     if (!filePath || content === undefined) {
-      return res.status(400).json({ error: 'Campos path e content sÃ£o obrigatÃ³rios.' });
+      return res.status(400).json({ error: 'Campos path e content são obrigatórios.' });
     }
     WorkspaceManager.writeFile(req.params.id, filePath, content);
-    const cpId = WorkspaceManager.createCheckpoint(req.params.id, `EdiÃ§Ã£o manual: ${filePath}`);
+    const cpId = WorkspaceManager.createCheckpoint(req.params.id, `Edição manual: ${filePath}`);
     res.json({ success: true, checkpointId: cpId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -915,12 +915,12 @@ router.post('/projects/:id/checkpoints', requireAuth, requireProjectOwner, (req:
   try {
     const { title, description } = req.body;
     if (!title || title.trim().length === 0) {
-      return res.status(400).json({ error: 'O nome da versÃ£o (o que foi alterado nesta atualizaÃ§Ã£o) Ã© obrigatÃ³rio.' });
+      return res.status(400).json({ error: 'O nome da versão (o que foi alterado nesta atualização) é obrigatório.' });
     }
 
     const cpId = WorkspaceManager.createCheckpoint(req.params.id, title.trim(), description?.trim() || '');
     const cp = db.prepare('SELECT id, title, description, parent_id, created_at FROM checkpoints WHERE id = ?').get(cpId);
-    res.json({ success: true, checkpoint: cp, message: `VersÃ£o "${title.trim()}" criada com sucesso.` });
+    res.json({ success: true, checkpoint: cp, message: `Versão "${title.trim()}" criada com sucesso.` });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -930,18 +930,18 @@ router.post('/projects/:id/checkpoints/rollback-previous', requireAuth, requireP
   try {
     const checkpoints = db.prepare('SELECT id, title, description, created_at FROM checkpoints WHERE project_id = ? ORDER BY created_at DESC LIMIT 2').all(req.params.id) as any[];
     if (checkpoints.length < 2) {
-      return res.status(400).json({ error: 'NÃ£o hÃ¡ versÃ£o anterior registrada para restaurar neste projeto.' });
+      return res.status(400).json({ error: 'Não há versão anterior registrada para restaurar neste projeto.' });
     }
 
     const previousCheckpoint = checkpoints[1];
     const success = WorkspaceManager.restoreCheckpoint(req.params.id, previousCheckpoint.id);
     if (!success) {
-      return res.status(500).json({ error: 'Falha ao restaurar arquivos da versÃ£o anterior.' });
+      return res.status(500).json({ error: 'Falha ao restaurar arquivos da versão anterior.' });
     }
 
     res.json({
       success: true,
-      message: `VersÃ£o anterior "${previousCheckpoint.title}" restaurada com sucesso!`,
+      message: `Versão anterior "${previousCheckpoint.title}" restaurada com sucesso!`,
       restoredCheckpoint: previousCheckpoint,
     });
   } catch (err: any) {
@@ -953,7 +953,7 @@ router.post('/projects/:id/checkpoints/:checkpointId/restore', requireAuth, requ
   try {
     const success = WorkspaceManager.restoreCheckpoint(req.params.id, req.params.checkpointId);
     if (!success) {
-      return res.status(404).json({ error: 'Checkpoint nÃ£o encontrado.' });
+      return res.status(404).json({ error: 'Checkpoint não encontrado.' });
     }
     res.json({ success: true, message: 'Checkpoint restaurado com sucesso.' });
   } catch (err: any) {
@@ -989,7 +989,7 @@ router.get('/conversations/:projectId', requireAuth, requireProjectOwner, (req: 
   try {
     const conversation = db.prepare('SELECT * FROM conversations WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(req.params.projectId) as any;
     if (!conversation) {
-      return res.status(404).json({ error: 'Conversa nÃ£o encontrada.' });
+      return res.status(404).json({ error: 'Conversa não encontrada.' });
     }
 
     const messages = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC').all(conversation.id);
@@ -1004,7 +1004,7 @@ router.get('/conversations/:projectId', requireAuth, requireProjectOwner, (req: 
 router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   const projectId = req.params.projectId;
   if (activeProjects.has(projectId)) {
-    return res.status(409).json({ error: 'JÃ¡ hÃ¡ uma execuÃ§Ã£o neste projeto. Aguarde ou cancele antes de aprovar o plano.' });
+    return res.status(409).json({ error: 'Já há uma execução neste projeto. Aguarde ou cancele antes de aprovar o plano.' });
   }
 
   activeProjects.add(projectId);
@@ -1025,16 +1025,16 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
 
   try {
     const { planId } = req.body || {};
-    if (!planId) return res.status(400).json({ error: 'Identificador do plano Ã© obrigatÃ³rio.' });
+    if (!planId) return res.status(400).json({ error: 'Identificador do plano é obrigatório.' });
 
     const plan = db.prepare('SELECT * FROM plans WHERE id = ? AND project_id = ?').get(planId, projectId) as any;
-    if (!plan) return res.status(404).json({ error: 'Plano nÃ£o encontrado neste projeto.' });
+    if (!plan) return res.status(404).json({ error: 'Plano não encontrado neste projeto.' });
     if (plan.status !== 'draft') {
-      return res.status(409).json({ error: `Este plano nÃ£o estÃ¡ mais aguardando aprovaÃ§Ã£o (${plan.status || 'estado invÃ¡lido'}).` });
+      return res.status(409).json({ error: `Este plano não está mais aguardando aprovação (${plan.status || 'estado inválido'}).` });
     }
 
     const conversation = db.prepare('SELECT * FROM conversations WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
-    if (!conversation) return res.status(404).json({ error: 'Conversa nÃ£o encontrada.' });
+    if (!conversation) return res.status(404).json({ error: 'Conversa não encontrada.' });
 
     const providerConfig = LLMAdapterService.getActiveProviderConfig(req.user!.id);
     if (!providerConfig) {
@@ -1123,13 +1123,13 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
     const formatRepairAttempted = false;
 
     if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
-      return res.status(409).json({ error: 'Os arquivos mudaram durante a construÃ§Ã£o. Aprove o plano novamente para usar a versÃ£o atual.' });
+      return res.status(409).json({ error: 'Os arquivos mudaram durante a construção. Aprove o plano novamente para usar a versão atual.' });
     }
 
     if (result.build?.files?.length && !result.proposal && !result.isDemonstrativeFallback && !result.hasErrors) {
       result.proposal = {
         id: `proposal-${crypto.randomUUID()}`,
-        summary: result.build.summary || `ConstruÃ§Ã£o do plano: ${String(plan.objective || '').slice(0, 80)}`,
+        summary: result.build.summary || `Construção do plano: ${String(plan.objective || '').slice(0, 80)}`,
         requiresConfirmation: true,
         files: result.build.files,
         status: 'pending',
@@ -1140,7 +1140,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
       if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
       return res.status(422).json({
         success: false,
-        error: result.errorMessage || result.errorReason || 'O modelo nÃ£o retornou uma proposta de construÃ§Ã£o vÃ¡lida. O plano continua aguardando aprovaÃ§Ã£o.',
+        error: result.errorMessage || result.errorReason || 'O modelo não retornou uma proposta de construção válida. O plano continua aguardando aprovação.',
       });
     }
 
@@ -1216,7 +1216,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
 });
 
 router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
-  if (activeProjects.has(req.params.projectId)) return res.status(409).json({error:'JÃ¡ hÃ¡ uma execuÃ§Ã£o neste projeto. Aguarde ou cancele antes de enviar outro pedido.'});
+  if (activeProjects.has(req.params.projectId)) return res.status(409).json({error:'Já há uma execução neste projeto. Aguarde ou cancele antes de enviar outro pedido.'});
   activeProjects.add(req.params.projectId);
   const controller = new AbortController();
   activeProjectControllers.set(req.params.projectId, controller);
@@ -1224,7 +1224,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
   try {
     const { content, mode = 'auto', appliedSkills = [] } = req.body;
     if (!content || content.trim().length === 0) {
-      return res.status(400).json({ error: 'ConteÃºdo da mensagem obrigatÃ³rio.' });
+      return res.status(400).json({ error: 'Conteúdo da mensagem obrigatório.' });
     }
 
     const projectId = req.params.projectId;
@@ -1261,7 +1261,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oÃ³]rio|remoto)\b|\b(github|reposit[oÃ³]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(content);
+    const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oó]rio|remoto)\b|\b(github|reposit[oó]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(content);
     if(requestsGitHubPublish){
       if (execution) RunService.assignAgent(execution.stepId, 'SHIP');
       const repoContext=projectRepositoryContext(projectId,project);
@@ -2111,10 +2111,10 @@ router.post('/skills', requireAuth, (req: Request, res: Response) => {
   try {
     const { name, slug, description, system_instructions, scope = 'project', is_active = true } = req.body;
     if (!name || !name.trim()) {
-      return res.status(400).json({ error: 'O nome da skill Ã© obrigatÃ³rio.' });
+      return res.status(400).json({ error: 'O nome da skill é obrigatório.' });
     }
     if (!system_instructions || !system_instructions.trim()) {
-      return res.status(400).json({ error: 'As instruÃ§Ãµes do sistema para o agente sÃ£o obrigatÃ³rias.' });
+      return res.status(400).json({ error: 'As instruções do sistema para o agente são obrigatórias.' });
     }
 
     const cleanSlug = (slug || name)
@@ -2151,9 +2151,9 @@ router.post('/skills', requireAuth, (req: Request, res: Response) => {
 
 router.put('/skills/:id', requireAuth, (req,res) => {
   const skill=db.prepare('SELECT id FROM skills WHERE id=? AND user_id=?').get(req.params.id,req.user!.id);
-  if(!skill)return res.status(404).json({error:'Skill nÃ£o encontrada.'});
+  if(!skill)return res.status(404).json({error:'Skill não encontrada.'});
   const {name,description,system_instructions,scope}=req.body;
-  if(typeof name!=='string'||!name.trim()||typeof system_instructions!=='string'||!system_instructions.trim()||!['message','project','workspace'].includes(scope))return res.status(400).json({error:'Nome, instruÃ§Ãµes e escopo vÃ¡lidos sÃ£o obrigatÃ³rios.'});
+  if(typeof name!=='string'||!name.trim()||typeof system_instructions!=='string'||!system_instructions.trim()||!['message','project','workspace'].includes(scope))return res.status(400).json({error:'Nome, instruções e escopo válidos são obrigatórios.'});
   db.prepare('UPDATE skills SET name=?,description=?,system_instructions=?,scope=? WHERE id=? AND user_id=?').run(name.trim(),String(description||''),system_instructions.trim(),scope,req.params.id,req.user!.id);
   res.json({success:true});
 });
@@ -2161,13 +2161,13 @@ router.put('/skills/:id', requireAuth, (req,res) => {
 router.delete('/skills/:id', requireAuth, (req: Request, res: Response) => {
   try {
     const skill = db.prepare('SELECT * FROM skills WHERE id = ?').get(req.params.id) as any;
-    if (!skill) return res.status(404).json({ error: 'Skill nÃ£o encontrada.' });
+    if (!skill) return res.status(404).json({ error: 'Skill não encontrada.' });
     if (skill.user_id !== req.user!.id) {
-      return res.status(403).json({ error: 'Sem permissÃ£o para excluir esta skill.' });
+      return res.status(403).json({ error: 'Sem permissão para excluir esta skill.' });
     }
 
     db.prepare('DELETE FROM skills WHERE id = ?').run(req.params.id);
-    res.json({ success: true, message: 'Skill excluÃ­da com sucesso.' });
+    res.json({ success: true, message: 'Skill excluída com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2217,7 +2217,7 @@ router.get('/providers', requireAuth, (req: Request, res: Response) => {
 router.post('/providers/save-with-key', requireAuth, async (req: Request, res: Response) => {
   try {
     const { providerKey, baseUrl, modelId, apiKey } = req.body;
-    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatÃ³rio.' });
+    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatório.' });
 
     let hasKey = false;
     let masked = '';
@@ -2261,7 +2261,7 @@ router.post('/providers/save-with-key', requireAuth, async (req: Request, res: R
       success: true,
       providerKey,
       masked,
-      message: 'ConfiguraÃ§Ãµes de IA e chave de API salvas com sucesso!',
+      message: 'Configurações de IA e chave de API salvas com sucesso!',
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2271,7 +2271,7 @@ router.post('/providers/save-with-key', requireAuth, async (req: Request, res: R
 router.post('/providers/update', requireAuth, (req: Request, res: Response) => {
   try {
     const { providerKey, baseUrl, modelId } = req.body;
-    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatÃ³rio.' });
+    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatório.' });
 
     db.prepare('UPDATE providers SET base_url = COALESCE(?, base_url), model_id = COALESCE(?, model_id) WHERE provider_key = ? AND user_id = ?').run(
       baseUrl || null,
@@ -2279,7 +2279,7 @@ router.post('/providers/update', requireAuth, (req: Request, res: Response) => {
       providerKey, req.user!.id
     );
 
-    res.json({ success: true, message: 'ConfiguraÃ§Ã£o atualizada com sucesso.' });
+    res.json({ success: true, message: 'Configuração atualizada com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2299,7 +2299,7 @@ router.post('/desktop/check-updates', async (req: Request, res: Response) => {
 });
 
 router.post('/desktop/command', requireAuth, (_req, res) => {
-  res.status(501).json({error:'Executor isolado nÃ£o configurado. Comandos no servidor compartilhado nÃ£o estÃ£o habilitados.'});
+  res.status(501).json({error:'Executor isolado não configurado. Comandos no servidor compartilhado não estão habilitados.'});
 });
 
 // ==========================================
@@ -2391,13 +2391,13 @@ router.post('/projects/:id/deploy/cloudflare/direct', requireAuth, requireProjec
 
 router.post('/conversations/:projectId/reject-proposal', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const proposalId = String(req.body?.proposalId || '');
-  if (!proposalId) return res.status(400).json({ error: 'Identificador da proposta Ã© obrigatÃ³rio.' });
+  if (!proposalId) return res.status(400).json({ error: 'Identificador da proposta é obrigatório.' });
   const conversation = db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(req.params.projectId) as any;
   const rows = conversation ? db.prepare("SELECT id,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[] : [];
   const row = rows.find(item => { try { return JSON.parse(item.metadata_json || '{}')?.proposal?.id === proposalId; } catch { return false; } });
-  if (!row) return res.status(404).json({ error: 'Proposta nÃ£o encontrada.' });
+  if (!row) return res.status(404).json({ error: 'Proposta não encontrada.' });
   const metadata = JSON.parse(row.metadata_json || '{}');
-  if (metadata.proposal.status !== 'pending') return res.status(409).json({ error: 'Esta proposta jÃ¡ foi encerrada.' });
+  if (metadata.proposal.status !== 'pending') return res.status(409).json({ error: 'Esta proposta já foi encerrada.' });
   metadata.proposal.status = 'rejected';
   const workflowRunId = metadata.workflow?.runId || metadata.runId || null;
   if (workflowRunId) {
@@ -2535,8 +2535,8 @@ router.get('/projects/:projectId/browser-quality/:qualityRunId/screenshot/:viewp
   res.sendFile(file);
 });
 
-router.get('/projects/:projectId/proposals/:proposalId/preview/status',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).json({status:'error',message:'Proposta temporÃ¡ria nÃ£o encontrada.'});const entry=proposal.files.find((f:any)=>f.action!=='delete'&&/(^|\/)index\.html$/i.test(f.path))?.path||WorkspaceManager.getPreviewInfo(req.params.projectId).entryPath;if(!entry)return res.status(422).json({status:'error',message:'A proposta nÃ£o possui um arquivo HTML de entrada.'});res.json({status:'running',entryPath:entry,message:'Preview temporÃ¡rio da proposta.'});});
-router.get('/preview-proposal/:projectId/:proposalId/*',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).send('Proposta temporÃ¡ria nÃ£o encontrada.');const preview=WorkspaceManager.getPreviewInfo(req.params.projectId),requested=path.normalize(req.params[0]||proposal.files.find((f:any)=>/(^|\/)index\.html$/i.test(f.path))?.path||preview.entryPath||'index.html').replace(/^(\.\.[\/\\])+/, '').replace(/\\/g,'/');const proposed=proposal.files.find((f:any)=>f.path.replace(/\\/g,'/')===requested);if(proposed?.action==='delete')return res.status(404).end();res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Content-Security-Policy',"sandbox allow-scripts; default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; connect-src 'self' https: wss:; form-action 'none'");if(proposed){res.type(path.extname(requested)||'text/plain').send(proposed.content);return;}const fallback=WorkspaceManager.resolveSafePath(req.params.projectId,requested);if(!fs.existsSync(fallback)||fs.statSync(fallback).isDirectory())return res.status(404).end();res.sendFile(fallback);});
+router.get('/projects/:projectId/proposals/:proposalId/preview/status',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).json({status:'error',message:'Proposta temporária não encontrada.'});const entry=proposal.files.find((f:any)=>f.action!=='delete'&&/(^|\/)index\.html$/i.test(f.path))?.path||WorkspaceManager.getPreviewInfo(req.params.projectId).entryPath;if(!entry)return res.status(422).json({status:'error',message:'A proposta não possui um arquivo HTML de entrada.'});res.json({status:'running',entryPath:entry,message:'Preview temporário da proposta.'});});
+router.get('/preview-proposal/:projectId/:proposalId/*',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).send('Proposta temporária não encontrada.');const preview=WorkspaceManager.getPreviewInfo(req.params.projectId),requested=path.normalize(req.params[0]||proposal.files.find((f:any)=>/(^|\/)index\.html$/i.test(f.path))?.path||preview.entryPath||'index.html').replace(/^(\.\.[\/\\])+/, '').replace(/\\/g,'/');const proposed=proposal.files.find((f:any)=>f.path.replace(/\\/g,'/')===requested);if(proposed?.action==='delete')return res.status(404).end();res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Content-Security-Policy',"sandbox allow-scripts; default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; connect-src 'self' https: wss:; form-action 'none'");if(proposed){res.type(path.extname(requested)||'text/plain').send(proposed.content);return;}const fallback=WorkspaceManager.resolveSafePath(req.params.projectId,requested);if(!fs.existsSync(fallback)||fs.statSync(fallback).isDirectory())return res.status(404).end();res.sendFile(fallback);});
 
 router.all('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const projectId = req.params.projectId;
