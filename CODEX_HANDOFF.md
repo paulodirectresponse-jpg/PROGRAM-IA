@@ -20,6 +20,14 @@ A Fase 1 está integrada localmente. `ContextEngineV2` alimenta SCOUT, STUDIO, F
 
 **Não reimplementar** `ProjectFileIndex`, `ArchitectureGraphService`, `ContextCommitService`, `ContextCompiler`, schemas ou APIs do Context Engine V2. Próximos trabalhos devem partir desse contrato já validado.
 
+## Fase 2 — Tool-First + Sandbox + Resumability
+
+A fundação da Fase 2 foi iniciada. Leia `PHASE2_CODEX_HANDOFF.md` antes de alterar Agent Engine, ExecutionWorker, RuntimeManager ou WorkspaceManager.
+
+Já existem contratos, registry, policy, journal durável, APIs e tools read-only reais. NÃO reimplementar isso.
+
+Sua parte começa em worktree/sandbox/process supervision, handlers de mutation/process, tool loop dos agentes, durable restart/resume e merge atômico.
+
 ## C — Runtime de frameworks e preview executável
 
 ### Implementado localmente
