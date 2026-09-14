@@ -569,3 +569,32 @@ test('phase2 AbortSignal terminates supervised process tool promptly', async () 
     assert.equal(ToolExecutionJournal.get(result.executionId)?.status,'aborted');
   } finally { cleanup(env); }
 });
+
+
+test('phase2 atomic merge restores official workspace when post-swap finalization fails', async (t) => {
+  const env=setupProject();
+  try {
+    WorkspaceManager.writeFile(env.projectId,'src/a.ts','export const a=1');
+    const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-finalize-fail'});
+    await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-finalize-fail',sandboxId:sandbox.id},
+      {toolKey:'workspace.write_file',input:{path:'src/a.ts',content:'export const a=2'},idempotencyKey:'finalize-fail-write'}
+    );
+    let syncCalls=0;
+    t.mock.method(ContextEngineV2,'syncProject',()=>{
+      syncCalls++;
+      throw new Error('forced context finalization failure');
+    });
+    let threw=false;
+    try {
+      SandboxManager.mergeAtomic({
+        sandboxId:sandbox.id,userId:env.userId,projectId:env.projectId,title:'finalization failure',
+        allowedChanges:[{path:'src/a.ts',action:'modify',content:'export const a=2'}]
+      });
+    } catch { threw=true; }
+    assert.equal(threw,true);
+    assert.ok(syncCalls>=1);
+    assert.equal(WorkspaceManager.readFile(env.projectId,'src/a.ts'),'export const a=1');
+    assert.equal(SandboxManager.get(sandbox.id)?.status,'failed');
+  } finally { cleanup(env); }
+});
