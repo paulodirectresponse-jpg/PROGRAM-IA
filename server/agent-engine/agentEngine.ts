@@ -25,6 +25,7 @@ type Input = {
   focusPaths?: string[];
   contextPack?: ContextPack;
   contextBrief?: string;
+  skipContextSync?: boolean;
   reliableBuild?: {
     requestedFiles: string[];
     objective: string;
@@ -67,7 +68,7 @@ function normalizeFocus(paths: string[] = []) {
 }
 
 function compileContextForStep(x: Input, agentKey: string, options: ExecuteOptions, retryStrategy: RetryStrategy = 'same_candidate'): ContextPack {
-  ContextEngineV2.syncProject({ projectId: x.projectId, files: x.existingFiles });
+  if(!x.skipContextSync) ContextEngineV2.syncProject({ projectId: x.projectId, files: x.existingFiles });
   const focusPaths = normalizeFocus([
     ...(x.focusPaths || []),
     ...(x.reliableBuild?.requestedFiles || []),
