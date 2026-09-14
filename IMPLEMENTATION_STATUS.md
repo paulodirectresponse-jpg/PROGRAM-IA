@@ -172,6 +172,7 @@ Já implementado na branch da Fase 4:
 - preflight;
 - cancel/resume/restart recovery;
 - release gate `phase4-release-gate-v1`;
+- painel operacional no modal de Agentes com preflight, confirmação de custo, smoke/full run, cancel/resume, progresso, métricas e gate;
 - CI direcionado com `tests/phase4.test.ts`.
 
 Ainda não conta como Fase 4 concluída: falta smoke com provider real, benchmark completo de 30 casos, auditoria dos resultados e gate final.
