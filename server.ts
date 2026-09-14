@@ -7,6 +7,7 @@ import { createServer as createViteServer } from 'vite';
 import { initializeDatabase } from './server/db/index.js';
 import { router as apiRouter } from './server/routes.js';
 import { CloudSyncService } from './server/services/cloudSyncService.js';
+import { AuthService } from './server/services/authService.js';
 import { RuntimeManager } from './server/services/runtimeManager.js';
 import { Phase2RecoveryService } from './server/tooling/phase2RecoveryService.js';
 import { BenchmarkService } from './server/benchmark/benchmarkService.js';
@@ -86,9 +87,11 @@ app.use('/api', apiRouter);
 // Vite middleware setup
 async function maybeRunPhase4Benchmark() {
   if (process.env.PHASE4_AUTORUN !== 'full') return;
-  const userId=String(process.env.PHASE4_AUTORUN_USER_ID||'').trim();
+  const firebaseUid=String(process.env.PHASE4_BENCHMARK_FIREBASE_UID||'').trim();
   const maxCostUsd=Number(process.env.PHASE4_AUTORUN_MAX_COST_USD||0.5);
-  if(!userId)throw new Error('PHASE4_AUTORUN_USER_ID is required.');
+  if(!firebaseUid)throw new Error('PHASE4_BENCHMARK_FIREBASE_UID is required.');
+  const {user}=AuthService.firebaseLogin('phase4-benchmark@local.invalid','Phase 4 Benchmark',firebaseUid,'phase4-autorun','127.0.0.1');
+  const userId=user.id;
   if(!Number.isFinite(maxCostUsd)||maxCostUsd<0.05||maxCostUsd>1){
     throw new Error('PHASE4_AUTORUN_MAX_COST_USD must be between US$0.05 and US$1.00.');
   }
