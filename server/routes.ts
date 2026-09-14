@@ -31,6 +31,46 @@ export const router = express.Router();
 const activeProjects = new Set<string>();
 const activeProjectControllers = new Map<string, AbortController>();
 
+async function executeConversationReliably(input:{
+  prompt:string; projectId:string; existingFiles:Record<string,string>; appliedSkills:string[];
+  conversationHistory:Array<{sender:string;content:string}>; userId:string; signal?:AbortSignal;
+}) {
+  const candidates:any[]=[];
+  const seen=new Set<string>();
+  const active=LLMAdapterService.getActiveProviderConfig(input.userId);
+  if(active)candidates.push({provider_key:active.key,model_id:active.modelId,id:null});
+  for(const profile of ['BASE_FREE','EXPERT_PAID'] as ProfileKey[]){
+    for(const candidate of ModelRouter.candidates(input.userId,profile)){
+      const key=candidate.provider_key+'::'+candidate.model_id;
+      if(seen.has(key))continue;
+      seen.add(key);
+      candidates.push(candidate);
+    }
+  }
+  let last:any=null;
+  for(const candidate of candidates){
+    input.signal?.throwIfAborted();
+    const result=await LLMAdapterService.executePrompt({
+      prompt:input.prompt,mode:'auto',projectId:input.projectId,
+      providerKey:candidate.provider_key,modelId:candidate.model_id,
+      existingFiles:input.existingFiles,appliedSkills:input.appliedSkills,
+      conversationHistory:input.conversationHistory,userId:input.userId,
+      signal:input.signal,allowActiveFallback:false,
+    });
+    if(!result.hasErrors&&!result.invalidResponse){
+      if(candidate.id)ModelRouter.recordCandidateResult(candidate.id,true);
+      return result;
+    }
+    last=result;
+    if(candidate.id)ModelRouter.recordCandidateResult(candidate.id,false,'operational');
+  }
+  return last||{
+    replyText:'Não consegui responder agora porque nenhum modelo de IA está disponível. Seu pedido ficou salvo para uma nova tentativa.',
+    mode:'auto' as AgentMode,decisionType:'blocked_no_provider' as const,isDemonstrativeFallback:false,
+    providerUsed:'nenhum',modelUsed:'nenhum',hasErrors:true,errorMessage:'Nenhum modelo disponível.',errorReason:'no_provider'
+  };
+}
+
 router.use((_req:Request,res:Response,next:NextFunction)=>{
   res.setHeader('Cache-Control','no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma','no-cache');
