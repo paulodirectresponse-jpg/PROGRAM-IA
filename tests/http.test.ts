@@ -18,6 +18,21 @@ import type {Server} from 'node:http';
 
 let server:Server, base:string, tokenA:string, tokenB:string, userA:string, userB:string;
 const id=`http-project-${Date.now()}`;
+async function waitForCondition(check:()=>boolean,timeoutMs=10000){
+  const deadline=Date.now()+timeoutMs;
+  while(Date.now()<deadline){
+    if(check())return;
+    await new Promise(resolve=>setTimeout(resolve,25));
+  }
+  assert.fail('Timed out waiting for background workflow.');
+}
+async function waitForRunTerminal(runId:string,timeoutMs=10000){
+  await waitForCondition(()=>{
+    const row=db.prepare('SELECT status FROM agent_runs WHERE id=?').get(runId) as any;
+    return Boolean(row&&row.status!=='running'&&row.status!=='waiting_approval');
+  },timeoutMs);
+  return db.prepare('SELECT * FROM agent_runs WHERE id=?').get(runId) as any;
+}
 before(async()=>{
   initializeDatabase();
   userA=AuthService.firebaseLogin(`${id}-a@example.test`,'A',`${id}-firebase-a`).user.id;
@@ -235,235 +250,119 @@ test('testing a provider never changes the active provider',async()=>{
 });
 
 
-test('approving a draft plan generates a reviewable build proposal without applying files',async()=>{
+
+test('approving a draft plan builds, validates and applies the result without a second approval',async()=>{
+  const previousFlag=process.env.AGENT_ENGINE_ENABLED;
+  delete process.env.AGENT_ENGINE_ENABLED;
   const now=new Date(Date.now()+5000).toISOString();
   const conversation=`plan-approve-conversation-${Date.now()}`;
   const planId=`plan-approve-${Date.now()}`;
-
-  db.prepare('INSERT INTO conversations(id,project_id,title,mode,created_at,updated_at) VALUES(?,?,?,?,?,?)')
-    .run(conversation,id,'Plan approval','plan',now,now);
-  db.prepare(`INSERT INTO plans(
-    id,task_id,project_id,objective,scope_in,scope_out,files_affected_json,integrations_json,risks_json,acceptance_criteria_json,status,created_at,updated_at
-  ) VALUES(?,NULL,?,?,?,?,?,?,?,?,'draft',?,?)`)
-    .run(
-      planId,id,'Criar dashboard financeiro','Dashboard e fluxo de caixa','Deploy externo',
-      JSON.stringify(['index.html']),JSON.stringify([]),JSON.stringify([]),JSON.stringify(['Dashboard funcional']),now,now
-    );
-
+  db.prepare('INSERT INTO conversations(id,project_id,title,mode,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(conversation,id,'Plan approval','plan',now,now);
+  db.prepare(`INSERT INTO plans(id,task_id,project_id,objective,scope_in,scope_out,files_affected_json,integrations_json,risks_json,acceptance_criteria_json,status,created_at,updated_at)
+    VALUES(?,NULL,?,?,?,?,?,?,?,?,'draft',?,?)`).run(planId,id,'Criar dashboard financeiro','Dashboard e fluxo de caixa','Deploy externo',JSON.stringify(['index.html']),JSON.stringify([]),JSON.stringify([]),JSON.stringify(['Dashboard funcional']),now,now);
   WorkspaceManager.writeFile(id,'index.html','<html><body>ORIGINAL_PLAN_APPROVAL</body></html>');
   SecretService.saveSecret(userA,'omniroute','test-omniroute-key-plan-approval');
   db.prepare('UPDATE providers SET is_active=0 WHERE user_id=?').run(userA);
-  db.prepare("UPDATE providers SET is_active=1,is_configured=1,connection_status='connected',model_id='auto' WHERE user_id=? AND provider_key='omniroute'")
-    .run(userA);
-
+  db.prepare("UPDATE providers SET is_active=1,is_configured=1,connection_status='connected',model_id='auto' WHERE user_id=? AND provider_key='omniroute'").run(userA);
   const originalExecute=LLMAdapterService.executePrompt;
   LLMAdapterService.executePrompt=async()=>({
-    replyText:'Proposta gerada a partir do plano aprovado.',
-    mode:'build',
-    decisionType:'change',
-    isDemonstrativeFallback:false,
-    providerUsed:'OmniRoute (Free Pool)',
-    modelUsed:'auto',
-    hasErrors:false,
-    build:{
-      summary:'Construir dashboard financeiro',
-      explanation:'Implementação proposta',
-      files:[{path:'index.html',action:'modify',content:'<html><body>DASHBOARD_PROPOSTO</body></html>'}]
-    }
+    replyText:'Proposta gerada a partir do plano aprovado.',mode:'build',decisionType:'change',isDemonstrativeFallback:false,
+    providerUsed:'OmniRoute (Free Pool)',modelUsed:'auto',hasErrors:false,
+    build:{summary:'Construir dashboard financeiro',explanation:'Implementação proposta',files:[{path:'index.html',action:'modify',content:'<html><body>DASHBOARD_PROPOSTO</body></html>'}]}
   } as any);
-
-  try {
-    const response=await fetch(`${base}/conversations/${id}/plan/approve`,{
-      method:'POST',
-      headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
-      body:JSON.stringify({planId})
-    });
+  try{
+    const response=await fetch(`${base}/conversations/${id}/plan/approve`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({planId})});
     assert.equal(response.status,200);
     const body=await response.json();
     assert.equal(body.success,true);
-    assert.equal(body.proposal.status,'pending');
-    assert.equal(body.proposal.files.length,1);
-    assert.match(WorkspaceManager.readFile(id,'index.html')||'',/ORIGINAL_PLAN_APPROVAL/);
-
-    const plan=db.prepare('SELECT status FROM plans WHERE id=?').get(planId) as any;
-    assert.equal(plan.status,'approved');
-    const conv=db.prepare('SELECT mode FROM conversations WHERE id=?').get(conversation) as any;
-    assert.equal(conv.mode,'build');
+    assert.equal(body.proposal.status,'applied');
+    assert.match(WorkspaceManager.readFile(id,'index.html')||'',/DASHBOARD_PROPOSTO/);
+    assert.equal((db.prepare('SELECT status FROM plans WHERE id=?').get(planId) as any).status,'approved');
+    assert.equal((db.prepare('SELECT mode FROM conversations WHERE id=?').get(conversation) as any).mode,'build');
     const message=db.prepare("SELECT metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC LIMIT 1").get(conversation) as any;
     const metadata=JSON.parse(message.metadata_json);
     assert.equal(metadata.planId,planId);
-    assert.equal(metadata.proposal.status,'pending');
-  } finally {
+    assert.equal(metadata.proposal.status,'applied');
+  }finally{
     LLMAdapterService.executePrompt=originalExecute;
+    if(previousFlag===undefined)delete process.env.AGENT_ENGINE_ENABLED;else process.env.AGENT_ENGINE_ENABLED=previousFlag;
   }
 });
 
-
-test('agent-engine plan approval uses reliable atomic build and remains waiting for user approval',async()=>{
+test('agent-engine plan approval returns quickly while build, review and apply continue in background',async()=>{
   const now=new Date(Date.now()+6500).toISOString();
   const conversation=`agent-plan-approve-conversation-${Date.now()}`;
   const planId=`agent-plan-approve-${Date.now()}`;
-
-  db.prepare('INSERT INTO conversations(id,project_id,title,mode,created_at,updated_at) VALUES(?,?,?,?,?,?)')
-    .run(conversation,id,'Agent plan approval','plan',now,now);
-  db.prepare(`INSERT INTO plans(
-    id,task_id,project_id,objective,scope_in,scope_out,files_affected_json,integrations_json,risks_json,acceptance_criteria_json,status,created_at,updated_at
-  ) VALUES(?,NULL,?,?,?,?,?,?,?,?,'draft',?,?)`)
-    .run(
-      planId,id,'Criar painel completo','Dashboard, estoque e vendas','Deploy externo',
-      JSON.stringify(['index.html']),JSON.stringify([]),JSON.stringify([]),JSON.stringify(['Fluxo funcional']),now,now
-    );
-
+  db.prepare('INSERT INTO conversations(id,project_id,title,mode,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(conversation,id,'Agent plan approval','plan',now,now);
+  db.prepare(`INSERT INTO plans(id,task_id,project_id,objective,scope_in,scope_out,files_affected_json,integrations_json,risks_json,acceptance_criteria_json,status,created_at,updated_at)
+    VALUES(?,NULL,?,?,?,?,?,?,?,?,'draft',?,?)`).run(planId,id,'Criar painel completo','Dashboard, estoque e vendas','Deploy externo',JSON.stringify(['index.html']),JSON.stringify([]),JSON.stringify([]),JSON.stringify(['Fluxo funcional']),now,now);
   WorkspaceManager.writeFile(id,'index.html','<html><body>AGENT_ENGINE_ORIGINAL</body></html>');
   SecretService.saveSecret(userA,'omniroute','test-omniroute-key-agent-plan-approval');
   db.prepare('UPDATE providers SET is_active=0 WHERE user_id=?').run(userA);
-  db.prepare("UPDATE providers SET is_active=1,is_configured=1,connection_status='connected',model_id='auto' WHERE user_id=? AND provider_key='omniroute'")
-    .run(userA);
+  db.prepare("UPDATE providers SET is_active=1,is_configured=1,connection_status='connected',model_id='auto' WHERE user_id=? AND provider_key='omniroute'").run(userA);
   db.prepare("UPDATE model_profiles SET enabled=1 WHERE user_id=? AND profile_key='BASE_FREE'").run(userA);
   db.prepare(`UPDATE model_candidates SET enabled=1,health_state='healthy',consecutive_failures=0,circuit_open_until=NULL
     WHERE profile_id=(SELECT id FROM model_profiles WHERE user_id=? AND profile_key='BASE_FREE') AND provider_key='omniroute'`).run(userA);
-
-  const previousFlag=process.env.AGENT_ENGINE_ENABLED;
-  process.env.AGENT_ENGINE_ENABLED='true';
+  const previousFlag=process.env.AGENT_ENGINE_ENABLED;process.env.AGENT_ENGINE_ENABLED='true';
   const originalReliable=(LLMAdapterService as any).buildApprovedPlanReliably;
   const originalExecutePrompt=(LLMAdapterService as any).executePrompt;
-  (LLMAdapterService as any).executePrompt=async()=>({
-    replyText:'SCOUT: objetivo e riscos mapeados para o build.',
-    mode:'review',
-    decisionType:'review',
-    isDemonstrativeFallback:false,
-    providerUsed:'OmniRoute (Free Pool)',
-    modelUsed:'auto',
-    hasErrors:false,
-    usage:{inputTokens:3,outputTokens:4,billedCostUsd:0},
+  (LLMAdapterService as any).executePrompt=async(options:any)=>({
+    replyText:options.mode==='review'?'{"verdict":"pass","summary":"revisado","issues":[]}':'ok',
+    mode:options.mode,decisionType:options.mode==='review'?'review':'change',isDemonstrativeFallback:false,
+    providerUsed:'OmniRoute (Free Pool)',modelUsed:'auto',hasErrors:false,usage:{inputTokens:3,outputTokens:4,billedCostUsd:0}
   } as any);
   let reliableCalls=0;
   (LLMAdapterService as any).buildApprovedPlanReliably=async(options:any)=>{
-    reliableCalls+=1;
-    assert.equal(options.providerKey,'omniroute');
-    assert.equal(options.objective,'Criar painel completo');
-    assert.deepEqual(options.requestedFiles,['index.html']);
-    return {
-      replyText:'Proposta atômica gerada pelos agentes.',
-      mode:'build',
-      decisionType:'change',
-      isDemonstrativeFallback:false,
-      providerUsed:'OmniRoute (Free Pool)',
-      modelUsed:'auto',
-      hasErrors:false,
-      build:{
-        summary:'Painel completo',
-        explanation:'Construção atômica',
-        files:[{path:'index.html',action:'modify',content:'<html><body>AGENT_ENGINE_PROPOSAL</body></html>'}]
-      },
-      usage:{inputTokens:10,outputTokens:20,billedCostUsd:0},
-      diagnostics:{strategy:'atomic_file_build',attempts:1,targets:['index.html'],failures:[]}
-    } as any;
+    reliableCalls++;assert.equal(options.providerKey,'omniroute');assert.equal(options.objective,'Criar painel completo');assert.deepEqual(options.requestedFiles,['index.html']);
+    return {replyText:'Implementação atômica gerada.',mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'OmniRoute (Free Pool)',modelUsed:'auto',hasErrors:false,
+      build:{summary:'Painel completo',explanation:'Construção atômica',files:[{path:'index.html',action:'modify',content:'<html><body>AGENT_ENGINE_PROPOSAL</body></html>'}]},
+      usage:{inputTokens:10,outputTokens:20,billedCostUsd:0},diagnostics:{strategy:'atomic_file_build',attempts:1,targets:['index.html'],failures:[]}} as any;
   };
-
-  try {
-    const response=await fetch(`${base}/conversations/${id}/plan/approve`,{
-      method:'POST',
-      headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
-      body:JSON.stringify({planId})
-    });
-    assert.equal(response.status,200);
-    const body=await response.json();
-    assert.equal(body.success,true);
+  try{
+    const response=await fetch(`${base}/conversations/${id}/plan/approve`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({planId})});
+    assert.equal(response.status,202);
+    const accepted=await response.json();assert.equal(accepted.accepted,true);assert.ok(accepted.runId);
+    const run=await waitForRunTerminal(accepted.runId,15000);
+    assert.equal(run.status,'completed');
     assert.equal(reliableCalls,1);
-    assert.equal(body.proposal.status,'pending');
-    assert.equal(body.agentMessage.metadata.executionType,'agent_engine');
-    assert.equal(body.agentMessage.metadata.workflow.status,'waiting_approval');
-    assert.match(WorkspaceManager.readFile(id,'index.html')||'',/AGENT_ENGINE_ORIGINAL/);
-
-    const run=db.prepare('SELECT status FROM agent_runs WHERE id=?').get(body.agentMessage.metadata.runId) as any;
-    assert.equal(run.status,'waiting_approval');
-    const plan=db.prepare('SELECT status FROM plans WHERE id=?').get(planId) as any;
-    assert.equal(plan.status,'approved');
-  } finally {
+    assert.match(WorkspaceManager.readFile(id,'index.html')||'',/AGENT_ENGINE_PROPOSAL/);
+    const message=db.prepare("SELECT content,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC LIMIT 1").get(conversation) as any;
+    const metadata=JSON.parse(message.metadata_json);
+    assert.equal(metadata.executionType,'agent_engine');
+    assert.equal(metadata.proposal.status,'applied');
+    assert.equal(metadata.workflow.status,'completed');
+    assert.equal((db.prepare('SELECT status FROM plans WHERE id=?').get(planId) as any).status,'approved');
+  }finally{
     (LLMAdapterService as any).buildApprovedPlanReliably=originalReliable;
     (LLMAdapterService as any).executePrompt=originalExecutePrompt;
-    if(previousFlag===undefined) delete process.env.AGENT_ENGINE_ENABLED; else process.env.AGENT_ENGINE_ENABLED=previousFlag;
+    if(previousFlag===undefined)delete process.env.AGENT_ENGINE_ENABLED;else process.env.AGENT_ENGINE_ENABLED=previousFlag;
   }
 });
 
-
-test('plan approval retries an atomic file once and preserves review-before-apply',async()=>{
+test('plan approval retries atomic generation and applies only after validation',async()=>{
+  const previousFlag=process.env.AGENT_ENGINE_ENABLED;delete process.env.AGENT_ENGINE_ENABLED;
   const now=new Date(Date.now()+7000).toISOString();
-  const conversation=`plan-repair-conversation-${Date.now()}`;
-  const planId=`plan-repair-${Date.now()}`;
-
-  db.prepare('INSERT INTO conversations(id,project_id,title,mode,created_at,updated_at) VALUES(?,?,?,?,?,?)')
-    .run(conversation,id,'Plan format repair','plan',now,now);
-  db.prepare(`INSERT INTO plans(
-    id,task_id,project_id,objective,scope_in,scope_out,files_affected_json,integrations_json,risks_json,acceptance_criteria_json,status,created_at,updated_at
-  ) VALUES(?,NULL,?,?,?,?,?,?,?,?,'draft',?,?)`)
-    .run(
-      planId,id,'Criar gestão da loja','Dashboard e fluxo de caixa','Deploy externo',
-      JSON.stringify(['index.html']),JSON.stringify([]),JSON.stringify([]),JSON.stringify(['Dashboard funcional']),now,now
-    );
-
+  const conversation=`plan-repair-conversation-${Date.now()}`;const planId=`plan-repair-${Date.now()}`;
+  db.prepare('INSERT INTO conversations(id,project_id,title,mode,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(conversation,id,'Plan format repair','plan',now,now);
+  db.prepare(`INSERT INTO plans(id,task_id,project_id,objective,scope_in,scope_out,files_affected_json,integrations_json,risks_json,acceptance_criteria_json,status,created_at,updated_at)
+    VALUES(?,NULL,?,?,?,?,?,?,?,?,'draft',?,?)`).run(planId,id,'Criar gestão da loja','Dashboard e fluxo de caixa','Deploy externo',JSON.stringify(['index.html']),JSON.stringify([]),JSON.stringify([]),JSON.stringify(['Dashboard funcional']),now,now);
   WorkspaceManager.writeFile(id,'index.html','<html><body>ORIGINAL_REPAIR</body></html>');
   SecretService.saveSecret(userA,'omniroute','test-omniroute-key-format-repair');
   db.prepare('UPDATE providers SET is_active=0 WHERE user_id=?').run(userA);
-  db.prepare("UPDATE providers SET is_active=1,is_configured=1,connection_status='connected',model_id='auto' WHERE user_id=? AND provider_key='omniroute'")
-    .run(userA);
-
-  const originalExecute=LLMAdapterService.executePrompt;
-  let calls=0;
-  LLMAdapterService.executePrompt=async()=>{
-    calls+=1;
-    if(calls===1){
-      return {
-        replyText:'Segue a implementação em um formato não estruturado.',
-        mode:'build',
-        decisionType:'invalid_response',
-        isDemonstrativeFallback:false,
-        providerUsed:'OmniRoute (Free Pool)',
-        modelUsed:'auto',
-        hasErrors:true,
-        invalidResponse:true,
-        errorReason:'O modelo não retornou arquivos válidos ou estruturados no modo de construção.'
-      } as any;
-    }
-    return {
-      replyText:'{"summary":"Dashboard","files":[{"path":"index.html","action":"modify","content":"<html><body>REPAIRED_PROPOSAL</body></html>"}]}',
-      mode:'build',
-      decisionType:'change',
-      isDemonstrativeFallback:false,
-      providerUsed:'OmniRoute (Free Pool)',
-      modelUsed:'auto',
-      hasErrors:false,
-      build:{
-        summary:'Dashboard',
-        explanation:'Resposta reparada',
-        files:[{path:'index.html',action:'modify',content:'<html><body>REPAIRED_PROPOSAL</body></html>'}]
-      }
-    } as any;
-  };
-
-  try {
-    const response=await fetch(`${base}/conversations/${id}/plan/approve`,{
-      method:'POST',
-      headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
-      body:JSON.stringify({planId})
-    });
-    assert.equal(response.status,200);
-    assert.equal(calls,2);
-    const body=await response.json();
-    assert.equal(body.proposal.status,'pending');
-    assert.match(WorkspaceManager.readFile(id,'index.html')||'',/ORIGINAL_REPAIR/);
+  db.prepare("UPDATE providers SET is_active=1,is_configured=1,connection_status='connected',model_id='auto' WHERE user_id=? AND provider_key='omniroute'").run(userA);
+  const originalExecute=LLMAdapterService.executePrompt;let calls=0;
+  LLMAdapterService.executePrompt=async()=>{calls++;if(calls===1)return {replyText:'formato inválido',mode:'build',decisionType:'invalid_response',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:true,invalidResponse:true,errorReason:'invalid'} as any;
+    return {replyText:'ok',mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,build:{summary:'Dashboard',explanation:'Resposta reparada',files:[{path:'index.html',action:'modify',content:'<html><body>REPAIRED_PROPOSAL</body></html>'}]}} as any;};
+  try{
+    const response=await fetch(`${base}/conversations/${id}/plan/approve`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({planId})});
+    assert.equal(response.status,200);assert.equal(calls,2);
+    const body=await response.json();assert.equal(body.proposal.status,'applied');
+    assert.match(WorkspaceManager.readFile(id,'index.html')||'',/REPAIRED_PROPOSAL/);
     const message=db.prepare("SELECT metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC LIMIT 1").get(conversation) as any;
     const metadata=JSON.parse(message.metadata_json);
-    assert.equal(metadata.formatRepairAttempted,false);
-    assert.equal(metadata.buildDiagnostics.strategy,'atomic_file_build');
-    assert.equal(metadata.buildDiagnostics.attempts,2);
-  } finally {
-    LLMAdapterService.executePrompt=originalExecute;
-  }
+    assert.equal(metadata.buildDiagnostics.strategy,'atomic_file_build');assert.equal(metadata.buildDiagnostics.attempts,2);
+  }finally{LLMAdapterService.executePrompt=originalExecute;if(previousFlag===undefined)delete process.env.AGENT_ENGINE_ENABLED;else process.env.AGENT_ENGINE_ENABLED=previousFlag;}
 });
-
-
 test('framework runtime starts, proxies preview, filters Forge secrets and stops cleanly', async () => {
   const runtimeProject = `runtime-project-${Date.now()}`;
   const now = new Date().toISOString();
@@ -691,60 +590,42 @@ function configureLifecycleProfile(userId:string, profile:'BASE_FREE'|'EXPERT_PA
     .run(`candidate-${userId}-${profile}-${Date.now()}`,profileId,providerKey,modelId,0,1,now,now);
 }
 
-test('direct LLM build becomes sandbox proposal and never mutates official workspace before approval', async (t) => {
+
+test('direct LLM build validates and applies the sandbox result automatically',async(t)=>{
   delete process.env.AGENT_ENGINE_ENABLED;
   configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
   db.prepare("UPDATE providers SET is_active=1,is_configured=1,connection_status='connected' WHERE user_id=? AND provider_key='omniroute'").run(userA);
-  t.mock.method(LLMAdapterService,'executePrompt',async()=>({
-    replyText:'proposta pronta',
-    mode:'build',
-    decisionType:'change',
-    isDemonstrativeFallback:false,
-    providerUsed:'OmniRoute',
-    modelUsed:'auto',
-    hasErrors:false,
-    build:{summary:'change',explanation:'change',files:[{path:'index.html',action:'modify',content:'<html><body>NEW</body></html>'}]},
-    usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}
-  } as any));
-  const projectId=createLifecycleProject('direct-sandbox-proposal');
-  WorkspaceManager.writeFile(projectId,'index.html','<html><body>ORIGINAL</body></html>');
-  try {
-    const r=await fetch(`${base}/conversations/${projectId}/messages`,{
-      method:'POST',
-      headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
-      body:JSON.stringify({content:'altere a página',mode:'build'})
-    });
-    assert.equal(r.status,200);
-    const body=await r.json();
-    assert.equal(body.proposal?.status,'pending');
-    assert.ok(body.proposal?.sandboxId);
-    assert.equal(WorkspaceManager.readFile(projectId,'index.html'),'<html><body>ORIGINAL</body></html>');
-    assert.equal(SandboxManager.readFile(body.proposal.sandboxId,userA,'index.html',projectId),'<html><body>NEW</body></html>');
-    const writes=db.prepare("SELECT COUNT(*) c FROM tool_executions WHERE project_id=? AND sandbox_id=? AND tool_key='workspace.write_file' AND status='succeeded'")
-      .get(projectId,body.proposal.sandboxId) as any;
-    assert.equal(writes.c,1);
-  } finally {
-    WorkspaceManager.deleteProject(projectId);
-    db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
-  }
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>({replyText:'resultado pronto',mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,
+    build:{summary:'change',explanation:'change',files:[{path:'index.html',action:'modify',content:'<html><body>NEW</body></html>'}]},usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any));
+  const projectId=createLifecycleProject('direct-auto-apply');WorkspaceManager.writeFile(projectId,'index.html','<html><body>ORIGINAL</body></html>');
+  try{
+    const r=await fetch(`${base}/conversations/${projectId}/messages`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({content:'altere a página',mode:'build'})});
+    assert.equal(r.status,200);const body=await r.json();
+    assert.equal(body.proposal?.status,'applied');assert.ok(body.proposal?.sandboxId);
+    assert.equal(WorkspaceManager.readFile(projectId,'index.html'),'<html><body>NEW</body></html>');
+    assert.equal(body.agentMessage.metadata.autoApplied,true);
+  }finally{WorkspaceManager.deleteProject(projectId);db.prepare('DELETE FROM projects WHERE id=?').run(projectId);}
 });
 
-test('agent proposal lifecycle waits for approval instead of completing run', async (t) => {
-  process.env.AGENT_ENGINE_ENABLED='true';
-  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
-  t.mock.method(LLMAdapterService,'executePrompt',async()=>({replyText:'proposal',mode:'auto',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',proposal:{id:'prop-wait',summary:'wait',requiresConfirmation:true,files:[{path:'index.html',action:'modify',content:'<html></html>'}],status:'pending'},build:{summary:'wait',explanation:'wait',files:[{path:'index.html',action:'modify',content:'<html></html>'}]},usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any));
-  const projectId=createLifecycleProject('wait-approval');
-  try {
+test('agent automatic lifecycle returns 202 then completes review and apply without user approval',async(t)=>{
+  process.env.AGENT_ENGINE_ENABLED='true';configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    if(options.mode==='review')return {replyText:'{"verdict":"pass","summary":"revisado","issues":[]}',mode:'review',decisionType:'review',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any;
+    return {replyText:'implementado',mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',
+      proposal:{id:'prop-auto',summary:'auto',requiresConfirmation:false,files:[{path:'index.html',action:'modify',content:'<html><body>Built</body></html>'}],status:'pending'},
+      build:{summary:'auto',explanation:'auto',files:[{path:'index.html',action:'modify',content:'<html><body>Built</body></html>'}]},usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any;
+  });
+  const projectId=createLifecycleProject('auto-lifecycle');WorkspaceManager.writeFile(projectId,'index.html','<html><body>Before</body></html>');
+  try{
     const r=await fetch(`${base}/conversations/${projectId}/messages`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({content:'crie uma tela visual',mode:'auto'})});
-    assert.equal(r.status,200);
-    const body=await r.json();
-    const run=db.prepare('SELECT status,finished_at FROM agent_runs WHERE id=?').get(body.agentMessage.metadata.workflow.runId) as any;
-    assert.equal(run.status,'waiting_approval');
-    assert.equal(run.finished_at,null);
-    assert.equal(body.proposal.status,'pending');
-  } finally { delete process.env.AGENT_ENGINE_ENABLED; WorkspaceManager.deleteProject(projectId); db.prepare('DELETE FROM projects WHERE id=?').run(projectId); }
+    assert.equal(r.status,202);const accepted=await r.json();assert.equal(accepted.accepted,true);assert.ok(accepted.runId);
+    const run=await waitForRunTerminal(accepted.runId,15000);assert.equal(run.status,'completed');
+    assert.match(WorkspaceManager.readFile(projectId,'index.html')||'',/Built/);
+    const conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+    const message=db.prepare("SELECT content,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC LIMIT 1").get(conversation.id) as any;
+    const metadata=JSON.parse(message.metadata_json);assert.equal(metadata.proposal.status,'applied');assert.equal(metadata.autoApplied,true);assert.equal(metadata.workflow.status,'completed');
+  }finally{delete process.env.AGENT_ENGINE_ENABLED;WorkspaceManager.deleteProject(projectId);db.prepare('DELETE FROM projects WHERE id=?').run(projectId);}
 });
-
 test('rejecting proposal closes run as rejected without validation or repair invocation', async () => {
   const projectId=createLifecycleProject('reject-proposal');
   const {runId}=RunService.start(userA,projectId,`conv-placeholder-${Date.now()}`,'auto',0.5);RunService.waitForApproval(runId);
