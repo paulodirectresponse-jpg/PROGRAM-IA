@@ -1,6 +1,6 @@
 # PROGRAM-IA — Handoff para Codex
 
-Atualizado em 2026-09-14 após conclusão técnica da Fase 2.
+Atualizado em 2026-09-14 após conclusão técnica da Fase 3.
 
 Este arquivo contém somente pendências reais. Não trate itens já implementados como abertos, e não declare gates externos sem credencial/teste real.
 
@@ -27,6 +27,27 @@ A Fase 2 está implementada. Não reimplementar Tool Registry, ToolPolicy, ToolE
 Antes de alterar esse fluxo, leia `PHASE2_CODEX_HANDOFF.md`, que agora documenta o contrato final e seus gates.
 
 Limite de segurança conhecido: o sandbox atual é lógico (filesystem/processo/env) e não deve ser promovido como microVM/container de kernel para execução adversarial. Se o threat model mudar para código deliberadamente hostil, adicionar isolamento infra sem enfraquecer os gates atuais.
+
+
+
+## Fase 3 — Browser Agent + Quality Gate
+
+A Fase 3 está implementada. Não reimplementar `BrowserQualityService`, `browser.inspect_page`, Migration 007, evidence/screenshot routes ou o browser repair loop.
+
+Leia `PHASE3_IMPLEMENTATION.md` antes de alterar qualquer gate de browser/runtime.
+
+Contrato existente:
+- browser real roda sobre o candidato no sandbox;
+- desktop/mobile evidence é persistida;
+- ValidatorEngine continua canônico para código/processo;
+- Browser Quality Gate adiciona runtime/DOM evidence;
+- falha executável cria SENTINEL e um único FORGE repair;
+- repair é revalidado por ValidatorEngine e browser;
+- segunda falha bloqueia o merge;
+- `unverified` nunca pode ser promovido a `passed` artificialmente;
+- screenshots permanecem owner-scoped;
+- não transformar warnings subjetivos em redesign automático.
+
 
 
 ## C — Runtime de frameworks e preview executável
@@ -77,9 +98,9 @@ Limite de segurança conhecido: o sandbox atual é lógico (filesystem/processo/
 9. Restart/interrupted side effects são recuperados sem replay silencioso.
 10. Merge aprovado é base-aware, allowlisted e rollback-safe.
 
-### Ainda falta fora da Fase 2
-1. Browser/runtime visual evidence e repair loop da Fase 3.
-2. WebSocket/HMR autenticado acoplado ao runtime/browser.
+### Ainda falta fora da Fase 3
+1. WebSocket/HMR autenticado no preview de produto.
+2. E2E ampliado com frameworks reais e reload/HMR.
 3. Benchmark real de 30 tarefas com providers reais da Fase 4.
 
 
@@ -95,4 +116,4 @@ O fluxo operacional usa persistência canônica normalizada. `forge_sync_snapsho
 
 ## Validação
 
-A branch da Fase 2 deve ser integrada à `main` somente com lint, suíte direcionada incluindo `phase2.test.ts`, `npm test`, build e Playwright em verde no HEAD final.
+A branch da Fase 3 só pode ser integrada à `main` com lint, suíte direcionada incluindo `phase3.test.ts`, regressão das Fases 0–2, `npm test`, build e Playwright em verde no HEAD final.

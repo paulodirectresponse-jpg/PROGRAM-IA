@@ -14,7 +14,13 @@ dotenv.config();
 
 // Initialize SQLite database and run migrations
 initializeDatabase();
-Phase2RecoveryService.recoverStartup();
+try {
+  Phase2RecoveryService.recoverStartup();
+} catch (error) {
+  // Recovery is best-effort. A stale/interrupted sandbox must never prevent
+  // the application from booting after a successful schema migration.
+  console.error('Phase 2 startup recovery failed:', error);
+}
 
 if (process.env.FORGE_REQUIRE_CLOUD_SYNC === 'true') {
   CloudSyncService.assertPersistentConfiguration();

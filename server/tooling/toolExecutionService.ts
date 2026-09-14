@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { BrowserQualityService } from '../browser/browserQualityService.js';
 import { WorkspaceManager } from '../services/workspaceManager.js';
 import { ExecutionWorker } from '../services/executionWorker.js';
 import { SandboxManager } from './sandboxManager.js';
@@ -156,6 +157,33 @@ export class ToolExecutionService {
         }
         output={changedFiles:changed,sandboxId:sandbox.id};
         summary={changedFiles:changed,patchCount:patches.length,sandboxId:sandbox.id};
+      } else if(definition.key==='browser.inspect_page'){
+        const sandbox=requireSandbox(context);
+        const quality=await BrowserQualityService.inspect({
+          userId:context.userId,
+          projectId:context.projectId,
+          sandboxId:sandbox.id,
+          runId:context.runId||null,
+          stepId:context.stepId||null,
+          entryPath:request.input.entryPath ? String(request.input.entryPath) : undefined,
+          signal:context.signal,
+        });
+        const publicQuality={
+          ...quality,
+          viewports:quality.viewports.map(({screenshotPath:_screenshotPath,...viewport})=>viewport),
+        };
+        output=publicQuality;
+        summary={
+          qualityRunId:quality.id,
+          status:quality.status,
+          issueCount:quality.issues.length,
+          errorCount:quality.issues.filter(issue=>issue.severity==='error').length,
+          warningCount:quality.issues.filter(issue=>issue.severity==='warning').length,
+          runtimeKind:quality.runtimeKind,
+          framework:quality.framework||null,
+          viewportCount:quality.viewports.length,
+          sandboxId:sandbox.id,
+        };
       } else if(definition.key==='process.run'){
         const sandbox=requireSandbox(context);
         const script=String(request.input.script || '').trim();

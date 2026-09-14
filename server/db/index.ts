@@ -23,13 +23,20 @@ function ensureColumn(tableName: string, columnName: string, columnDef: string) 
   }
 }
 
+export function applyBootstrapSchemaIfNeeded(database:DatabaseSync,schemaSql:string){
+  const existingSchema=database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get();
+  if(!existingSchema)database.exec(schemaSql);
+}
+
 // Run migrations and initial seeds
 export function initializeDatabase() {
-  // Read and execute schema
+  // schema.sql is a bootstrap snapshot, not an incremental migration. Replaying it
+  // against an older persistent database can reference additive columns before the
+  // corresponding migration has created them (for example Phase 2 indexes).
   const schemaPath = path.resolve(process.cwd(), 'server', 'db', 'schema.sql');
   if (fs.existsSync(schemaPath)) {
     const schemaSql = fs.readFileSync(schemaPath, 'utf8');
-    db.exec(schemaSql);
+    applyBootstrapSchemaIfNeeded(db,schemaSql);
   }
 
   // Check if migration 1 is logged
@@ -212,6 +219,39 @@ export function initializeDatabase() {
     db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
       6,
       '006_phase2_isolated_sandboxes',
+      new Date().toISOString()
+    );
+  }
+
+  // Migration 007: Browser Agent + Quality Gate evidence.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS browser_quality_runs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      run_id TEXT,
+      step_id TEXT,
+      sandbox_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      runtime_kind TEXT NOT NULL,
+      framework TEXT,
+      entry_path TEXT,
+      url TEXT,
+      issues_json TEXT NOT NULL DEFAULT '[]',
+      viewports_json TEXT NOT NULL DEFAULT '[]',
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS browser_quality_project_created ON browser_quality_runs(project_id,created_at);
+    CREATE INDEX IF NOT EXISTS browser_quality_run_created ON browser_quality_runs(run_id,created_at);
+    CREATE INDEX IF NOT EXISTS browser_quality_sandbox_created ON browser_quality_runs(sandbox_id,created_at);
+  `);
+  const migration7Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 7').get() as { version: number } | undefined;
+  if (!migration7Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      7,
+      '007_phase3_browser_quality_gate',
       new Date().toISOString()
     );
   }

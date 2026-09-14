@@ -17,8 +17,8 @@ export class ExecutionWorker{
     return SandboxProcessSupervisor.safeEnvironment();
   }
 
-  static sandboxEnvironment(cwd:string){
-    return SandboxProcessSupervisor.sandboxEnvironment(cwd);
+  static sandboxEnvironment(cwd:string,extra:Record<string,string>={}){
+    return SandboxProcessSupervisor.sandboxEnvironment(cwd,extra);
   }
 
   static async run(cwd:string,tool:WorkerTool,signal?:AbortSignal):Promise<WorkerResult>{

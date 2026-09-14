@@ -47,6 +47,54 @@ export interface ChangeProposal {
   toolExecutionIds?: string[];
 }
 
+export interface BrowserQualityIssue {
+  code: string;
+  severity: 'error' | 'warning' | 'info';
+  message: string;
+  viewport?: string;
+  url?: string;
+  resourceType?: string;
+}
+
+export interface BrowserViewportEvidence {
+  name: string;
+  width: number;
+  height: number;
+  finalUrl: string;
+  title: string;
+  bodyTextChars: number;
+  interactiveCount: number;
+  unlabeledInteractiveCount: number;
+  imagesWithoutAlt: number;
+  duplicateIds: string[];
+  horizontalOverflowPx: number;
+  consoleErrors: string[];
+  pageErrors: string[];
+  failedRequests: Array<{url:string;resourceType:string;failure:string}>;
+  badResponses: Array<{url:string;resourceType:string;status:number}>;
+  blockedExternalRequests: string[];
+  screenshotSha256?: string;
+  screenshotBytes?: number;
+}
+
+export interface BrowserQualityResult {
+  id: string;
+  status: 'passed' | 'failed' | 'unverified' | 'skipped';
+  projectId: string;
+  sandboxId: string;
+  runId?: string | null;
+  stepId?: string | null;
+  runtimeKind: 'static' | 'framework' | 'none';
+  framework?: string;
+  entryPath?: string;
+  url?: string;
+  issues: BrowserQualityIssue[];
+  viewports: BrowserViewportEvidence[];
+  durationMs: number;
+  reason?: string;
+  createdAt: string;
+}
+
 export interface Project {
   id: string;
   workspace_id: string;
@@ -121,6 +169,14 @@ export interface Message {
       }>;
     };
     validation?: {passed:boolean;status:'passed'|'failed'|'unverified';results:Array<{tool:string;status:string;summary?:string}>;advisory?:{status:string;checks:string[];issues:string[]}}|null;
+    browserQuality?: BrowserQualityResult | null;
+    browserRepair?: {
+      attempted: boolean;
+      status: string;
+      profileKey?: string;
+      files?: string[];
+      error?: string;
+    } | null;
   };
 }
 

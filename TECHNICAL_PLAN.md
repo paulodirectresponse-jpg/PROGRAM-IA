@@ -56,7 +56,7 @@ Papéis:
 - SENTINEL — interpretação de falha concreta;
 - SHIP — publicação solicitada.
 
-Estado atual: state machine determinística implementada com `forcedAgentKey`, Context Engine V2, Tool-First/Sandbox, vínculo ao ValidatorEngine, repair bounded/escalonamento local e merge atômico após aprovação. Próximos blocos independentes: Browser Agent da Fase 3, benchmark da Fase 4 e runtime/HMR de produto.
+Estado atual: state machine determinística implementada com `forcedAgentKey`, Context Engine V2, Tool-First/Sandbox, ValidatorEngine, Browser Quality Gate real, repair bounded/escalonamento local e merge atômico após aprovação. Próximos blocos independentes: benchmark da Fase 4 e runtime/HMR de produto.
 
 ## 5.1 Tool-First — Fase 2
 
@@ -80,9 +80,36 @@ A Fase 2 está implementada como camada operacional do Agent Engine.
 O sandbox desta fase é uma fronteira lógica do PROGRAM-IA. Ele não deve ser descrito como container/microVM ou isolamento adversarial de kernel; esse hardening pertence à infraestrutura caso o produto passe a executar código deliberadamente hostil.
 
 
+
+## 5.2 Browser Agent + Quality Gate — Fase 3
+
+A Fase 3 observa o candidato real no sandbox antes do merge oficial.
+
+Fluxo canônico:
+`ValidatorEngine -> browser.inspect_page -> evidência desktop/mobile -> SENTINEL em falha executável -> um FORGE repair localizado -> ValidatorEngine -> browser.inspect_page -> merge ou bloqueio`.
+
+Implementado:
+- Playwright/Chromium real;
+- inspeção desktop 1280x720 e mobile 390x844;
+- projetos estáticos servidos por HTTP local diretamente do sandbox;
+- projetos com scripts `dev` ou `start` executados por instância isolada do `RuntimeManager`;
+- requests externos do browser não são liberados durante o gate;
+- coleta de page errors, console errors, requests locais falhos, respostas HTTP ruins, overflow horizontal, controles sem nome acessível, imagens sem alt e IDs duplicados;
+- screenshots, hashes e métricas registrados como evidência;
+- `browser_quality_runs` persiste o resultado e `tool_executions` preserva provenance;
+- falha executável cria SENTINEL e no máximo um FORGE repair;
+- depois do repair, ValidatorEngine e browser são executados novamente;
+- segunda falha bloqueia o merge;
+- Chromium indisponível resulta em `unverified`, nunca em sucesso falso;
+- screenshots são expostos apenas por rota autenticada e vinculada ao owner;
+- warnings de layout/a11y são evidência e não disparam autocorreção sozinhos.
+
+O Browser Quality Gate complementa o ValidatorEngine. Ele não cria um segundo validator de código.
+
+
 ## 6. Validação
 
-`ValidatorEngine` é a única fonte de quality gates. Falha de gate após aplicação restaura o workspace ao checkpoint anterior. Gates skipped geram `unverified`, não falha.
+`ValidatorEngine` permanece o gate canônico de código/processo. O Browser Quality Gate adiciona evidência runtime/DOM sobre o mesmo candidato no sandbox. Falha executável impede promoção; capacidade ausente fica `unverified`, nunca `passed`.
 
 ## 7. GitHub
 

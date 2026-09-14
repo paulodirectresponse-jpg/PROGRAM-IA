@@ -23,6 +23,8 @@ export interface SandboxProposalApplyResult {
   changedFiles?:string[];
   needsVerification?:boolean;
   merge?:any;
+  browserQuality?:any;
+  browserRepair?:any;
 }
 
 function requirementIds(projectId:string,runId?:string|null,planId?:string|null){
@@ -191,6 +193,171 @@ export class SandboxProposalApplyService {
       return {success:false,statusCode:422,error:'A proposta falhou na validação do sandbox; o workspace oficial não foi alterado.',validation,sandboxId};
     }
 
+    let browserQuality:any=null;
+    let browserRepair:any=null;
+    const executeBrowserGate=async(stepId:string|null,attempt:number)=>{
+      const execution=await ToolExecutionService.execute({
+        userId:input.userId,
+        projectId:input.projectId,
+        runId:input.runId||null,
+        stepId,
+        sandboxId,
+        signal:input.signal,
+      },{
+        toolKey:'browser.inspect_page',
+        input:{},
+        idempotencyKey:null,
+      });
+      if(execution.status==='aborted')throw Object.assign(new Error('Browser quality cancelado.'),{name:'AbortError'});
+      if(execution.status!=='succeeded'){
+        return {
+          id:null,
+          status:'unverified',
+          issues:[],
+          viewports:[],
+          reason:execution.errorCode||execution.message||'browser_tool_failed',
+          toolExecutionId:execution.executionId||null,
+        };
+      }
+      return {...(execution.output as any),toolExecutionId:execution.executionId};
+    };
+
+    browserQuality=await executeBrowserGate(null,0);
+
+    if(browserQuality?.status==='failed'){
+      if(!input.runId){
+        return {
+          success:false,statusCode:422,error:'O Browser Quality Gate encontrou falha executável no candidato; o workspace oficial não foi alterado.',
+          validation,sandboxId,browserQuality,
+        };
+      }
+
+      const affectedFiles=[...expectedByPath.keys()];
+      const sentinelStep=RunService.createStep(input.runId,'SENTINEL','Diagnosticar falha do Browser Quality Gate',undefined,'micro',{
+        sandboxId,browserQualityRunId:browserQuality.id,issues:browserQuality.issues,affectedFiles,
+      });
+      let sentinelDiagnostic='';
+      try{
+        const sentinel=await AgentEngine.execute({
+          prompt:[
+            'Analise somente a evidência concreta do Browser Quality Gate e descreva a causa provável e a correção mínima.',
+            JSON.stringify({status:browserQuality.status,issues:browserQuality.issues,viewports:browserQuality.viewports.map((item:any)=>({
+              name:item.name,title:item.title,bodyTextChars:item.bodyTextChars,horizontalOverflowPx:item.horizontalOverflowPx,
+              consoleErrors:item.consoleErrors,pageErrors:item.pageErrors,failedRequests:item.failedRequests,badResponses:item.badResponses,
+            }))}),
+          ].join('\n\n'),
+          mode:'review',
+          projectId:input.projectId,
+          existingFiles:SandboxManager.getAllFilesContent(sandboxId,input.userId,input.projectId),
+          appliedSkills:[],
+          conversationHistory:[],
+          userId:input.userId,
+          runId:input.runId,
+          stepId:sentinelStep,
+          requirementIds:reqIds,
+          focusPaths:affectedFiles,
+          signal:input.signal,
+          skipContextSync:true,
+          toolSandboxId:sandboxId,
+        },{profile:'BASE_FREE',forcedAgentKey:'SENTINEL',allowExpertEscalation:true,repair:true});
+        sentinelDiagnostic=String(sentinel.replyText||'').trim();
+        RunService.finishStep(sentinelStep,'completed',{sandboxId,browserQualityRunId:browserQuality.id,diagnostic:sentinelDiagnostic,profileKey:sentinel.profileKey});
+      }catch(error:any){
+        RunService.finishStep(sentinelStep,error?.name==='AbortError'?'aborted':'failed',{sandboxId,browserQualityRunId:browserQuality.id,error:String(error?.message||error)});
+        if(error?.name==='AbortError')throw error;
+        sentinelDiagnostic='Diagnóstico LLM indisponível; usar evidência determinística do Browser Quality Gate.';
+      }
+      ContextEngineV2.recordCommit({
+        projectId:input.projectId,runId:input.runId,taskId:sentinelStep,agentKey:'SENTINEL',scope:'MICRO',
+        task:'Browser Quality Gate diagnostic',decisions:sentinelDiagnostic?[sentinelDiagnostic]:[],
+        changedFiles:affectedFiles,requirementIds:reqIds,
+        validation:{validator:validation,browserQuality},blockers:browserQuality.issues?.filter((issue:any)=>issue.severity==='error').map((issue:any)=>String(issue.message))||[],
+        nextState:{next:'FORGE_BROWSER_REPAIR'},
+      });
+
+      const repairStep=RunService.createStep(input.runId,'FORGE','Corrigir falha do Browser Quality Gate',undefined,'local',{
+        sandboxId,browserQualityRunId:browserQuality.id,affectedFiles,
+      });
+      try{
+        const repair=await AgentEngine.execute({
+          prompt:[
+            'Corrija somente a falha concreta detectada pelo Browser Quality Gate. Não expanda o escopo.',
+            sentinelDiagnostic,
+            JSON.stringify({issues:browserQuality.issues}),
+          ].filter(Boolean).join('\n\n'),
+          mode:'build',
+          projectId:input.projectId,
+          existingFiles:SandboxManager.getAllFilesContent(sandboxId,input.userId,input.projectId),
+          appliedSkills:[],
+          conversationHistory:[],
+          userId:input.userId,
+          runId:input.runId,
+          stepId:repairStep,
+          requirementIds:reqIds,
+          focusPaths:affectedFiles,
+          signal:input.signal,
+          skipContextSync:true,
+          toolSandboxId:sandboxId,
+        },{profile:'BASE_FREE',forcedAgentKey:'FORGE',allowExpertEscalation:true,repair:true});
+
+        const repairFiles=repair.build?.files||repair.proposal?.files||[];
+        if(!repairFiles.length)throw new Error('Browser repair não retornou arquivos aplicáveis.');
+        for(const file of repairFiles){
+          const execution=await ToolExecutionService.execute({
+            userId:input.userId,projectId:input.projectId,runId:input.runId,stepId:repairStep,sandboxId,signal:input.signal,
+          },{
+            toolKey:file.action==='delete'?'workspace.delete_file':'workspace.write_file',
+            input:file.action==='delete'?{path:file.path}:{path:file.path,content:String(file.content||'')},
+            idempotencyKey:`browser-repair:${proposal.id}:${file.action}:${file.path}`,
+          });
+          if(execution.status!=='succeeded')throw new Error(execution.message||'Browser repair tool falhou.');
+          expectedByPath.set(String(file.path),{path:String(file.path),action:String(file.action),content:file.content});
+        }
+
+        validation=await ValidatorEngine.validate({
+          projectId:input.projectId,runId:input.runId,stepId:repairStep,signal:input.signal,sandboxId,userId:input.userId,
+        });
+        if(validation.status==='failed'){
+          RequirementLedgerService.setStatusForRun(input.runId,'failed',{type:'browser_repair_validator_failed',validation,browserQuality},repairFiles.map((file:any)=>file.path));
+          RunService.finishStep(repairStep,'failed',{sandboxId,validation,browserQuality});
+          RunService.finish(input.runId,repairStep,'failed');
+          return {
+            success:false,statusCode:422,error:'O repair visual gerou falha no ValidatorEngine; o workspace oficial não foi alterado.',
+            validation,sandboxId,browserQuality,repair:{attempted:true,status:'failed'},
+          };
+        }
+
+        browserQuality=await executeBrowserGate(repairStep,1);
+        const browserPassed=['passed','skipped'].includes(String(browserQuality?.status));
+        browserRepair={attempted:true,status:browserPassed?'passed':String(browserQuality?.status||'failed'),profileKey:repair.profileKey,files:repairFiles.map((file:any)=>file.path)};
+        repairSummary=repairSummary||browserRepair;
+
+        ContextEngineV2.recordCommit({
+          projectId:input.projectId,runId:input.runId,taskId:repairStep,agentKey:'FORGE',scope:'LOCAL',
+          task:'Browser Quality Gate bounded repair',changedFiles:repairFiles.map((file:any)=>file.path),requirementIds:reqIds,
+          validation:{validator:validation,browserQuality},blockers:browserPassed?[]:['browser_quality_failed_after_repair'],
+          nextState:{status:browserPassed?'passed':browserQuality?.status||'failed'},
+        });
+        RunService.finishStep(repairStep,browserQuality?.status==='failed'?'failed':'completed',{sandboxId,validation,browserQuality,profileKey:repair.profileKey});
+
+        if(browserQuality?.status==='failed'){
+          RequirementLedgerService.setStatusForRun(input.runId,'failed',{type:'browser_quality_failed_after_repair',validation,browserQuality},repairFiles.map((file:any)=>file.path));
+          RunService.finish(input.runId,repairStep,'failed');
+          return {
+            success:false,statusCode:422,error:'O Browser Quality Gate continuou falhando após um repair bounded; o workspace oficial não foi alterado.',
+            validation,sandboxId,browserQuality,browserRepair,repair:browserRepair,
+          };
+        }
+      }catch(error:any){
+        RunService.finishStep(repairStep,error?.name==='AbortError'?'aborted':'failed',{sandboxId,error:String(error?.message||error),browserQuality});
+        RunService.finish(input.runId,repairStep,error?.name==='AbortError'?'aborted':'failed');
+        return {
+          success:false,statusCode:error?.name==='AbortError'?499:422,error:'O repair do Browser Quality Gate falhou; o workspace oficial não foi alterado.',
+          validation,sandboxId,browserQuality,browserRepair:{attempted:true,status:'failed',error:String(error?.message||error)},repair:{attempted:true,status:'failed',error:String(error?.message||error)},
+        };
+      }
+    }
+
     const allowedChanges=canonicalMergeChanges(sandboxId,[...expectedByPath.values()]);
     try{
       SandboxManager.assertExpectedChanges(sandboxId,input.userId,input.projectId,allowedChanges,{allowExtraPaths:true});
@@ -216,28 +383,31 @@ export class SandboxProposalApplyService {
     }
 
     const changedFiles=merge.changedFiles.map((item:any)=>item.path);
+    const browserVerified=['passed','skipped'].includes(String(browserQuality?.status||'skipped'));
+    const qualityVerified=validation.status==='passed'&&browserVerified;
+    const combinedValidation={validator:validation,browserQuality};
     const alreadyInTransaction=db.isTransaction;
     try{
       if(!alreadyInTransaction)db.exec('BEGIN IMMEDIATE');
         if(input.runId){
-          RequirementLedgerService.setStatusForRun(input.runId,validation.status==='passed'?'verified':'implemented',{
-            type:validation.status==='passed'?'sandbox_merge_verified':'sandbox_merge_unverified',
-            validation,sandboxId,checkpointId:merge.checkpointId,
+          RequirementLedgerService.setStatusForRun(input.runId,qualityVerified?'verified':'implemented',{
+            type:qualityVerified?'sandbox_merge_verified':'sandbox_merge_unverified',
+            validation:combinedValidation,sandboxId,checkpointId:merge.checkpointId,
           },changedFiles);
           ContextEngineV2.recordCommit({
             projectId:input.projectId,runId:input.runId,agentKey:'SENTINEL',scope:'TASK',
             task:'Sandbox validado e merge atômico concluído',changedFiles,requirementIds:reqIds,
-            validation,blockers:[],nextState:{status:validation.status==='passed'?'completed':'needs_verification'},
+            validation:combinedValidation,blockers:[],nextState:{status:qualityVerified?'completed':'needs_verification'},
           });
-          if(input.shipRequested&&validation.status==='passed'){
+          if(input.shipRequested&&qualityVerified){
             const ship=RunService.createStep(input.runId,'SHIP','Preparar publicação após merge validado',undefined,'task',{sandboxId,checkpointId:merge.checkpointId});
             RunService.finishStep(ship,'completed');
           }
-          if(validation.status==='passed')RunService.setStatus(input.runId,'completed',true);
+          if(qualityVerified)RunService.setStatus(input.runId,'completed',true);
           else RunService.setStatus(input.runId,'needs_verification',true);
         }else if(input.planId){
-          RequirementLedgerService.setStatusForPlan(input.projectId,input.planId,validation.status==='passed'?'verified':'implemented',{
-            type:'sandbox_merge',validation,sandboxId,checkpointId:merge.checkpointId,
+          RequirementLedgerService.setStatusForPlan(input.projectId,input.planId,qualityVerified?'verified':'implemented',{
+            type:'sandbox_merge',validation:combinedValidation,sandboxId,checkpointId:merge.checkpointId,
           },changedFiles);
         }
       if(!alreadyInTransaction)db.exec('COMMIT');
@@ -262,7 +432,7 @@ export class SandboxProposalApplyService {
 
     return {
       success:true,statusCode:200,checkpointId:merge.checkpointId,validation,sandboxId,
-      changedFiles,needsVerification:validation.status!=='passed',merge,repair:repairSummary,
+      changedFiles,needsVerification:!qualityVerified,merge,repair:repairSummary,browserQuality,browserRepair,
     };
   }
 }
