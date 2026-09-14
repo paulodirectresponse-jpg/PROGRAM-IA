@@ -386,6 +386,15 @@ export class SandboxManager {
     }
   }
 
+  static markRolledBack(id:string,userId:string,projectId:string){
+    const record=this.get(id);
+    if(!record) return null;
+    if(record.userId!==userId||record.projectId!==projectId) return null;
+    db.prepare("UPDATE sandboxes SET status='failed',merged_checkpoint_id=NULL,updated_at=? WHERE id=?")
+      .run(new Date().toISOString(),id);
+    return this.get(id);
+  }
+
   static cleanup(id:string,userId:string){
     const record=this.get(id);
     if(!record||record.userId!==userId)return false;
