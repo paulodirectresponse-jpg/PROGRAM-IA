@@ -38,6 +38,33 @@ interface ConversationPanelProps {
   canSend: boolean;
 }
 
+const repairPortugueseEncoding=(value:string)=>String(value||'')
+  .replace(/Ã¡/g,'á').replace(/Ã¢/g,'â').replace(/Ã£/g,'ã').replace(/Ã©/g,'é')
+  .replace(/Ãª/g,'ê').replace(/Ã­/g,'í').replace(/Ã³/g,'ó').replace(/Ã´/g,'ô')
+  .replace(/Ãµ/g,'õ').replace(/Ãº/g,'ú').replace(/Ã§/g,'ç')
+  .replace(/Ã/g,'Á').replace(/Ã/g,'É').replace(/Ã/g,'Í').replace(/Ã/g,'Ó')
+  .replace(/Ã/g,'Ú').replace(/Ã/g,'Ç')
+  .replace(/â/g,'—').replace(/â/g,'–').replace(/â¢/g,'•')
+  .replace(/â/g,'’').replace(/â/g,'“').replace(/â/g,'”');
+
+const cleanAssistantContent=(value:string)=>{
+  let text=repairPortugueseEncoding(value).replace(/\r\n/g,'\n');
+  text=text.replace(/<\|\s*DSML\s*\|\s*tool_calls\s*>[\s\S]*?(?:<\/\|\s*DSML\s*\|\s*tool_calls\s*>|$)/gi,'');
+  text=text.replace(/<\|\s*DSML\s*\|\s*invoke[^>]*>[\s\S]*?(?:<\/\|\s*DSML\s*\|\s*invoke\s*>|$)/gi,'');
+  text=text.replace(/<\/?\|\s*DSML\s*\|[^>]*>/gi,'');
+  text=text.replace(/\n{3,}/g,'\n\n').trim();
+  return text;
+};
+
+const workflowStatusLabel=(status:string)=>{
+  if(status==='completed')return 'concluído';
+  if(status==='failed')return 'falhou';
+  if(status==='running')return 'executando';
+  if(status==='aborted')return 'interrompido';
+  if(status==='waiting_approval')return 'aguardando aprovação';
+  return status||'pendente';
+};
+
 export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   messages,
   activeMode,
@@ -139,7 +166,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   return (
     <div
       id="conversation-panel"
-      className="w-96 min-w-[340px] max-w-[420px] bg-slate-950 border-r border-slate-800/80 flex flex-col h-full shrink-0 select-text"
+      className="w-[clamp(320px,26vw,420px)] min-w-[320px] max-w-[420px] bg-slate-950 border-r border-slate-800/80 flex flex-col h-full shrink-0 select-text"
     >
       {/* Top Mode Bar */}
       <div className="p-3 border-b border-slate-800/80 bg-slate-900/40 space-y-2">
@@ -226,7 +253,12 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
           const hasProposal = Boolean(proposal && proposal.files.length > 0);
           const filesAffected = Array.isArray(meta.filesAffected) ? meta.filesAffected.filter((f: unknown): f is string => typeof f === 'string') : [];
           const isDiffOpen = expandedDiffs[msg.id] ?? false;
-          const shouldRenderPlanCard = !isUser && (meta.decisionType === 'plan' || typeof meta.planId === 'string') && Boolean(parsePlanForDisplay(msg.content));
+          const planContent = meta.plan && typeof meta.plan === 'object'
+            ? JSON.stringify({type:'plan',plan:meta.plan,explanation:cleanAssistantContent(msg.content)})
+            : msg.content;
+          const shouldRenderPlanCard = !isUser && (meta.decisionType === 'plan' || typeof meta.planId === 'string') && Boolean(parsePlanForDisplay(planContent));
+          const visibleContent = isUser ? repairPortugueseEncoding(msg.content) : cleanAssistantContent(msg.content);
+          const workflowSteps = Array.isArray(meta.workflow?.trace) ? meta.workflow.trace : [];
 
           return (
             <div
@@ -234,52 +266,43 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
               id={`message-${msg.id}`}
               className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
             >
-              <div className="flex items-center gap-1.5 mb-1 text-[10px] text-slate-500 font-mono">
-                <span>{isUser ? 'Você' : 'Forge Agent'}</span>
-                {typeof meta.mode === 'string' && (
-                  <span className="text-slate-600">• [{meta.mode.toUpperCase()}]</span>
-                )}
-                {meta.decisionType && (
-                  <span className="text-slate-600">• {meta.decisionType}</span>
-                )}
-                {meta.providerUsed && (
-                  <span className="text-slate-600">• {meta.providerUsed}</span>
-                )}
-                {meta.agentKey && <span className="text-cyan-500">• {meta.agentKey}</span>}
+              <div className={`mb-1 flex items-center gap-1.5 text-[10px] ${isUser?'justify-end text-slate-500':'text-slate-400'}`}>
+                <span className={isUser?'font-medium':'font-semibold text-cyan-300'}>{isUser ? 'Você' : 'Forge'}</span>
+                {!isUser && typeof meta.mode === 'string' && <span className="text-slate-600">· {meta.mode.toLowerCase()}</span>}
               </div>
 
-              {!isUser && Array.isArray(meta.workflow?.trace) && meta.workflow.trace.length > 0 && (
-                <div className="mb-1.5 flex flex-wrap gap-1">
-                  {meta.workflow.trace.map((step:any) => (
-                    <span
-                      key={step.id}
-                      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9px] font-mono ${
-                        step.status === 'completed'
-                          ? 'border-emerald-900/70 bg-emerald-950/30 text-emerald-300'
-                          : step.status === 'failed'
-                            ? 'border-rose-900/70 bg-rose-950/30 text-rose-300'
-                            : 'border-slate-800 bg-slate-900 text-slate-400'
-                      }`}
-                      title={step.title}
-                    >
-                      <span>{step.agent_key}</span>
-                      <span className="opacity-60">·</span>
-                      <span>{step.status}</span>
-                      {Array.isArray(step.invocations) && step.invocations.length > 0 && (
-                        <span className="text-slate-500">
-                          · {step.invocations.map((inv:any) => `${inv.profile_key}/${inv.provider_key}`).join(' → ')}
-                        </span>
-                      )}
-                    </span>
-                  ))}
-                </div>
+              {!isUser && workflowSteps.length > 0 && (
+                <details className="mb-2 max-w-[95%] text-[10px] text-slate-500">
+                  <summary className="cursor-pointer select-none list-none hover:text-slate-300 transition">
+                    Detalhes da execução · {workflowSteps.length} etapa(s)
+                  </summary>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {workflowSteps.map((step:any) => (
+                      <span
+                        key={step.id}
+                        className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono ${
+                          step.status === 'completed'
+                            ? 'border-emerald-900/60 bg-emerald-950/20 text-emerald-300'
+                            : step.status === 'failed'
+                              ? 'border-rose-900/60 bg-rose-950/20 text-rose-300'
+                              : 'border-slate-800 bg-slate-900/60 text-slate-400'
+                        }`}
+                        title={step.title}
+                      >
+                        <span>{step.agent_key}</span>
+                        <span className="opacity-50">·</span>
+                        <span>{workflowStatusLabel(step.status)}</span>
+                      </span>
+                    ))}
+                  </div>
+                </details>
               )}
 
               <div
-                className={`max-w-[95%] rounded-xl p-3 leading-relaxed whitespace-pre-wrap ${
+                className={`leading-relaxed whitespace-pre-wrap ${
                   isUser
-                    ? 'bg-cyan-950/70 border border-cyan-800/60 text-slate-100 rounded-br-xs'
-                    : 'bg-slate-900/90 border border-slate-800 text-slate-200 rounded-bl-xs shadow-sm'
+                    ? 'max-w-[88%] rounded-2xl rounded-br-md bg-cyan-950/70 border border-cyan-800/60 px-3.5 py-2.5 text-slate-100'
+                    : 'w-full max-w-[95%] px-0 py-1 text-[13px] leading-6 text-slate-200'
                 }`}
               >
                 {/* Fallback Notice Badge */}
@@ -306,7 +329,13 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                   </div>
                 )}
 
-                {shouldRenderPlanCard ? <PlanResponseCard content={msg.content} /> : <div>{msg.content}</div>}
+                {shouldRenderPlanCard
+                  ? <PlanResponseCard content={planContent} />
+                  : visibleContent
+                    ? <div className="break-words">{visibleContent}</div>
+                    : !isUser && !hasProposal
+                      ? <div className="text-slate-400">Concluí esta etapa. Os detalhes técnicos ficam disponíveis acima.</div>
+                      : null}
 
                 {meta.validation && (
                   <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/70 p-2 space-y-1">

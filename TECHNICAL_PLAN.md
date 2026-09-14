@@ -56,7 +56,7 @@ Papéis:
 - SENTINEL — interpretação de falha concreta;
 - SHIP — publicação solicitada.
 
-Estado atual: state machine determinística implementada com `forcedAgentKey`, Context Engine V2, Tool-First/Sandbox, ValidatorEngine, Browser Quality Gate real, repair bounded/escalonamento local e merge atômico após aprovação. Próximos blocos independentes: benchmark da Fase 4 e runtime/HMR de produto.
+Estado atual: state machine determinística implementada com `forcedAgentKey`, Context Engine V2, Tool-First/Sandbox, ValidatorEngine, Browser Quality Gate real, repair bounded/escalonamento local e merge atômico após aprovação. A Fase 4 está em implementação com suíte canônica de 30 casos, runner de provider real, telemetria e release gate versionado. Runtime/HMR de produto permanece independente.
 
 ## 5.1 Tool-First — Fase 2
 
@@ -106,6 +106,24 @@ Implementado:
 
 O Browser Quality Gate complementa o ValidatorEngine. Ele não cria um segundo validator de código.
 
+
+
+## 5.3 Benchmark real + release gate — Fase 4
+
+A Fase 4 mede o sistema existente; não cria um sexto agente.
+
+Contrato em implementação:
+- suíte `phase4-v1-30` com 30 casos versionados;
+- provider real obrigatório; fallback demonstrativo nunca aprova caso;
+- fixtures/projetos efêmeros isolados e removidos depois do caso;
+- scoring determinístico por plan/review/build;
+- métricas de custo, latência, tokens, attempts, repairs, ContextPacks, tools e escalonamento;
+- confirmação explícita de custo antes de qualquer execução real;
+- um benchmark pago ativo por usuário;
+- restart preserva provenance/custo e marca run interrompido;
+- release gate `phase4-release-gate-v1` elegível somente com 30 casos completos.
+
+Leia `PHASE4_IMPLEMENTATION.md` antes de alterar o benchmark.
 
 ## 6. Validação
 

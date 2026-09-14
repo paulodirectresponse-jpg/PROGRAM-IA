@@ -9,6 +9,7 @@ import { router as apiRouter } from './server/routes.js';
 import { CloudSyncService } from './server/services/cloudSyncService.js';
 import { RuntimeManager } from './server/services/runtimeManager.js';
 import { Phase2RecoveryService } from './server/tooling/phase2RecoveryService.js';
+import { BenchmarkService } from './server/benchmark/benchmarkService.js';
 
 dotenv.config();
 
@@ -20,6 +21,11 @@ try {
   // Recovery is best-effort. A stale/interrupted sandbox must never prevent
   // the application from booting after a successful schema migration.
   console.error('Phase 2 startup recovery failed:', error);
+}
+try {
+  BenchmarkService.recoverStartup();
+} catch (error) {
+  console.error('Phase 4 benchmark recovery failed:', error);
 }
 
 if (process.env.FORGE_REQUIRE_CLOUD_SYNC === 'true') {
@@ -78,6 +84,73 @@ app.get('/api/health', (_req, res) => {
 app.use('/api', apiRouter);
 
 // Vite middleware setup
+async function maybeRunPhase4Benchmark() {
+  if (process.env.PHASE4_AUTORUN !== 'full') return;
+  const firebaseUid=String(process.env.PHASE4_BENCHMARK_FIREBASE_UID||'').trim();
+  const maxCostUsd=Number(process.env.PHASE4_AUTORUN_MAX_COST_USD||0.5);
+  if(!firebaseUid)throw new Error('PHASE4_BENCHMARK_FIREBASE_UID is required.');
+  const {user}=AuthService.firebaseLogin('phase4-benchmark@local.invalid','Phase 4 Benchmark',firebaseUid,'phase4-autorun','127.0.0.1');
+  const userId=user.id;
+  if(!Number.isFinite(maxCostUsd)||maxCostUsd<0.05||maxCostUsd>1){
+    throw new Error('PHASE4_AUTORUN_MAX_COST_USD must be between US$0.05 and US$1.00.');
+  }
+  const sync=await CloudSyncService.pullDirect(userId);
+  if(sync.status!=='synced')throw new Error(`Phase 4 autorun cloud bootstrap failed: ${sync.status}`);
+  const preflight=BenchmarkService.preflight(userId,false);
+  console.log('PHASE4_AUTORUN_PREFLIGHT',JSON.stringify(preflight));
+  if(!preflight.canRun||preflight.baseCandidates.length===0)throw new Error('No BASE_FREE provider available for Phase 4 autorun.');
+  let run=BenchmarkService.start({
+    userId,
+    maxCostUsd,
+    confirmRealProviderCosts:true,
+    allowExpert:false,
+  });
+  if(!run)throw new Error('Phase 4 autorun did not create a benchmark run.');
+  console.log('PHASE4_AUTORUN_STARTED',JSON.stringify({runId:run.id,totalCases:run.totalCases,maxCostUsd}));
+  const terminal=new Set(['completed','failed','interrupted','cancelled','budget_exhausted']);
+  const deadline=Date.now()+45*60*1000;
+  while(!terminal.has(run.status)){
+    if(Date.now()>deadline){
+      BenchmarkService.cancel(run.id,userId);
+      throw new Error('Phase 4 autorun exceeded 45 minute deadline.');
+    }
+    await new Promise(resolve=>setTimeout(resolve,1000));
+    const next=BenchmarkService.get(run.id,userId);
+    if(!next)throw new Error('Phase 4 autorun benchmark run disappeared.');
+    run=next;
+  }
+  const compactCases=(run.cases||[]).map((item:any)=>({
+    caseId:item.caseId,
+    category:item.category,
+    status:item.status,
+    score:item.score,
+    passed:item.passed,
+    providerReal:item.providerReal,
+    profileKey:item.profileKey,
+    providerKey:item.providerKey,
+    modelId:item.modelId,
+    costUsd:item.costUsd,
+    attempts:item.attempts,
+    repairs:item.repairs,
+    expertEscalations:item.expertEscalations,
+    validatorStatus:item.validatorStatus,
+    browserStatus:item.browserStatus,
+    failureReason:item.failureReason,
+    failedChecks:Array.isArray(item.evidence?.checks)
+      ? item.evidence.checks.filter((check:any)=>check?.passed===false).map((check:any)=>({key:check.key,detail:check.detail||null}))
+      : [],
+  }));
+  const gate=BenchmarkService.releaseGate(run.id,userId);
+  console.log('PHASE4_AUTORUN_RESULT',JSON.stringify({
+    id:run.id,status:run.status,totalCases:run.totalCases,completedCases:run.completedCases,
+    passedCases:run.passedCases,failedCases:run.failedCases,maxCostUsd:run.maxCostUsd,
+    spentUsd:run.spentUsd,allowExpert:run.allowExpert,summary:run.summary,
+  }));
+  console.log('PHASE4_AUTORUN_CASES',JSON.stringify(compactCases));
+  console.log('PHASE4_AUTORUN_GATE',JSON.stringify(gate));
+}
+
+
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

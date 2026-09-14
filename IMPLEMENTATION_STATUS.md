@@ -74,7 +74,7 @@ E2E externo real permanece bloqueado por credenciais/autorização.
 - escalonamento BASE_FREE -> EXPERT_PAID ocorre somente no step bloqueado;
 - browser repair não cria loop infinito.
 
-Pendência do Agent Engine fora da Fase 3: benchmark real de 30 tarefas com providers reais.
+Fase 4 iniciada: harness, suíte de 30 casos, persistência, scoring, custo/telemetria, preflight, cancel/resume/restart e release gate estão em implementação na branch `codex/phase4-benchmark-quality`. O run real de 30 casos ainda não foi executado.
 
 ### I — Limpeza
 - modais antigos removidos;
@@ -157,6 +157,26 @@ Implementado e coberto por suíte:
 Limite deliberado: warnings heurísticos de visual/a11y são evidence, não motivo automático para uma IA redesenhar a interface. A autocorreção é reservada a falhas executáveis para evitar alterações subjetivas sem pedido do usuário.
 
 
+
+### Fase 4 — Benchmark real + qualidade — EM IMPLEMENTAÇÃO
+
+Já implementado na branch da Fase 4:
+- suíte canônica `phase4-v1-30`;
+- seis categorias: planning/context/build/visual/repair/review;
+- migrations locais 008/009/010;
+- runner real-provider com budget e confirmação explícita de custo;
+- projetos efêmeros por caso e cleanup;
+- provenance de model invocation preservada para accounting;
+- scoring determinístico;
+- métricas agregadas;
+- preflight;
+- cancel/resume/restart recovery;
+- release gate `phase4-release-gate-v1`;
+- painel operacional no modal de Agentes com preflight, confirmação de custo, smoke/full run, cancel/resume, progresso, métricas e gate;
+- CI direcionado com `tests/phase4.test.ts`.
+
+Ainda não conta como Fase 4 concluída: falta smoke com provider real, benchmark completo de 30 casos, auditoria dos resultados e gate final.
+
 ## Pendências que bloqueiam “release completa”
 
-Pendências após a Fase 3: benchmark real de 30 tarefas da Fase 4, WebSocket/HMR + E2E ampliado de frameworks, E2E de integrações externas e remoções destrutivas somente após reconciliação.
+Pendências após a Fase 3: concluir a Fase 4 com execução real dos 30 casos + gate final, WebSocket/HMR + E2E ampliado de frameworks, E2E de integrações externas e remoções destrutivas somente após reconciliação.

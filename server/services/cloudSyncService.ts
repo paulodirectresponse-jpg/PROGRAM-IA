@@ -12,6 +12,15 @@ type Snapshot={schemaVersion:1;userId:string;deviceId:string;createdAt:string;ta
 
 export class CloudSyncService{
   private static timer=new Map<string,NodeJS.Timeout>();
+  private static operationChain=new Map<string,Promise<unknown>>();
+  private static enqueue<T>(userId:string,operation:()=>Promise<T>):Promise<T>{
+    const previous=this.operationChain.get(userId)||Promise.resolve();
+    const current=previous.catch(()=>undefined).then(operation);
+    this.operationChain.set(userId,current);
+    const clear=()=>{if(this.operationChain.get(userId)===current)this.operationChain.delete(userId);};
+    current.then(clear,clear);
+    return current;
+  }
   private static key(){return process.env.SUPABASE_SECRET_KEY||process.env.SUPABASE_SERVICE_ROLE_KEY||'';}
   static configured(){return Boolean(process.env.SUPABASE_URL&&this.key()&&process.env.SECRETS_MASTER_KEY&&process.env.SECRETS_MASTER_KEY.length>=32);}
   static configurationStatus(){return{configured:this.configured()&&Boolean(process.env.SECRETS_MASTER_KEY&&process.env.SECRETS_MASTER_KEY.length>=32),hasSupabaseUrl:Boolean(process.env.SUPABASE_URL),hasSupabaseKey:Boolean(this.key()),hasMasterKey:Boolean(process.env.SECRETS_MASTER_KEY&&process.env.SECRETS_MASTER_KEY.length>=32),required:process.env.FORGE_REQUIRE_CLOUD_SYNC==='true'};}
@@ -41,12 +50,12 @@ export class CloudSyncService{
   private static assertSecretsReadable(snapshot:Snapshot){const result=SecretService.validateEncryptedRows(snapshot?.tables?.user_secrets||[]);if(!result.valid)throw Error('As credenciais da conta não podem ser descriptografadas com a SECRETS_MASTER_KEY deste ambiente.');}
   static import(userId:string,s:Snapshot){if(!s?.userId)throw Error('Snapshot remoto inválido.');const sourceUserId=s.userId;const order=['workspaces','providers','skills','integrations','user_secrets','model_profiles','model_candidates','projects','project_sources','branches','conversations','messages','checkpoints','verifications','attachments','plans','tasks','requirements','agent_runs','agent_steps','tool_executions','model_invocations'];db.exec('BEGIN IMMEDIATE');try{for(const name of order){const valid=new Set((db.prepare(`PRAGMA table_info(${name})`).all() as any[]).map(c=>c.name));for(const original of s.tables?.[name]||[]){const row={...original};if(row.user_id===sourceUserId)row.user_id=userId;if(name==='messages'&&row.metadata_json){try{const metadata=JSON.parse(row.metadata_json);row.metadata_json=JSON.stringify(metadata&&typeof metadata==='object'?metadata:{});}catch{row.metadata_json='{}';}}const cols=Object.keys(row).filter(c=>valid.has(c));if(!cols.length)continue;db.prepare(`INSERT OR REPLACE INTO ${name} (${cols.join(',')}) VALUES (${cols.map(()=>'?').join(',')})`).run(...cols.map(c=>row[c]));}}db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}for(const [projectId,items] of Object.entries(s.files||{})){if(!WorkspaceManager.verifyProjectOwnership(projectId,userId))continue;for(const [name,b64] of Object.entries(items)){WorkspaceManager.writeBinaryFile(projectId,name,Buffer.from(b64,'base64'));}}}
   private static firebaseUid(userId:string){return (db.prepare('SELECT firebase_uid FROM users WHERE id=?').get(userId) as any)?.firebase_uid||'';}
-  static async pushDirect(userId:string){return SupabasePersistenceService.pushCanonical(userId,this.firebaseUid(userId),this.export(userId));}
+  static async pushDirect(userId:string){return this.enqueue(userId,()=>SupabasePersistenceService.pushCanonical(userId,this.firebaseUid(userId),this.export(userId)));}
   static async deleteProject(userId:string,projectId:string){
     const pending=this.timer.get(userId);
     if(pending){clearTimeout(pending);this.timer.delete(userId);}
     if(!this.configured())return{status:'not_configured' as const,deleted:false};
-    return SupabasePersistenceService.deleteCanonicalProject(this.firebaseUid(userId),projectId);
+    return this.enqueue(userId,()=>SupabasePersistenceService.deleteCanonicalProject(this.firebaseUid(userId),projectId));
   }
   static async pullDirect(userId:string){const direct=await SupabasePersistenceService.pullCanonical(userId,this.firebaseUid(userId));if(direct.status==='synced'&&direct.snapshot){this.assertSecretsReadable(direct.snapshot);this.import(userId,direct.snapshot as Snapshot);return{status:'synced',restored:true,source:'canonical'};}return direct;}
   // Canonical writes target normalized Postgres tables and Storage only. Snapshot writes are migration-only.

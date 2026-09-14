@@ -359,3 +359,37 @@ test('real Supabase errors during legacy fallback still return bootstrap error',
     finally{cleanup();t.mock.reset();}
   }
 });
+
+
+test('project deletion waits for an older cloud push so deleted projects cannot be resurrected',async(t)=>{
+  const cleanup=configureCloudEnv(),user=makeBootstrapUser('delete-race');
+  let releasePush:()=>void=()=>{};
+  let markStarted:()=>void=()=>{};
+  const pushStarted=new Promise<void>(resolve=>{markStarted=resolve;});
+  const pushBlocked=new Promise<void>(resolve=>{releasePush=resolve;});
+  const order:string[]=[];
+  t.mock.method(SupabasePersistenceService,'pushCanonical',async()=>{
+    order.push('push:start');
+    markStarted();
+    await pushBlocked;
+    order.push('push:end');
+    return{status:'synced' as const,records:1,files:0};
+  });
+  t.mock.method(SupabasePersistenceService,'deleteCanonicalProject',async()=>{
+    order.push('delete');
+    return{status:'synced' as const,deleted:true,files:0};
+  });
+  try{
+    const push=CloudSyncService.pushDirect(user.id);
+    await pushStarted;
+    const deletion=CloudSyncService.deleteProject(user.id,'project-delete-race');
+    await new Promise(resolve=>setTimeout(resolve,10));
+    assert.deepEqual(order,['push:start']);
+    releasePush();
+    await Promise.all([push,deletion]);
+    assert.deepEqual(order,['push:start','push:end','delete']);
+  }finally{
+    releasePush();
+    cleanup();
+  }
+});

@@ -1343,8 +1343,13 @@ IMPORTANTE:
 - Se o pedido grande ainda não possui arquitetura suficiente, prefira PLAN em AUTO.
 - Em BUILD, se o sistema exigir múltiplos módulos, retorne múltiplos arquivos coerentes.
 - Respostas de alteração sem estrutura de arquivos são rejeitadas por segurança.
+- Nunca exponha ao usuário protocolos internos, DSML, chamadas de ferramenta, raciocínio interno, dumps de contexto ou JSON técnico fora dos schemas exigidos.
+- Na parte destinada ao usuário, escreva como uma conversa natural de produto: direta, clara e humana, sem excesso de cards mentais, cabeçalhos ou jargão.
+- Prefira 1 a 4 parágrafos curtos. Diga primeiro o que entendeu ou concluiu; depois o que fez ou o próximo passo.
+- Use português brasileiro correto, com acentuação e concordância naturais.
+- Só detalhe implementação, arquivos e validações quando isso ajudar a decisão do usuário ou quando ele pedir.
 
-Responda sempre em português claro, elegante e profissional.`;
+Responda sempre em português brasileiro claro, natural, elegante e profissional.`;
   }
 
   private static async callOpenAICompatible(

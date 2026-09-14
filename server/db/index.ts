@@ -256,6 +256,96 @@ export function initializeDatabase() {
     );
   }
 
+  // Migration 008: Phase 4 benchmark runs and case telemetry.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS benchmark_runs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      suite_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      total_cases INTEGER NOT NULL,
+      completed_cases INTEGER NOT NULL DEFAULT 0,
+      passed_cases INTEGER NOT NULL DEFAULT 0,
+      failed_cases INTEGER NOT NULL DEFAULT 0,
+      max_cost_usd REAL NOT NULL,
+      spent_usd REAL NOT NULL DEFAULT 0,
+      allow_expert INTEGER NOT NULL DEFAULT 0,
+      config_json TEXT NOT NULL DEFAULT '{}',
+      summary_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS benchmark_runs_user_created ON benchmark_runs(user_id,created_at);
+    CREATE TABLE IF NOT EXISTS benchmark_case_runs (
+      id TEXT PRIMARY KEY,
+      benchmark_run_id TEXT NOT NULL,
+      case_id TEXT NOT NULL,
+      case_order INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      agent_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      score INTEGER NOT NULL DEFAULT 0,
+      passed INTEGER NOT NULL DEFAULT 0,
+      project_id TEXT,
+      agent_run_id TEXT,
+      provider_real INTEGER NOT NULL DEFAULT 0,
+      profile_key TEXT,
+      provider_key TEXT,
+      model_id TEXT,
+      cost_usd REAL NOT NULL DEFAULT 0,
+      latency_ms INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      repairs INTEGER NOT NULL DEFAULT 0,
+      expert_escalations INTEGER NOT NULL DEFAULT 0,
+      validator_status TEXT,
+      browser_status TEXT,
+      failure_reason TEXT,
+      evidence_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      UNIQUE(benchmark_run_id,case_id)
+    );
+    CREATE INDEX IF NOT EXISTS benchmark_case_runs_run_order ON benchmark_case_runs(benchmark_run_id,case_order);
+    CREATE INDEX IF NOT EXISTS benchmark_case_runs_case ON benchmark_case_runs(case_id,created_at);
+  `);
+  const migration8Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 8').get() as { version: number } | undefined;
+  if (!migration8Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      8,
+      '008_phase4_benchmark_framework',
+      new Date().toISOString()
+    );
+  }
+
+  // Migration 009: retain real-provider benchmark cost provenance without polluting project state.
+  ensureColumn('model_invocations', 'benchmark_run_id', 'TEXT');
+  ensureColumn('model_invocations', 'benchmark_case_id', 'TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS model_invocations_benchmark_run ON model_invocations(benchmark_run_id,created_at)');
+  const migration9Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 9').get() as { version: number } | undefined;
+  if (!migration9Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      9,
+      '009_phase4_benchmark_invocation_provenance',
+      new Date().toISOString()
+    );
+  }
+
+  // Migration 010: prevent concurrent paid benchmark runs per user.
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS benchmark_runs_one_active_user ON benchmark_runs(user_id) WHERE status IN ('queued','running')");
+  const migration10Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 10').get() as { version: number } | undefined;
+  if (!migration10Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      10,
+      '010_phase4_single_active_benchmark_per_user',
+      new Date().toISOString()
+    );
+  }
+
   db.prepare("UPDATE tool_executions SET status='interrupted',error_code=COALESCE(error_code,'worker_interrupted'),finished_at=COALESCE(finished_at,?) WHERE status IN ('queued','running')").run(new Date().toISOString());
   const restartRecoveryAt=new Date().toISOString();
   db.prepare("UPDATE agent_steps SET status='aborted',finished_at=? WHERE status='running' AND run_id IN (SELECT DISTINCT run_id FROM tool_executions WHERE status='interrupted' AND run_id IS NOT NULL)")
