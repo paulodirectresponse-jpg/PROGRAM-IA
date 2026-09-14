@@ -638,7 +638,7 @@ test('approved publish proposal creates SHIP only after validation and sentinel 
   t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>({replyText:'{"verdict":"pass","summary":"ok","issues":[]}',mode:options.mode,decisionType:'review',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any));
   const projectId=createLifecycleProject('approval-ship');
   const {runId}=RunService.start(userA,projectId,`conv-placeholder-${Date.now()}`,'publish',0.5);RunService.waitForApproval(runId);
-  const {proposalId}=insertLifecycleProposal(projectId,runId,[{path:'index.html',action:'modify',content:'<html></html>'},{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(0)"'}})}],true);
+  const {proposalId}=insertLifecycleProposal(projectId,runId,[{path:'index.html',action:'modify',content:'<html><body>Ready to ship</body></html>'},{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(0)"'}})}],true);
   try {
     assert.equal((db.prepare("SELECT COUNT(*) c FROM agent_steps WHERE run_id=? AND agent_key='SHIP'").get(runId) as any).c,0);
     const r=await fetch(`${base}/conversations/${projectId}/apply-proposal`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({proposalId,summary:'publish pass'})});
