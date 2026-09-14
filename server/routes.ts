@@ -560,19 +560,24 @@ router.post('/projects/:projectId/context/compile', requireAuth, requireProjectO
     if (!task?.objective || typeof task.objective !== 'string') {
       return res.status(400).json({ error:'task.objective é obrigatório.' });
     }
+    const currentFiles = WorkspaceManager.getAllFilesContent(projectId);
     if (req.body?.sync !== false) {
-      ContextEngineV2.syncProject({ projectId, files:WorkspaceManager.getAllFilesContent(projectId) });
+      ContextEngineV2.syncProject({ projectId, files:currentFiles });
     }
+    const runId = req.body?.runId ? String(req.body.runId) : null;
+    const explicitRequirementIds = Array.isArray(req.body?.requirementIds) ? req.body.requirementIds.map(String) : [];
+    const requirementIds = [...new Set([...explicitRequirementIds,...(runId ? workflowRequirementIds(projectId,runId,null) : [])])];
     const pack = ContextEngineV2.compile({
       projectId,
       agentKey:String(req.body?.agentKey || 'FORGE'),
       scope:scope as any,
       task,
-      requirementIds:Array.isArray(req.body?.requirementIds) ? req.body.requirementIds.map(String) : [],
-      runId:req.body?.runId ? String(req.body.runId) : null,
+      requirementIds,
+      runId,
       stepId:req.body?.stepId ? String(req.body.stepId) : null,
       focusPaths:Array.isArray(req.body?.focusPaths) ? req.body.focusPaths.map(String) : [],
       tokenBudget:Number.isFinite(Number(req.body?.tokenBudget)) ? Number(req.body.tokenBudget) : undefined,
+      fileContents:currentFiles,
     });
     res.json({ success:true, pack });
   } catch (err:any) {
