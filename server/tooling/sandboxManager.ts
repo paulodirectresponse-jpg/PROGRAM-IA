@@ -230,6 +230,26 @@ export class SandboxManager {
       return !rel||!ignoredRelative(rel);
     }});
 
+    // Sensitive project files are intentionally absent from the sandbox. Preserve them
+    // from the official workspace during the directory swap without exposing them to tools.
+    const preserveSensitive=(dir:string,base:string)=>{
+      if(!fs.existsSync(dir))return;
+      for(const entry of fs.readdirSync(dir,{withFileTypes:true})){
+        if(entry.isSymbolicLink())continue;
+        const rel=path.join(base,entry.name).replace(/\\/g,'/');
+        const full=path.join(dir,entry.name);
+        if(entry.isDirectory()){
+          if(entry.name==='.git'||entry.name==='node_modules')continue;
+          preserveSensitive(full,rel);
+        }else if(ToolPolicy.isSensitivePath(rel)){
+          const target=path.join(stage,rel);
+          fs.mkdirSync(path.dirname(target),{recursive:true});
+          fs.copyFileSync(full,target);
+        }
+      }
+    };
+    preserveSensitive(official,'');
+
     let officialMoved=false;
     try{
       fs.renameSync(official,backup);
