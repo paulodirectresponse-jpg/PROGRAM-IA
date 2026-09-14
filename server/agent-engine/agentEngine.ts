@@ -9,6 +9,7 @@ import { DEFAULT_CONTEXT_TOKEN_BUDGETS } from '../context-engine/contextCompiler
 import { RequirementLedgerService } from '../services/requirementLedgerService.js';
 import { ProposalSandboxService } from '../tooling/proposalSandboxService.js';
 import { WorkspaceManager } from '../services/workspaceManager.js';
+import { ToolExecutionService } from '../tooling/toolExecutionService.js';
 
 type Input = {
   prompt: string;
@@ -26,6 +27,7 @@ type Input = {
   contextPack?: ContextPack;
   contextBrief?: string;
   skipContextSync?: boolean;
+  toolSandboxId?: string;
   reliableBuild?: {
     requestedFiles: string[];
     objective: string;
