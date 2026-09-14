@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { db } from '../db/index.js';
 import { ContextEngineV2 } from '../context-engine/contextEngine.js';
 import { WorkspaceManager } from '../services/workspaceManager.js';
@@ -24,7 +25,7 @@ export interface SandboxRecord {
   updatedAt:string;
 }
 
-const SANDBOX_ROOT=path.resolve(process.env.FORGE_DATA_DIR || path.join(process.cwd(),'.data'),'sandboxes');
+const SANDBOX_ROOT=path.resolve(process.env.FORGE_SANDBOX_DIR || path.join(os.tmpdir(),'program-ia-sandboxes'));
 
 function ignoredRelative(relative:string){
   const normalized=relative.replace(/\\/g,'/').replace(/^\.\//,'');
