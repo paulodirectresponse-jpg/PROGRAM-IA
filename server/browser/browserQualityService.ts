@@ -133,7 +133,7 @@ async function inspectViewport(input:{browser:Browser;baseUrl:string;viewport:{n
         const aria=el.getAttribute('aria-label')||el.getAttribute('aria-labelledby')||'';
         const text=((el.innerText||'')||el.getAttribute('title')||el.getAttribute('alt')||'').trim();
         const name=el.getAttribute('name')||'';
-        if(!(`${aria} ${text} ${name}`.trim()))unlabeledInteractiveCount++;
+        if(!((aria+' '+text+' '+name).trim()))unlabeledInteractiveCount++;
       }
       const counts={};
       for(const el of Array.from(document.querySelectorAll('[id]'))){
