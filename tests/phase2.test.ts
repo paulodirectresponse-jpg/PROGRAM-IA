@@ -344,3 +344,30 @@ test('phase2 restart marks in-flight tool execution interrupted instead of repla
     assert.equal(replay?.id,running.id);
   } finally { cleanup(env); }
 });
+
+
+test('phase2 proposal apply validates sandbox then atomically updates official workspace', async () => {
+  const env=setupProject();
+  try {
+    WorkspaceManager.writeFile(env.projectId,'index.html','<html><body>old</body></html>');
+    const proposal={
+      id:'proposal-direct-sandbox',
+      summary:'update html',
+      requiresConfirmation:true,
+      status:'pending',
+      files:[{path:'index.html',action:'modify',content:'<html><body>new</body></html>'}],
+    };
+    const result=await SandboxProposalApplyService.apply({
+      userId:env.userId,projectId:env.projectId,proposal,summary:'apply sandbox proposal',
+    });
+    assert.equal(result.success,true);
+    assert.equal(result.validation?.status,'unverified');
+    assert.equal(result.needsVerification,true);
+    assert.equal(WorkspaceManager.readFile(env.projectId,'index.html'),'<html><body>new</body></html>');
+    assert.ok(result.checkpointId);
+    assert.ok(result.sandboxId);
+    const writes=db.prepare("SELECT COUNT(*) c FROM tool_executions WHERE project_id=? AND sandbox_id=? AND tool_key='workspace.write_file' AND status='succeeded'")
+      .get(env.projectId,result.sandboxId) as any;
+    assert.equal(writes.c,1);
+  } finally { cleanup(env); }
+});
