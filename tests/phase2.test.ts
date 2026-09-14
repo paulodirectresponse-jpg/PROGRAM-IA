@@ -371,3 +371,40 @@ test('phase2 proposal apply validates sandbox then atomically updates official w
     assert.equal(writes.c,1);
   } finally { cleanup(env); }
 });
+
+
+test('phase2 workflow materializes FORGE proposal in sandbox while official workspace remains unchanged', async (t) => {
+  const env=setupProject();
+  seedAgentModel(env.userId);
+  WorkspaceManager.writeFile(env.projectId,'index.html','<html><body>old</body></html>');
+  const run=RunService.start(env.userId,env.projectId,'conv-phase2-workflow','build');
+  t.mock.method(LLMAdapterService,'getProviderConfig',()=>({key:'mock-tools',type:'openai_compatible',apiKey:'x',baseUrl:'https://mock.invalid/v1',modelId:'mock-model',name:'Mock Tools',isConfigured:true} as any));
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    if(options.mode==='review'){
+      return {replyText:'brief ready',mode:'review',decisionType:'none',isDemonstrativeFallback:false,providerUsed:'Mock Tools',modelUsed:'mock-model',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0.001}} as any;
+    }
+    return {
+      replyText:'proposal ready',mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'Mock Tools',modelUsed:'mock-model',hasErrors:false,
+      build:{summary:'change',explanation:'change',files:[{path:'index.html',action:'modify',content:'<html><body>new</body></html>'}]},
+      proposal:{id:'phase2-workflow-proposal',summary:'change',requiresConfirmation:true,status:'pending',files:[{path:'index.html',action:'modify',content:'<html><body>new</body></html>'}]},
+      usage:{inputTokens:1,outputTokens:1,billedCostUsd:0.001},
+    } as any;
+  });
+  try {
+    const result=await AgentWorkflowEngine.executeWorkflow({
+      prompt:'Update the page',mode:'build',projectId:env.projectId,existingFiles:WorkspaceManager.getAllFilesContent(env.projectId),
+      appliedSkills:[],conversationHistory:[],userId:env.userId,runId:run.runId,stepId:run.stepId,focusPaths:['index.html'],
+    });
+    assert.equal(result.workflow.status,'waiting_approval');
+    assert.equal(WorkspaceManager.readFile(env.projectId,'index.html'),'<html><body>old</body></html>');
+    assert.ok(result.proposal?.sandboxId);
+    assert.equal(SandboxManager.readFile(result.proposal!.sandboxId!,env.userId,'index.html',env.projectId),'<html><body>new</body></html>');
+    const tools=ToolExecutionJournal.listByRun(run.runId);
+    assert.ok(tools.some(row=>row.toolKey==='workspace.write_file'&&row.sandboxId===result.proposal?.sandboxId));
+  } finally {
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(run.runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(run.runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(run.runId);
+    cleanup(env);
+  }
+});
