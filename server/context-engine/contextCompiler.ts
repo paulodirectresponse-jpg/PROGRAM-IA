@@ -108,9 +108,45 @@ export class ContextCompiler {
 
     for (const item of ranked) {
       const mustInclude = focus.has(item.file.path);
-      if (mustInclude || estimatedTokens + item.estimatedTokens <= tokenBudget) {
-        selectedFiles.push(item);
+      const metadataCost = metadataTokenEstimate(item.file);
+      const remaining = Math.max(0, tokenBudget - estimatedTokens);
+      const content = input.fileContents?.[item.file.path];
+
+      if (estimatedTokens + item.estimatedTokens <= tokenBudget) {
+        const end = typeof content === 'string' ? content.length : item.file.sizeBytes;
+        selectedFiles.push({
+          ...item,
+          content: {
+            path:item.file.path,
+            mode:'full',
+            start:0,
+            end,
+            estimatedTokens:item.estimatedTokens,
+            omittedChars:0,
+            reason:'fits_budget',
+          },
+        });
         estimatedTokens += item.estimatedTokens;
+      } else if (mustInclude && typeof content === 'string' && remaining > metadataCost + 16) {
+        const availableContentTokens = Math.max(1, remaining - metadataCost);
+        const end = Math.min(content.length, availableContentTokens * 4);
+        const actualContentTokens = tokens(content.slice(0,end));
+        const partialCost = metadataCost + actualContentTokens;
+        selectedFiles.push({
+          ...item,
+          estimatedTokens:partialCost,
+          reasons:[...new Set([...item.reasons,'partial_oversized_focus'])],
+          content:{
+            path:item.file.path,
+            mode:'partial',
+            start:0,
+            end,
+            estimatedTokens:partialCost,
+            omittedChars:Math.max(0,content.length-end),
+            reason:'oversized_focus',
+          },
+        });
+        estimatedTokens += partialCost;
       } else {
         omittedFiles.push({path:item.file.path,estimatedTokens:item.estimatedTokens,reason:'budget_exhausted'});
       }
@@ -118,7 +154,8 @@ export class ContextCompiler {
 
     const selectedPaths = new Set(selectedFiles.map(item => item.file.path));
     const commitBudgetShare: Record<ContextScope,number> = {MICRO:.10,LOCAL:.15,TASK:.20,PROJECT:.25};
-    const maxCommitTokens = Math.max(256, Math.floor(tokenBudget * commitBudgetShare[input.scope]));
+    const remainingCommitBudget = Math.max(0, tokenBudget - estimatedTokens);
+    const maxCommitTokens = Math.min(remainingCommitBudget, Math.max(256, Math.floor(tokenBudget * commitBudgetShare[input.scope])));
     const recentCommits = [];
     let commitTokens = 0;
     for (const commit of commits) {
