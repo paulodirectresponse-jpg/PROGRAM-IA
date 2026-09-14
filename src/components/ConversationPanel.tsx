@@ -237,18 +237,8 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
               id={`message-${msg.id}`}
               className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
             >
-              <div className="flex items-center gap-1.5 mb-1 text-[10px] text-slate-500 font-mono">
-                <span>{isUser ? 'Você' : 'Forge Agent'}</span>
-                {typeof meta.mode === 'string' && (
-                  <span className="text-slate-600">• [{meta.mode.toUpperCase()}]</span>
-                )}
-                {meta.decisionType && (
-                  <span className="text-slate-600">• {meta.decisionType}</span>
-                )}
-                {meta.providerUsed && (
-                  <span className="text-slate-600">• {meta.providerUsed}</span>
-                )}
-                {meta.agentKey && <span className="text-cyan-500">• {meta.agentKey}</span>}
+              <div className="mb-1 text-[10px] font-medium text-slate-500">
+                {isUser ? 'Você' : 'Forge Agent'}
               </div>
 
               {!isUser && Array.isArray(meta.workflow?.trace) && meta.workflow.trace.length > 0 && (
@@ -301,102 +291,80 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
 
                 {shouldRenderPlanCard ? <PlanResponseCard content={msg.content} /> : <ChatMarkdown content={msg.content} />}
 
-                {meta.validation && (
-                  <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/70 p-2 space-y-1">
-                    <div className={`text-[10px] font-semibold ${meta.validation.status==='passed'?'text-emerald-400':meta.validation.status==='failed'?'text-rose-400':'text-amber-400'}`}>{meta.validation.status==='passed'?'Quality gates aprovados':meta.validation.status==='failed'?'Quality gates falharam; alteração restaurada':'Verificações automáticas não disponíveis'}</div>
-                    {Array.isArray(meta.validation.results) && meta.validation.results.map((item:any)=><div key={item.tool} className="flex justify-between text-[10px] text-slate-400"><span>{item.tool}</span><span>{item.status}</span></div>)}
+                {meta.validation?.status === 'failed' && (
+                  <div className="mt-2 flex items-start gap-2 rounded-lg border border-rose-900/60 bg-rose-950/25 px-2.5 py-2 text-[10px] text-rose-300">
+                    <AlertTriangle size={12} className="mt-0.5 shrink-0"/>
+                    <span>A revisão automática encontrou um problema e bloqueou a alteração.</span>
                   </div>
                 )}
+                {meta.validation && meta.validation.status !== 'failed' && (
+                  <details className="mt-2 text-[10px] text-slate-600">
+                    <summary className="cursor-pointer select-none hover:text-slate-400">Verificações técnicas</summary>
+                    <div className="mt-1.5 space-y-1 border-l border-slate-800 pl-2">
+                      <div className={meta.validation.status==='passed'?'text-emerald-500':'text-amber-500'}>
+                        {meta.validation.status==='passed'?'Validação concluída':'Validação parcial'}
+                      </div>
+                      {Array.isArray(meta.validation.results) && meta.validation.results.map((item:any)=><div key={item.tool} className="flex max-w-xs justify-between gap-4"><span>{item.tool}</span><span>{item.status}</span></div>)}
+                    </div>
+                  </details>
+                )}
 
-                {/* Change Proposal Interactive Card */}
-                {hasProposal && proposal && (
+                {/* Legacy manual proposal controls; completed proposals stay in technical details only. */}
+                {hasProposal && proposal && proposal.status === 'pending' && (
                   <div
                     id={`proposal-card-${proposal.id}`}
-                    className="mt-3 p-3 rounded-lg bg-slate-950 border border-cyan-800/50 space-y-2.5"
+                    className="mt-3 rounded-xl border border-cyan-900/60 bg-slate-950/60 p-3 space-y-2.5"
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-300">
-                        <Code2 size={13} className="text-cyan-400" />
-                        <span>Proposta de Alterações</span>
+                        <Code2 size={13}/>
+                        <span>Alterações prontas para aplicar</span>
                       </div>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 font-mono border border-cyan-800/60">
-                        {proposal.files.length} arquivo(s)
-                      </span>
+                      <span className="text-[10px] text-slate-500">{proposal.files.length} arquivo(s)</span>
                     </div>
-
-                    <div className="text-xs text-slate-300 font-medium">
-                      {proposal.summary}
-                    </div>
-
-                    {/* Diffs Toggle */}
-                    <div className="pt-1">
-                      <button
-                        type="button"
-                        onClick={() => toggleDiff(msg.id)}
-                        className="text-[11px] text-slate-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer transition font-mono"
-                      >
-                        {isDiffOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-                        <span>{isDiffOpen ? 'Ocultar Diffs' : 'Inspecionar Diffs'}</span>
-                      </button>
-
-                      {isDiffOpen && (
-                        <div className="mt-2 space-y-2 max-h-48 overflow-y-auto custom-scrollbar p-2 bg-slate-900/90 rounded border border-slate-800 font-mono text-[10px]">
-                          {proposal.files.map((file: FileChangeProposal) => (
-                            <div key={file.path} className="border-b border-slate-800/60 pb-1.5 last:border-b-0">
-                              <div className="text-cyan-400 font-bold flex items-center gap-1">
-                                <span className={file.action === 'delete' ? 'text-rose-400' : 'text-emerald-400'}>
-                                  [{file.action.toUpperCase()}]
-                                </span>{' '}
-                                {file.path}
-                              </div>
-                              <pre className="text-slate-300 whitespace-pre-wrap mt-1 leading-snug">
-                                {file.diff || `${file.content.slice(0, 150)}...`}
-                              </pre>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Apply Button */}
-                    {proposal.status === 'pending' && onApplyProposal && (
-                      <div className="pt-2 flex gap-2">
-                        <button
-                          type="button"
-                          id={`btn-apply-proposal-${proposal.id}`}
-                          onClick={() => onApplyProposal(proposal)}
-                          disabled={executionBusy}
-                          className="flex-1 py-1.5 px-3 rounded-md bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
-                        >
-                          <Check size={14} />
-                          Aplicar Alterações Propostas
+                    <div className="text-[11px] text-slate-400">{proposal.summary}</div>
+                    <button
+                      type="button"
+                      onClick={() => toggleDiff(msg.id)}
+                      className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-cyan-300"
+                    >
+                      {isDiffOpen ? <ChevronUp size={12}/> : <ChevronDown size={12}/>}
+                      {isDiffOpen ? 'Ocultar detalhes' : 'Ver detalhes técnicos'}
+                    </button>
+                    {isDiffOpen && (
+                      <div className="max-h-48 space-y-2 overflow-y-auto rounded-lg border border-slate-800 bg-slate-900/70 p-2 font-mono text-[10px]">
+                        {proposal.files.map((file:FileChangeProposal)=><div key={file.path}>
+                          <div className="text-cyan-400">[{file.action.toUpperCase()}] {file.path}</div>
+                          <pre className="mt-1 whitespace-pre-wrap text-slate-500">{file.diff || `${String(file.content||'').slice(0,150)}...`}</pre>
+                        </div>)}
+                      </div>
+                    )}
+                    {onApplyProposal && (
+                      <div className="flex gap-2 pt-1">
+                        <button type="button" id={`btn-apply-proposal-${proposal.id}`} onClick={() => onApplyProposal(proposal)} disabled={executionBusy} className="flex-1 rounded-lg bg-cyan-600 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-500 disabled:opacity-50">
+                          Aplicar alterações
                         </button>
-                        {onRejectProposal && <button
-                          type="button"
-                          onClick={() => onRejectProposal(proposal)}
-                          disabled={executionBusy}
-                          className="py-1.5 px-3 rounded-md border border-slate-700 hover:border-rose-500 text-slate-300 hover:text-rose-300 font-semibold text-xs transition"
-                        >
-                          <X size={14} /> Rejeitar
-                        </button>}
+                        {onRejectProposal&&<button type="button" onClick={()=>onRejectProposal(proposal)} disabled={executionBusy} className="rounded-lg border border-slate-800 px-3 py-2 text-xs text-slate-400 hover:border-rose-800 hover:text-rose-300">Rejeitar</button>}
                       </div>
                     )}
                   </div>
                 )}
+                {hasProposal && proposal && proposal.status !== 'pending' && (
+                  <details className="mt-2 text-[10px] text-slate-600">
+                    <summary className="cursor-pointer select-none hover:text-slate-400">Arquivos e alterações</summary>
+                    <div className="mt-1.5 space-y-1 border-l border-slate-800 pl-2 font-mono">
+                      {proposal.files.map((file:FileChangeProposal)=><div key={file.path} className="truncate">{file.action} · {file.path}</div>)}
+                    </div>
+                  </details>
+                )}
 
-                {/* Chips of affected files */}
                 {filesAffected.length > 0 && !hasProposal && (
-                  <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex flex-wrap gap-1">
-                    {filesAffected.map((f: string) => (
-                      <span
-                        key={f}
-                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-[10px] text-cyan-400 font-mono"
-                      >
-                        <FileCode2 size={11} />
-                        {f}
-                      </span>
-                    ))}
-                  </div>
+                  <details className="mt-2 text-[10px] text-slate-600">
+                    <summary className="cursor-pointer select-none hover:text-slate-400">Arquivos alterados ({filesAffected.length})</summary>
+                    <div className="mt-1.5 space-y-1 border-l border-slate-800 pl-2 font-mono">
+                      {filesAffected.map((file:string)=><div key={file} className="truncate">{file}</div>)}
+                    </div>
+                  </details>
                 )}
               </div>
             </div>
