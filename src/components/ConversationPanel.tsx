@@ -38,8 +38,17 @@ interface ConversationPanelProps {
   canSend: boolean;
 }
 
+const repairPortugueseEncoding=(value:string)=>String(value||'')
+  .replace(/Ã¡/g,'á').replace(/Ã¢/g,'â').replace(/Ã£/g,'ã').replace(/Ã©/g,'é')
+  .replace(/Ãª/g,'ê').replace(/Ã­/g,'í').replace(/Ã³/g,'ó').replace(/Ã´/g,'ô')
+  .replace(/Ãµ/g,'õ').replace(/Ãº/g,'ú').replace(/Ã§/g,'ç')
+  .replace(/Ã/g,'Á').replace(/Ã/g,'É').replace(/Ã/g,'Í').replace(/Ã/g,'Ó')
+  .replace(/Ã/g,'Ú').replace(/Ã/g,'Ç')
+  .replace(/â/g,'—').replace(/â/g,'–').replace(/â¢/g,'•')
+  .replace(/â/g,'’').replace(/â/g,'“').replace(/â/g,'”');
+
 const cleanAssistantContent=(value:string)=>{
-  let text=String(value||'').replace(/\r\n/g,'\n');
+  let text=repairPortugueseEncoding(value).replace(/\r\n/g,'\n');
   text=text.replace(/<\|\s*DSML\s*\|\s*tool_calls\s*>[\s\S]*?(?:<\/\|\s*DSML\s*\|\s*tool_calls\s*>|$)/gi,'');
   text=text.replace(/<\|\s*DSML\s*\|\s*invoke[^>]*>[\s\S]*?(?:<\/\|\s*DSML\s*\|\s*invoke\s*>|$)/gi,'');
   text=text.replace(/<\/?\|\s*DSML\s*\|[^>]*>/gi,'');
@@ -157,7 +166,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   return (
     <div
       id="conversation-panel"
-      className="w-96 min-w-[340px] max-w-[420px] bg-slate-950 border-r border-slate-800/80 flex flex-col h-full shrink-0 select-text"
+      className="w-[clamp(320px,26vw,420px)] min-w-[320px] max-w-[420px] bg-slate-950 border-r border-slate-800/80 flex flex-col h-full shrink-0 select-text"
     >
       {/* Top Mode Bar */}
       <div className="p-3 border-b border-slate-800/80 bg-slate-900/40 space-y-2">
@@ -244,8 +253,11 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
           const hasProposal = Boolean(proposal && proposal.files.length > 0);
           const filesAffected = Array.isArray(meta.filesAffected) ? meta.filesAffected.filter((f: unknown): f is string => typeof f === 'string') : [];
           const isDiffOpen = expandedDiffs[msg.id] ?? false;
-          const shouldRenderPlanCard = !isUser && (meta.decisionType === 'plan' || typeof meta.planId === 'string') && Boolean(parsePlanForDisplay(msg.content));
-          const visibleContent = isUser ? msg.content : cleanAssistantContent(msg.content);
+          const planContent = meta.plan && typeof meta.plan === 'object'
+            ? JSON.stringify({type:'plan',plan:meta.plan,explanation:cleanAssistantContent(msg.content)})
+            : msg.content;
+          const shouldRenderPlanCard = !isUser && (meta.decisionType === 'plan' || typeof meta.planId === 'string') && Boolean(parsePlanForDisplay(planContent));
+          const visibleContent = isUser ? repairPortugueseEncoding(msg.content) : cleanAssistantContent(msg.content);
           const workflowSteps = Array.isArray(meta.workflow?.trace) ? meta.workflow.trace : [];
 
           return (
@@ -318,7 +330,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                 )}
 
                 {shouldRenderPlanCard
-                  ? <PlanResponseCard content={msg.content} />
+                  ? <PlanResponseCard content={planContent} />
                   : visibleContent
                     ? <div className="break-words">{visibleContent}</div>
                     : !isUser && !hasProposal
