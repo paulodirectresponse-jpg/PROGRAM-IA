@@ -81,7 +81,7 @@ export interface LLMExecutionResult {
   invalidResponse?: boolean;
   errorReason?: string;
   usage?: {inputTokens:number;outputTokens:number;billedCostUsd:number};
-  diagnostics?: { strategy?: string; attempts?: number; targets?: string[]; failures?: string[] };
+  diagnostics?: { strategy?: string; attempts?: number; targets?: string[]; failures?: string[]; toolRounds?: number; toolExecutions?: number; toolBudgetExhausted?: boolean };
 }
 
 export interface ProviderConnectionTestResult {
