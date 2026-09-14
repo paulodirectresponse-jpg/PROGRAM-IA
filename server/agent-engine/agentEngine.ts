@@ -324,6 +324,13 @@ export class AgentEngine {
           contextSelectedFiles: attemptInput.contextPack?.selectedFiles.map(item=>item.file.path),
           contextOmittedFilesCount: attemptInput.contextPack?.omittedFiles.length,
         });
+        if (agentKey === 'SENTINEL') {
+          recordContextCommitFromStep(attemptInput, 'SENTINEL', attemptInput.contextPack?.scope || 'MICRO', 'Sentinel diagnostic completed', {
+            decisions:[result.replyText || 'diagnostic completed'],
+            changedFiles:attemptInput.contextPack?.selectedFiles.map(item=>item.file.path) || [],
+            nextState:{ status:'diagnosed' },
+          });
+        }
         return { ...result, agentKey, profileKey: profile };
       } catch (e: any) {
         last = e;
