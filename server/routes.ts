@@ -1397,11 +1397,10 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     }
 
     let checkpointCreatedId: string | null = null;
-    let rollbackCheckpointId: string | null = null;
     let validation: Awaited<ReturnType<typeof ValidatorEngine.validate>>|null=null;
 
-    // Every code change is a server-owned proposal. The browser receives a copy for review,
-    // but approval later resolves the immutable files stored with this message.
+    // Every code change is a server-owned proposal. The browser receives a copy for review;
+    // no generated code is ever written to the official workspace before explicit approval.
     if (result.build?.files?.length && !result.proposal && !result.isDemonstrativeFallback && !result.hasErrors) {
       result.proposal = {
         id: `proposal-${crypto.randomUUID()}`,
@@ -1412,55 +1411,16 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       };
     }
 
-    // STRICT SAFETY CHECK:
-    // Fallback mode or invalid responses NEVER apply code or create checkpoints!
-    const canApplyFiles =
-      !result.isDemonstrativeFallback &&
-      !result.hasErrors &&
-      result.decisionType !== 'invalid_response' &&
-      result.decisionType !== 'blocked_no_provider';
-
-    if (canApplyFiles && result.build?.files?.length && (mode === 'build' || mode === 'auto') && !result.proposal) {
-      for (const file of result.build.files) WorkspaceManager.resolveSafePath(projectId, file.path);
-      rollbackCheckpointId=WorkspaceManager.createCheckpoint(projectId, `Antes: ${content.slice(0, 60)}`, 'Ponto de restauraÃ§Ã£o antes da alteraÃ§Ã£o.');
-    }
-    if (canApplyFiles) {
-      if (mode === 'build' && !result.proposal && result.build?.files && result.build.files.length > 0) {
-        for (const file of result.build.files) {
-          if (file.action === 'delete') {
-            WorkspaceManager.deleteFile(projectId, file.path);
-          } else {
-            WorkspaceManager.writeFile(projectId, file.path, file.content);
-          }
-        }
-        checkpointCreatedId = WorkspaceManager.createCheckpoint(
-          projectId,
-          `Build: ${content.slice(0, 30)}...`,
-          result.build.summary || 'AlteraÃ§Ãµes validadas e aplicadas no workspace'
-        );
-      } else if (mode === 'auto' && result.build?.files && !result.proposal) {
-        for (const file of result.build.files) {
-          if (file.action === 'delete') {
-            WorkspaceManager.deleteFile(projectId, file.path);
-          } else {
-            WorkspaceManager.writeFile(projectId, file.path, file.content);
-          }
-        }
-        checkpointCreatedId = WorkspaceManager.createCheckpoint(
-          projectId,
-          `Auto: ${content.slice(0, 30)}...`,
-          result.build.summary || 'AlteraÃ§Ãµes aplicadas automaticamente'
-        );
-      }
-    }
-    if(checkpointCreatedId){
-      validation=await ValidatorEngine.validate({projectId,checkpointId:checkpointCreatedId,runId:execution?.runId,stepId:execution?.stepId,signal:controller.signal});
-      if(validation.status==='failed'&&rollbackCheckpointId){
-        WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);
-        result.hasErrors=true;
-        result.errorMessage='A alteraÃ§Ã£o foi revertida automaticamente porque uma verificaÃ§Ã£o real falhou.';
-        checkpointCreatedId=null;
-      }
+    if(result.proposal?.files?.length && !result.hasErrors && !result.isDemonstrativeFallback){
+      await materializeProposalInSandbox({
+        userId:req.user!.id,
+        projectId,
+        runId:execution?.runId || null,
+        stepId:execution?.stepId || null,
+        proposal:result.proposal,
+        signal:controller.signal,
+      });
+      validation=(result.proposal as any).sandboxValidation || null;
     }
 
     // Save plan if generated
