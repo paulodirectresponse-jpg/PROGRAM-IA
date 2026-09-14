@@ -5,6 +5,8 @@ import { ProgressRetryController, type AttemptEvidence } from '../services/progr
 import { contractPrompt } from './agentContracts.js';
 import { selectAgent } from './agentRegistry.js';
 import { ContextEngineV2, type ContextAgentKey, type ContextPack, type ContextScope } from '../context-engine/contextEngine.js';
+import { DEFAULT_CONTEXT_TOKEN_BUDGETS } from '../context-engine/contextCompiler.js';
+import { RequirementLedgerService } from '../services/requirementLedgerService.js';
 
 type Input = {
   prompt: string;
@@ -42,18 +44,12 @@ function relevantFiles(files: Record<string, string>, previewLimit: number) {
   }));
 }
 
-function reducedRetryFiles(files:Record<string,string>,maxFiles=12){
-  const entries=Object.entries(files);
-  if(entries.length<=maxFiles)return files;
-  return Object.fromEntries(entries
-    .sort(([a],[b])=>{
-      const score=(p:string)=>/package\.json|tsconfig|vite\.config|src\/(app|main|index)|index\.html/i.test(p)?0:/src\//i.test(p)?1:2;
-      return score(a)-score(b);
-    })
-    .slice(0,maxFiles));
+function resolvedRequirementIds(x: Input) {
+  const persisted = x.runId
+    ? RequirementLedgerService.listByRun(x.runId).map(item => item.requirement_key)
+    : [];
+  return [...new Set([...(x.requirementIds || []),...persisted].map(String).filter(Boolean))];
 }
-
-
 function contextScopeFor(agentKey: string, mode: AgentMode, repair?: boolean, filesCount = 0): ContextScope {
   if (agentKey === 'SENTINEL') return repair ? 'LOCAL' : 'MICRO';
   if (agentKey === 'STUDIO') return 'LOCAL';
