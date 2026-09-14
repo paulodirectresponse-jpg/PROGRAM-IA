@@ -995,9 +995,11 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
     const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
     const agentEngineEnabled = process.env.AGENT_ENGINE_ENABLED === 'true';
 
+    let executionRequirementIds: string[] = [];
     if (agentEngineEnabled) {
       execution = RunService.start(req.user!.id, projectId, conversation.id, 'build', .5);
       RequirementLedgerService.attachRun(projectId,planId,execution.runId);
+      executionRequirementIds = workflowRequirementIds(projectId, execution.runId, planId);
     }
 
     let result = !agentEngineEnabled
@@ -1025,6 +1027,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
           runId: execution!.runId,
           stepId: execution!.stepId,
           signal: controller.signal,
+          requirementIds: executionRequirementIds,
           reliableBuild: {
             requestedFiles: filesAffected,
             objective: String(plan.objective || ''),
