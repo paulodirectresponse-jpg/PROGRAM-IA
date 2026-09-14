@@ -1,6 +1,6 @@
 # PROGRAM-IA — Implementation status
 
-Atualizado em 2026-09-14 após conclusão técnica da Fase 2 — Tool-First + Sandbox + Resumability.
+Atualizado em 2026-09-14 após conclusão técnica da Fase 3 — Browser Agent + Quality Gate.
 
 A `main` está em consolidação para release. O CI remoto precisa terminar `success`; `cancelled`, `skipped` ou timeout não contam como verde.
 
@@ -66,12 +66,15 @@ E2E externo real permanece bloqueado por credenciais/autorização.
 
 ### H — Agent Engine
 - SCOUT, STUDIO, FORGE, SENTINEL e SHIP existem;
-- workflow determinístico básico persiste steps;
+- workflow determinístico persiste steps, ContextPacks e evidence;
 - FORGE pode ser executado com `forcedAgentKey`;
-- consistency gate garante `agent_steps.agent_key === model_invocations.agent_key` no step FORGE;
-- SENTINEL registra evidência real em falha de validação definitiva.
+- consistency gate garante `agent_steps.agent_key === model_invocations.agent_key`;
+- falha executável de ValidatorEngine ou Browser Quality Gate gera SENTINEL evidence;
+- repair FORGE é localizado, bounded e revalidado;
+- escalonamento BASE_FREE -> EXPERT_PAID ocorre somente no step bloqueado;
+- browser repair não cria loop infinito.
 
-Ainda faltam correção automática localizada com revalidação, escalonamento pago por step e benchmark real de 30 tarefas.
+Pendência do Agent Engine fora da Fase 3: benchmark real de 30 tarefas com providers reais.
 
 ### I — Limpeza
 - modais antigos removidos;
@@ -125,6 +128,32 @@ Implementado e coberto por suíte:
 Limite explicitamente documentado: o sandbox é uma fronteira lógica de filesystem/processo do PROGRAM-IA, não uma microVM/container de kernel para código deliberadamente hostil.
 
 
+
+### Fase 3 — Browser Agent + Quality Gate — CONCLUÍDA
+
+Implementado e coberto por suíte:
+- `browser.inspect_page` registrado no Tool Registry e executado somente com sandbox;
+- BrowserQualityService usa Playwright/Chromium real;
+- preview estático do candidato é servido localmente sem escrever no workspace oficial;
+- projetos com `dev`/`start` usam runtime isolado sobre o sandbox;
+- inspeção desktop e mobile coleta page errors, console errors, requests/responses ruins e sinais básicos de layout/a11y;
+- requests externos do browser são bloqueados durante o gate;
+- screenshots são persistidos como evidence com hash/bytes, sem expor path interno no payload normal;
+- Migration 007 adiciona `browser_quality_runs` local;
+- APIs autenticadas permitem executar, consultar evidence e obter screenshot somente pelo owner;
+- o apply-proposal executa Browser Quality Gate após ValidatorEngine;
+- falha executável cria SENTINEL real e exatamente um FORGE browser repair;
+- após o repair, ValidatorEngine e browser são reexecutados;
+- segunda falha bloqueia merge;
+- browser indisponível produz `unverified`, não sucesso falso;
+- resultado final combina ValidatorEngine + Browser Quality Gate;
+- fluxo sem Agent Engine também não consegue promover candidato que falha no browser;
+- Phase 2 continua verde sem regressão;
+- Supabase remoto não foi alterado.
+
+Limite deliberado: warnings heurísticos de visual/a11y são evidence, não motivo automático para uma IA redesenhar a interface. A autocorreção é reservada a falhas executáveis para evitar alterações subjetivas sem pedido do usuário.
+
+
 ## Pendências que bloqueiam “release completa”
 
-Pendências fora da Fase 2: Browser Agent/quality loop da Fase 3, benchmark real de 30 tarefas da Fase 4, WebSocket/HMR + E2E de frameworks, E2E de integrações externas e remoções destrutivas somente após reconciliação.
+Pendências após a Fase 3: benchmark real de 30 tarefas da Fase 4, WebSocket/HMR + E2E ampliado de frameworks, E2E de integrações externas e remoções destrutivas somente após reconciliação.
