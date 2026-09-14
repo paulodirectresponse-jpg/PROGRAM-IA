@@ -187,7 +187,7 @@ function issuesForViewport(e:BrowserViewportEvidence):BrowserQualityIssue[]{
   for(const message of e.consoleErrors)issues.push({code:'console_error',severity:fatalConsoleMessage(message)?'error':'warning',message,viewport:e.name,url:e.finalUrl});
   for(const item of e.failedRequests)issues.push({code:'request_failed',severity:['document','script','stylesheet'].includes(item.resourceType)?'error':'warning',message:item.failure,viewport:e.name,url:item.url,resourceType:item.resourceType});
   for(const item of e.badResponses)issues.push({code:'bad_response',severity:item.status>=500||['document','script','stylesheet'].includes(item.resourceType)?'error':'warning',message:`HTTP ${item.status}`,viewport:e.name,url:item.url,resourceType:item.resourceType});
-  if(e.bodyTextChars===0)issues.push({code:'empty_document',severity:'warning',message:'A página renderizou sem conteúdo textual visível.',viewport:e.name,url:e.finalUrl});
+  if(e.bodyTextChars===0)issues.push({code:'empty_document',severity:'error',message:'A página renderizou sem conteúdo textual visível.',viewport:e.name,url:e.finalUrl});
   if(e.horizontalOverflowPx>8)issues.push({code:'horizontal_overflow',severity:'warning',message:`Overflow horizontal de ${e.horizontalOverflowPx}px.`,viewport:e.name,url:e.finalUrl});
   if(e.unlabeledInteractiveCount>0)issues.push({code:'unlabeled_interactive',severity:'warning',message:`${e.unlabeledInteractiveCount} elemento(s) interativo(s) sem nome acessível detectável.`,viewport:e.name,url:e.finalUrl});
   if(e.imagesWithoutAlt>0)issues.push({code:'image_without_alt',severity:'warning',message:`${e.imagesWithoutAlt} imagem(ns) sem atributo alt.`,viewport:e.name,url:e.finalUrl});
