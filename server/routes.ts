@@ -1230,8 +1230,6 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     if(!content||!String(content).trim())return res.status(400).json({error:'Conteúdo da mensagem obrigatório.'});
 
     const selectedMode=mode as AgentMode;
-    const resolvedMode=LLMAdapterService.resolveRequestedMode(String(content),selectedMode);
-    conversationalOnly=selectedMode==='auto'&&resolvedMode==='auto';
     const now=new Date().toISOString();
     conv=db.prepare('SELECT * FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
 
@@ -1240,11 +1238,19 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       db.prepare('INSERT INTO conversations (id,project_id,title,mode,created_at,updated_at) VALUES (?,?,?,?,?,?)')
         .run(convId,projectId,'Conversa Principal',selectedMode,now,now);
       conv={id:convId,mode:selectedMode};
-    }else{
-      // O modo Automático continua visível como Automático; resolvedMode é decisão interna do agente.
-      const conversationMode=selectedMode==='auto'?'auto':resolvedMode;
-      db.prepare('UPDATE conversations SET mode=?,updated_at=? WHERE id=?').run(conversationMode,now,conv.id);
     }
+
+    const priorHistory=db.prepare('SELECT sender,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20').all(conv.id).reverse() as any[];
+    const existingFiles=WorkspaceManager.getAllFilesContent(projectId);
+    const resolvedMode=LLMAdapterService.resolveRequestedMode(String(content),selectedMode,{
+      conversationHistory:priorHistory,
+      existingFiles:Object.keys(existingFiles),
+    });
+    conversationalOnly=selectedMode==='auto'&&resolvedMode==='auto';
+
+    // O modo Automático continua visível como Automático; resolvedMode é decisão interna do agente.
+    const conversationMode=selectedMode==='auto'?'auto':resolvedMode;
+    db.prepare('UPDATE conversations SET mode=?,updated_at=? WHERE id=?').run(conversationMode,now,conv.id);
 
     const agentEngineEnabled=process.env.AGENT_ENGINE_ENABLED==='true';
     if(agentEngineEnabled&&!conversationalOnly)execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,.5);
@@ -1255,8 +1261,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       VALUES (?,?,'user',?,?,?)
     `).run(userMsgId,conv.id,String(content),JSON.stringify({mode:selectedMode,resolvedMode,appliedSkills}),now);
 
-    const history=db.prepare('SELECT sender,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20').all(conv.id).reverse() as any[];
-    const existingFiles=WorkspaceManager.getAllFilesContent(projectId);
+    const history=[...priorHistory,{sender:'user',content:String(content)}];
     const project=db.prepare('SELECT * FROM projects WHERE id=?').get(projectId) as any;
 
     const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oó]rio|remoto)\b|\b(github|reposit[oó]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(String(content));
@@ -1326,6 +1331,9 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
           'MODO CONVERSA. Responda ao usuário diretamente no chat.',
           'Não crie, altere, remova ou proponha arquivos. Não inicie implementação, plano executável, diff, sandbox ou publicação.',
           'Você pode explicar capacidades, responder dúvidas, fazer brainstorming, detalhar ideias, melhorar requisitos e ajudar a pensar antes da implementação.',
+          'Faça a análise interna com profundidade, mas entregue ao usuário uma resposta final compacta e direta.',
+          'A resposta visível deve ter no máximo cerca de 120 palavras, preferindo 2 a 5 parágrafos curtos ou até 5 bullets. Preserve só decisões, recomendações e alertas realmente úteis.',
+          'Não despeje raciocínio técnico, logs, arquitetura interna ou listas longas. Se houver muito conteúdo, sintetize o essencial sem reduzir a qualidade da análise.',
           'Se o usuário quiser construir algo depois, ele fará um novo pedido explícito.',
           '',
           'PEDIDO DO USUÁRIO:',
@@ -1465,6 +1473,12 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     }
 
     let replyText=String(result.replyText||'').trim();
+    if(conversationalOnly&&replyText.length>900){
+      const head=replyText.slice(0,900);
+      const boundary=Math.max(head.lastIndexOf('\n\n'),head.lastIndexOf('. '),head.lastIndexOf('! '),head.lastIndexOf('? '));
+      replyText=(boundary>420?head.slice(0,boundary+1):head).trim();
+      replyText+='\n\nSe quiser, eu detalho a parte mais importante.';
+    }
     if(result.proposal?.files?.length&&resolvedMode==='build'){
       applyResult=await SandboxProposalApplyService.apply({
         userId:req.user!.id,projectId,proposal:result.proposal,runId:execution?.runId||null,planId:savedPlanId,

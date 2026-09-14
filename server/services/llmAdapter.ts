@@ -141,34 +141,53 @@ export class LLMAdapterService {
     return 'build';
   }
 
-  static resolveRequestedMode(prompt: string, selectedMode: AgentMode): AgentMode {
-    // Manual advanced modes are explicit user overrides. In Automático we only
-    // enter an execution workflow when the wording actually asks to mutate software.
-    // Otherwise "auto" remains conversational and the assistant answers in chat.
+  static resolveRequestedMode(
+    prompt: string,
+    selectedMode: AgentMode,
+    context?: {conversationHistory?:Array<{sender:string;content:string}>;existingFiles?:string[]}
+  ): AgentMode {
     if (selectedMode !== 'auto') return selectedMode;
 
-    const text = String(prompt || '').toLowerCase().trim();
+    const normalize=(value:string)=>String(value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+    const text=normalize(prompt);
+    const recent=normalize((context?.conversationHistory||[]).slice(-8).map(item=>item.content).join('\n'));
+    const existingFiles=context?.existingFiles||[];
 
-    const explicitPublish = /\b(publicar|publique|deploy|commit|push|enviar\s+para\s+(?:o\s+)?github|sincronizar\s+com\s+(?:o\s+)?github)\b/i.test(text);
-    if (explicitPublish) return 'publish';
+    const explicitPublish=/\b(publicar|publique|deploy|commit|push|enviar\s+para\s+(?:o\s+)?github|sincronizar\s+com\s+(?:o\s+)?github)\b/.test(text);
+    if(explicitPublish)return 'publish';
 
-    const explicitReview = /\b(revisar|revise|auditar|auditoria|encontrar\s+(?:bugs|erros)|corrigir\s+bugs|analisar\s+(?:o\s+)?c[oó]digo)\b/i.test(text);
-    if (explicitReview) return 'review';
+    const explicitReview=/\b(revisar|revise|auditar|auditoria|encontrar\s+(?:bugs|erros)|corrigir\s+bugs|analisar\s+(?:o\s+)?codigo)\b/.test(text);
+    if(explicitReview)return 'review';
 
-    const explicitPlanOnly =
-      /\b(?:s[oó]|somente|apenas)\b[\s\S]{0,40}\b(?:plano|planejamento|arquitetura|roadmap|especifica[cç][aã]o)\b/i.test(text) ||
-      /\b(?:n[aã]o|nao)\s+(?:implemente|construa|crie|altere|edite|fa[cç]a)\b/i.test(text) ||
-      /\b(?:plano|planejamento|arquitetura|roadmap)\b[\s\S]{0,40}\bsem\s+implementar\b/i.test(text);
-    if (explicitPlanOnly) return 'plan';
+    const explicitPlanOnly=
+      /\b(?:so|somente|apenas)\b[\s\S]{0,45}\b(?:plano|planejamento|arquitetura|roadmap|especificacao)\b/.test(text)||
+      /\b(?:nao)\s+(?:implemente|construa|crie|altere|edite|faca|programe)\b/.test(text)||
+      /\b(?:plano|planejamento|arquitetura|roadmap)\b[\s\S]{0,45}\bsem\s+implementar\b/.test(text);
+    if(explicitPlanOnly)return 'plan';
 
-    const conversationalObject = /\b(ideia|conceito|texto|frase|copy|roteiro|mensagem|descri[cç][aã]o|explica[cç][aã]o|estrat[eé]gia|brainstorm|opini[aã]o)\b/i.test(text);
-    const softwareObject = /\b(site|sistema|app|aplicativo|p[aá]gina|tela|layout|interface|c[oó]digo|arquivo|componente|bot[aã]o|endpoint|api|backend|frontend|banco\s+de\s+dados|fun[cç][aã]o|feature|funcionalidade|bug|erro|css|html|react|typescript|javascript)\b/i.test(text);
-    const strongBuildVerb = /\b(implementar|implemente|construir|construa|programar|programe|codificar|codifique|refatorar|refatore)\b/i.test(text);
-    const mutationVerb = /\b(criar|crie|fa[cç]a|gerar|gere|alterar|altere|mudar|mude|editar|edite|corrigir|corrija|adicionar|adicione|remover|remova|excluir|exclua)\b/i.test(text);
-    const explicitBuild = strongBuildVerb || (mutationVerb && softwareObject) || (mutationVerb && !conversationalObject && /\b(isso|isto|aqui|projeto)\b/i.test(text));
-    if (explicitBuild) return 'build';
+    const softwarePattern=/\b(site|website|landing\s*page|page|sistema|app|aplicativo|pagina|tela|dashboard|painel|layout|interface|codigo|arquivo|componente|botao|endpoint|api|backend|frontend|banco\s+de\s+dados|funcao|feature|funcionalidade|css|html|react|typescript|javascript|checkout|login|formulario|menu|navbar|hero|footer)\b/;
+    const currentSoftware=softwarePattern.test(text);
+    const recentSoftware=softwarePattern.test(recent)||existingFiles.some(path=>/\.(?:tsx?|jsx?|html?|css|vue|svelte)$/i.test(path));
 
-    // Perguntas, ideação, refinamento de requisitos e ajuda textual ficam no chat.
+    const ideation=/\b(me\s+ajude|ajude|detalhe|detalhar|explique|explicar|o\s+que|como\s+(?:voce|eu|isso)|qual|quais|pense|pensar|sugira|sugerir|avalie|avaliar|opine|opinar|brainstorm|ideia|conceito|estrategia|roteiro|copy|texto|mensagem)\b/;
+    const executionAction=/\b(criar|crie|faca|monte|montar|implemente|implementar|construa|construir|programe|programar|codifique|codificar|gere|gerar|adicione|adicionar|inclua|incluir|altere|alterar|mude|mudar|edite|editar|substitua|substituir|remova|remover|exclua|excluir|corrija|corrigir|refatore|refatorar|melhore|melhorar)\b/;
+    const referential=/\b(isso|isto|essa|esse|essas|esses|aquilo|aqui|projeto|pagina|landing|layout|tela|site|sistema)\b/;
+    const desire=/\b(quero|preciso|gostaria|vamos|pode)\b/;
+    const explanation=/\b(entender|explicar|explique|duvida|pergunta|como\s+funciona|o\s+que\s+e|me\s+ajude)\b/;
+
+    // Ideação explícita continua sendo conversa mesmo quando o assunto é software.
+    if(ideation.test(text)&&!executionAction.test(text))return 'auto';
+    const textualObject=/\b(?:ideia|conceito|estrategia|frase|texto|copy|roteiro|mensagem|descricao)\b/.test(text);
+    if(textualObject&&!currentSoftware&&!/(?:implemente|construa|programe|codifique)/.test(text))return 'auto';
+
+    // A decisão usa o pedido atual + o contexto recente. Assim "faça isso" após
+    // discutir uma landing page executa, enquanto "me ajude a detalhar isso" conversa.
+    const contextualExecution=
+      executionAction.test(text)&&(currentSoftware||recentSoftware||referential.test(text))||
+      desire.test(text)&&currentSoftware&&!explanation.test(text);
+
+    if(contextualExecution)return 'build';
+
     return 'auto';
   }
 
