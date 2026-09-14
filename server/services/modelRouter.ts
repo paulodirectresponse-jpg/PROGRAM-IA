@@ -8,6 +8,14 @@ export class ModelRouter {
   static updateCandidate(userId:string,id:string,x:{priority?:number;enabled?:boolean}){const owned=db.prepare(`SELECT c.id FROM model_candidates c JOIN model_profiles p ON p.id=c.profile_id WHERE c.id=? AND p.user_id=?`).get(id,userId);if(!owned)throw Error('Candidato não encontrado.');db.prepare('UPDATE model_candidates SET priority=COALESCE(?,priority),enabled=COALESCE(?,enabled),updated_at=? WHERE id=?').run(x.priority??null,x.enabled===undefined?null:(x.enabled?1:0),new Date().toISOString(),id);return this.listProfiles(userId);}
   static deleteCandidate(userId:string,id:string){const owned=db.prepare(`SELECT c.id FROM model_candidates c JOIN model_profiles p ON p.id=c.profile_id WHERE c.id=? AND p.user_id=?`).get(id,userId);if(!owned)throw Error('Candidato não encontrado.');db.prepare('DELETE FROM model_candidates WHERE id=?').run(id);return this.listProfiles(userId);}
   static candidates(userId:string,key:ProfileKey){return db.prepare(`SELECT c.*,p.max_attempts,p.max_cost_usd FROM model_candidates c JOIN model_profiles p ON p.id=c.profile_id WHERE p.user_id=? AND p.profile_key=? AND p.enabled=1 AND c.enabled=1 AND (c.circuit_open_until IS NULL OR c.circuit_open_until<=?) ORDER BY c.priority`).all(userId,key,new Date().toISOString()) as any[];}
+  static openCandidateCircuit(id:string,minutes=30,healthState='open'){
+    const now=new Date().toISOString();
+    const until=new Date(Date.now()+Math.max(1,minutes)*60*1000).toISOString();
+    const r=db.prepare('SELECT consecutive_failures FROM model_candidates WHERE id=?').get(id) as any;
+    const n=(r?.consecutive_failures||0)+1;
+    db.prepare('UPDATE model_candidates SET consecutive_failures=?,health_state=?,circuit_open_until=?,updated_at=? WHERE id=?')
+      .run(n,healthState,until,now,id);
+  }
   static recordCandidateResult(id:string,ok:boolean,kind?:FailureKind){
     const now=new Date().toISOString();
     if(ok){
