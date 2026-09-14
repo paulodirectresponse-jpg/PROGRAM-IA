@@ -216,6 +216,39 @@ export function initializeDatabase() {
     );
   }
 
+  // Migration 007: Browser Agent + Quality Gate evidence.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS browser_quality_runs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      run_id TEXT,
+      step_id TEXT,
+      sandbox_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      runtime_kind TEXT NOT NULL,
+      framework TEXT,
+      entry_path TEXT,
+      url TEXT,
+      issues_json TEXT NOT NULL DEFAULT '[]',
+      viewports_json TEXT NOT NULL DEFAULT '[]',
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS browser_quality_project_created ON browser_quality_runs(project_id,created_at);
+    CREATE INDEX IF NOT EXISTS browser_quality_run_created ON browser_quality_runs(run_id,created_at);
+    CREATE INDEX IF NOT EXISTS browser_quality_sandbox_created ON browser_quality_runs(sandbox_id,created_at);
+  `);
+  const migration7Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 7').get() as { version: number } | undefined;
+  if (!migration7Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      7,
+      '007_phase3_browser_quality_gate',
+      new Date().toISOString()
+    );
+  }
+
   db.prepare("UPDATE tool_executions SET status='interrupted',error_code=COALESCE(error_code,'worker_interrupted'),finished_at=COALESCE(finished_at,?) WHERE status IN ('queued','running')").run(new Date().toISOString());
   const restartRecoveryAt=new Date().toISOString();
   db.prepare("UPDATE agent_steps SET status='aborted',finished_at=? WHERE status='running' AND run_id IN (SELECT DISTINCT run_id FROM tool_executions WHERE status='interrupted' AND run_id IS NOT NULL)")
