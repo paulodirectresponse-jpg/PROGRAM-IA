@@ -205,28 +205,38 @@ export class RuntimeManager {
   }
 
   static async ensure(projectId: string, signal?: AbortSignal): Promise<RuntimeInfo> {
-    const cwd = WorkspaceManager.getProjectDir(projectId);
-    const pkg = readPackage(cwd);
-    if (!pkg) return { status: 'static', updatedAt: now(), lastError: 'Projeto sem package.json usa preview estático.' };
+    return this.ensureAt(projectId, WorkspaceManager.getProjectDir(projectId), signal, false);
+  }
 
-    const existing = records.get(projectId);
-    if (existing?.status === 'running' && existing.child && !existing.child.killed && existing.port) return this.get(projectId)!;
-    if (existing?.operation) return existing.operation;
+  static async ensureAt(runtimeKey:string,cwd:string,signal?:AbortSignal,sandboxed=true):Promise<RuntimeInfo>{
+    const pkg=readPackage(cwd);
+    if(!pkg)return {status:'static',updatedAt:now(),lastError:'Projeto sem package.json usa preview estático.'};
 
-    const packageManager = detectPackageManager(cwd);
-    const framework = detectFramework(pkg);
-    const operation = this.start(projectId, cwd, pkg, packageManager, framework, signal);
-    records.set(projectId, { status: 'starting', packageManager, framework, updatedAt: now(), operation });
+    const existing=records.get(runtimeKey);
+    if(existing?.status==='running'&&existing.child&&!existing.child.killed&&existing.port)return this.get(runtimeKey)!;
+    if(existing?.operation)return existing.operation;
+
+    const packageManager=detectPackageManager(cwd);
+    const framework=detectFramework(pkg);
+    const operation=this.start(runtimeKey,cwd,pkg,packageManager,framework,signal,sandboxed);
+    records.set(runtimeKey,{status:'starting',packageManager,framework,updatedAt:now(),operation});
     return operation;
   }
 
-  private static async start(projectId: string, cwd: string, pkg: any, packageManager: string, framework: string, signal?: AbortSignal): Promise<RuntimeInfo> {
+  private static async start(projectId: string, cwd: string, pkg: any, packageManager: string, framework: string, signal?: AbortSignal, sandboxed=false): Promise<RuntimeInfo> {
     try {
       const modulesPath = path.join(cwd, 'node_modules');
       if (!fs.existsSync(modulesPath)) {
         const args = installArgs(packageManager, cwd);
         records.set(projectId, { status: 'installing', packageManager, framework, updatedAt: now(), command: `${packageManager} ${args.join(' ')}` });
-        const installed = await runTool(cwd, packageManager, args, INSTALL_TIMEOUT_MS, signal);
+        const installed = await runTool(
+          cwd,
+          packageManager,
+          args,
+          INSTALL_TIMEOUT_MS,
+          signal,
+          sandboxed ? ExecutionWorker.sandboxEnvironment(cwd) : ExecutionWorker.safeEnvironment()
+        );
         if (!installed.ok) throw new Error(`Falha ao instalar dependências: ${installed.output || 'sem saída'}`);
       }
 
@@ -235,7 +245,9 @@ export class RuntimeManager {
         const port = await findPort();
         const args = startArgs(packageManager, pkg, framework, port);
         const { command, prefix } = toolCommand(packageManager);
-        const env = { ...ExecutionWorker.safeEnvironment(), PORT: String(port), HOST: '127.0.0.1', FORGE_PROJECT_RUNTIME: '1' };
+        const env = sandboxed
+          ? ExecutionWorker.sandboxEnvironment(cwd,{PORT:String(port),HOST:'127.0.0.1',FORGE_PROJECT_RUNTIME:'1',FORGE_BROWSER_RUNTIME:'1'})
+          : { ...ExecutionWorker.safeEnvironment(), PORT: String(port), HOST: '127.0.0.1', FORGE_PROJECT_RUNTIME: '1' };
         const child = spawn(command, [...prefix, ...args], { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32', env });
         const record: RuntimeRecord = { status: 'starting', packageManager, framework, command: `${packageManager} ${args.join(' ')}`, port, url: `http://127.0.0.1:${port}`, startedAt: now(), updatedAt: now(), child, output: '' };
         records.set(projectId, record);
