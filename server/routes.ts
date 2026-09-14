@@ -61,6 +61,40 @@ function workflowRequirementIds(projectId: string, runId?: string | null, planId
   return rows.map(row => row.requirement_key).filter(Boolean);
 }
 
+async function materializeProposalInSandbox(input:{
+  userId:string;
+  projectId:string;
+  runId?:string|null;
+  stepId?:string|null;
+  proposal:any;
+  signal?:AbortSignal;
+}) {
+  if(!input.proposal?.id || !Array.isArray(input.proposal?.files) || !input.proposal.files.length) return input.proposal;
+  if(input.proposal.sandboxId) return input.proposal;
+  const sandbox=SandboxManager.create({userId:input.userId,projectId:input.projectId,runId:input.runId||null,stepId:input.stepId||null});
+  const executionIds:string[]=[];
+  for(const file of input.proposal.files){
+    const execution=await ToolExecutionService.execute({
+      userId:input.userId,projectId:input.projectId,runId:input.runId||null,stepId:input.stepId||null,sandboxId:sandbox.id,signal:input.signal,
+    },{
+      toolKey:file.action==='delete'?'workspace.delete_file':'workspace.write_file',
+      input:file.action==='delete'?{path:file.path}:{path:file.path,content:String(file.content||'')},
+      idempotencyKey:`${input.proposal.id}:${file.action}:${file.path}`,
+    });
+    if(execution.executionId)executionIds.push(execution.executionId);
+    if(execution.status!=='succeeded')throw Object.assign(new Error(execution.message||'Falha ao materializar proposta no sandbox.'),{code:execution.errorCode||'sandbox_materialization_failed'});
+  }
+  const validation=await ValidatorEngine.validate({
+    projectId:input.projectId,runId:input.runId||undefined,stepId:input.stepId||undefined,
+    signal:input.signal,sandboxId:sandbox.id,userId:input.userId,
+  });
+  input.proposal.sandboxId=sandbox.id;
+  input.proposal.baseRevision=sandbox.baseHash;
+  input.proposal.sandboxValidation=validation;
+  input.proposal.toolExecutionIds=executionIds;
+  return input.proposal;
+}
+
 function projectRepositoryContext(projectId: string, legacyProject?: any) {
   const repository = db.prepare(
     'SELECT remote_url, default_branch FROM repositories WHERE project_id = ? AND is_connected = 1 ORDER BY created_at DESC LIMIT 1'
