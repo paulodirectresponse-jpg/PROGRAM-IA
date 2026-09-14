@@ -46,11 +46,12 @@ export class ToolExecutionJournal {
     const now=new Date().toISOString();
     db.prepare(`INSERT INTO tool_executions(
       id,run_id,step_id,tool_key,status,duration_ms,summary_json,created_at,
-      project_id,tool_version,error_code,attempt_index,idempotency_key,request_hash,resume_policy,started_at,finished_at
-    ) VALUES(?,?,?,?,?,0,'{}',?,?,?,?,?,?,?,?,?,NULL)`).run(
+      project_id,tool_version,error_code,attempt_index,idempotency_key,request_hash,resume_policy,started_at,finished_at,sandbox_id
+    ) VALUES(?,?,?,?,?,0,'{}',?,?,?,?,?,?,?,?,?,NULL,?)`).run(
       id,input.context.runId || null,input.context.stepId || null,input.definition.key,'running',now,
       input.context.projectId,input.definition.version,null,Math.max(0,Number(input.attemptIndex || 0)),
-      input.idempotencyKey || null,this.requestHash(input.definition.key,input.requestInput),input.definition.resumePolicy,now
+      input.idempotencyKey || null,this.requestHash(input.definition.key,input.requestInput),input.definition.resumePolicy,now,
+      input.context.sandboxId || null
     );
     return this.get(id)!;
   }
