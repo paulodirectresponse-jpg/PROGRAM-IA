@@ -77,6 +77,22 @@ function allowedBrowserRequest(url:string){
 function fatalConsoleMessage(text:string){
   return /\b(?:uncaught|referenceerror|typeerror|syntaxerror)\b|failed to resolve module|hydration failed|error boundary/i.test(text);
 }
+function redactEvidence(value:string){
+  return String(value||'')
+    .replace(/\b(?:sk|ghp|github_pat|xox[baprs])-[-A-Za-z0-9_]{12,}\b/g,'[REDACTED]')
+    .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s]+/ig,'$1[REDACTED]')
+    .replace(/\b(API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY)\s*[:=]\s*[^\s&]+/ig,'$1=[REDACTED]');
+}
+function evidenceUrl(value:string){
+  try{
+    const parsed=new URL(value);
+    parsed.username='';
+    parsed.password='';
+    parsed.search='';
+    parsed.hash='';
+    return redactEvidence(parsed.toString());
+  }catch{return redactEvidence(value);}
+}
 function pushBounded<T>(target:T[],value:T){if(target.length<MAX_EVIDENCE_ITEMS)target.push(value);}
 
 async function openStaticServer(input:{sandboxId:string;userId:string;projectId:string;entryPath:string;signal?:AbortSignal}){
@@ -113,12 +129,12 @@ async function inspectViewport(input:{browser:Browser;baseUrl:string;viewport:{n
   await context.route('**/*',async route=>{
     const request=route.request();
     if(allowedBrowserRequest(request.url()))return route.continue();
-    pushBounded(blockedExternalRequests,request.url());return route.abort('blockedbyclient');
+    pushBounded(blockedExternalRequests,evidenceUrl(request.url()));return route.abort('blockedbyclient');
   });
-  page.on('console',m=>{if(m.type()==='error')pushBounded(consoleErrors,m.text());});
-  page.on('pageerror',e=>pushBounded(pageErrors,String(e?.message||e)));
-  page.on('requestfailed',r=>{if(localBrowserUrl(r.url()))pushBounded(failedRequests,{url:r.url(),resourceType:r.resourceType(),failure:r.failure()?.errorText||'request_failed'});});
-  page.on('response',r=>{if(localBrowserUrl(r.url())&&r.status()>=400)pushBounded(badResponses,{url:r.url(),resourceType:r.request().resourceType(),status:r.status()});});
+  page.on('console',m=>{if(m.type()==='error')pushBounded(consoleErrors,redactEvidence(m.text()));});
+  page.on('pageerror',e=>pushBounded(pageErrors,redactEvidence(String(e?.message||e))));
+  page.on('requestfailed',r=>{if(localBrowserUrl(r.url()))pushBounded(failedRequests,{url:evidenceUrl(r.url()),resourceType:r.resourceType(),failure:redactEvidence(r.failure()?.errorText||'request_failed')});});
+  page.on('response',r=>{if(localBrowserUrl(r.url())&&r.status()>=400)pushBounded(badResponses,{url:evidenceUrl(r.url()),resourceType:r.request().resourceType(),status:r.status()});});
   const abort=()=>{void page.close().catch(()=>undefined);};input.signal?.addEventListener('abort',abort,{once:true});
   try{
     await page.goto(input.baseUrl,{waitUntil:'domcontentloaded',timeout:NAVIGATION_TIMEOUT_MS});
@@ -157,7 +173,7 @@ async function inspectViewport(input:{browser:Browser;baseUrl:string;viewport:{n
     const screenshotPath=safeArtifactPath(input.artifactRunId,input.viewport.name);
     fs.mkdirSync(path.dirname(screenshotPath),{recursive:true});await page.screenshot({path:screenshotPath,fullPage:true});
     const screenshot=fs.readFileSync(screenshotPath);
-    return {name:input.viewport.name,width:input.viewport.width,height:input.viewport.height,finalUrl:page.url(),title:dom.title,
+    return {name:input.viewport.name,width:input.viewport.width,height:input.viewport.height,finalUrl:evidenceUrl(page.url()),title:dom.title,
       bodyTextChars:dom.bodyTextChars,interactiveCount:dom.interactiveCount,unlabeledInteractiveCount:dom.unlabeledInteractiveCount,
       imagesWithoutAlt:dom.imagesWithoutAlt,duplicateIds:dom.duplicateIds,horizontalOverflowPx:dom.horizontalOverflowPx,
       consoleErrors,pageErrors,failedRequests,badResponses,blockedExternalRequests,screenshotPath,
@@ -215,7 +231,7 @@ export class BrowserQualityService {
       }
       try{browser=await chromium.launch({headless:true,args:process.env.FORGE_BROWSER_NO_SANDBOX==='true'?['--no-sandbox']:[]});}
       catch(error:any){
-        const result:BrowserQualityResult={id,status:'unverified',projectId:input.projectId,sandboxId:input.sandboxId,runId:input.runId||null,stepId:input.stepId||null,runtimeKind,framework,entryPath,url,issues:[],viewports:[],durationMs:Date.now()-started,reason:`browser_unavailable:${String(error?.message||error).slice(0,500)}`,createdAt};persist(result,input.userId);return result;
+        const result:BrowserQualityResult={id,status:'unverified',projectId:input.projectId,sandboxId:input.sandboxId,runId:input.runId||null,stepId:input.stepId||null,runtimeKind,framework,entryPath,url,issues:[],viewports:[],durationMs:Date.now()-started,reason:`browser_unavailable:${redactEvidence(String(error?.message||error)).slice(0,500)}`,createdAt};persist(result,input.userId);return result;
       }
       const viewports:BrowserViewportEvidence[]=[];
       for(const viewport of VIEWPORTS){input.signal?.throwIfAborted();viewports.push(await inspectViewport({browser,baseUrl:url,viewport,artifactRunId:id,signal:input.signal}));}
@@ -224,7 +240,7 @@ export class BrowserQualityService {
     }catch(error:any){
       if(input.signal?.aborted||error?.name==='AbortError')throw error;
       const result:BrowserQualityResult={id,status:'failed',projectId:input.projectId,sandboxId:input.sandboxId,runId:input.runId||null,stepId:input.stepId||null,runtimeKind,framework,entryPath,url,
-        issues:[{code:'browser_inspection_failed',severity:'error',message:String(error?.message||error).slice(0,1000)}],viewports:[],durationMs:Date.now()-started,reason:'browser_inspection_failed',createdAt};persist(result,input.userId);return result;
+        issues:[{code:'browser_inspection_failed',severity:'error',message:redactEvidence(String(error?.message||error)).slice(0,1000)}],viewports:[],durationMs:Date.now()-started,reason:'browser_inspection_failed',createdAt};persist(result,input.userId);return result;
     }finally{if(browser)await browser.close().catch(()=>undefined);await stopRuntime().catch(()=>undefined);}
   }
   static get(id:string){const row=db.prepare('SELECT * FROM browser_quality_runs WHERE id=?').get(id) as any;return row?hydrate(row):null;}
