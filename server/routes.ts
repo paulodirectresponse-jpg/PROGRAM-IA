@@ -2470,7 +2470,7 @@ router.post('/benchmarks',requireAuth,(req:Request,res:Response)=>{
     res.status(202).json({run});
   }catch(error:any){
     const code=String(error?.code||'benchmark_start_failed');
-    const status=code==='benchmark_no_real_provider'?409:code==='benchmark_cost_confirmation_required'||code==='benchmark_invalid_budget'||code==='benchmark_invalid_cases'?400:500;
+    const status=code==='benchmark_no_real_provider'||code==='benchmark_already_running'?409:code==='benchmark_cost_confirmation_required'||code==='benchmark_invalid_budget'||code==='benchmark_invalid_cases'?400:500;
     res.status(status).json({error:String(error?.message||error),code});
   }
 });
