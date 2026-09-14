@@ -47,7 +47,7 @@ Ainda falta WebSocket/HMR autenticado e E2E real por framework.
 
 ## 5. Agent Engine
 
-O Context Engine V2 é a fonte primária de contexto para chamadas de agente. Cada step material compila um ContextPack por escopo, requirements e arquivos de foco; o provider recebe uma serialização compacta desse pack, e a invocation registra referência/context telemetry.
+O Context Engine V2 é a fonte primária de contexto para chamadas de agente. Cada step material compila um ContextPack por escopo, requirements recuperados do Ledger e arquivos de foco; o provider recebe os arquivos full/partial descritos pelo pack sem truncamento oculto posterior, e a invocation registra referência/context telemetry.
 
 Papéis:
 - SCOUT — contexto/plano;
