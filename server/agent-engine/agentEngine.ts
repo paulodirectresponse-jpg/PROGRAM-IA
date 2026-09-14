@@ -366,6 +366,24 @@ function recordContextCommitFromStep(x: Input, agentKey: string, scope: ContextS
   });
 }
 
+function buildTargetsFromBrief(existingFiles:Record<string,string>, texts:string[], focusPaths:string[]=[]){
+  const existing=new Set(Object.keys(existingFiles).map(path=>path.replace(/\\/g,'/').replace(/^\.\//,'')));
+  const targets:string[]=[];
+  const add=(path:string)=>{
+    const normalized=String(path||'').replace(/\\/g,'/').replace(/^\.\//,'').replace(/[),.;:]+$/,'').trim();
+    if(!normalized||targets.includes(normalized))return;
+    if(existing.has(normalized))targets.push(normalized);
+    else if(/^[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*\.[a-zA-Z0-9]+$/.test(normalized))targets.push(normalized);
+  };
+  for(const path of focusPaths)add(path);
+  const pathPattern=/\b([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*\.(?:tsx?|jsx?|mjs|cjs|html?|css|json|ya?ml|toml|md))\b/g;
+  for(const text of texts){
+    let match:RegExpExecArray|null;
+    while((match=pathPattern.exec(String(text||'')))!==null)add(match[1]);
+  }
+  return targets.slice(0,8);
+}
+
 function needsStudio(prompt: string, mode: AgentMode) {
   return (mode === 'auto' || mode === 'build') && /interface|layout|design|visual|tela|css|responsiv|premium|ux|ui|dashboard|painel/i.test(prompt);
 }
@@ -498,8 +516,11 @@ export class AgentEngine {
         return { ...result, agentKey, profileKey: profile };
       } catch (e: any) {
         last = e;
-        const operational = /429|5\d\d|timeout|fetch|network|indispon/i.test(String(e.message));
-        const kind: FailureKind = operational ? 'operational' : 'incompatible';
+        const message=String(e?.message||e);
+        const declaredKind=['operational','incompatible','capacity'].includes(String(e?.kind)) ? e.kind as FailureKind : null;
+        const operational = /429|5\d\d|timeout|fetch|network|indispon/i.test(message);
+        const terminalModelMismatch=/invalid[_ -]?model|model[^\n]{0,40}(?:not found|unsupported|does not support)|unsupported[^\n]{0,30}model|incompatible[^\n]{0,30}(?:model|provider)/i.test(message);
+        const kind: FailureKind = declaredKind || (operational ? 'operational' : 'incompatible');
         ModelRouter.recordCandidateResult(candidate.id, false, kind);
         ModelRouter.recordInvocation({
           userId: x.userId,
@@ -525,10 +546,13 @@ export class AgentEngine {
 
         const evidence:AttemptEvidence={
           failureKind:kind,
-          errorMessage:String(e?.message||e),
+          errorMessage:message,
           strategy:retryStrategy,
           progressMarkers:[],
         };
+        if(terminalModelMismatch){
+          throw Object.assign(e,{kind:'incompatible',reason:'candidate_incompatible',terminalCandidate:true});
+        }
         const decision=ProgressRetryController.decide(evidence,attemptHistory,{
           attempt:i+1,
           maxAttempts,
@@ -737,12 +761,27 @@ export class AgentWorkflowEngine extends AgentEngine {
       'BRIEF INTERNO DO SCOUT:\n' + scoutBrief,
       studioGuidance ? 'CRITÉRIOS INTERNOS DO STUDIO:\n' + studioGuidance : '',
     ].filter(Boolean).join('\n\n');
+    const inferredTargets=buildTargetsFromBrief(
+      x.existingFiles,
+      [x.prompt,scoutBrief,studioGuidance],
+      x.focusPaths || []
+    );
     const reliableBuild = x.reliableBuild
       ? {
           ...x.reliableBuild,
-          scopeIn: [x.reliableBuild.scopeIn, studioGuidance].filter(Boolean).join('\n\n'),
+          requestedFiles:[...new Set([...(x.reliableBuild.requestedFiles||[]),...inferredTargets])],
+          scopeIn: [x.reliableBuild.scopeIn, scoutBrief, studioGuidance].filter(Boolean).join('\n\n'),
         }
-      : undefined;
+      : {
+          requestedFiles:inferredTargets,
+          objective:x.prompt,
+          scopeIn:[scoutBrief,studioGuidance].filter(Boolean).join('\n\n'),
+          acceptanceCriteria:[
+            'Atender exatamente à alteração solicitada',
+            'Preservar funcionalidades existentes fora do escopo',
+            'Manter compatibilidade entre os arquivos alterados',
+          ],
+        };
 
     let result: LLMExecutionResult & { agentKey: string; profileKey: ProfileKey };
     try {
