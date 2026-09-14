@@ -100,14 +100,57 @@ async function maybeRunPhase4Benchmark() {
   const preflight=BenchmarkService.preflight(userId,false);
   console.log('PHASE4_AUTORUN_PREFLIGHT',JSON.stringify(preflight));
   if(!preflight.canRun||preflight.baseCandidates.length===0)throw new Error('No BASE_FREE provider available for Phase 4 autorun.');
-  const run=BenchmarkService.start({
+  let run=BenchmarkService.start({
     userId,
     maxCostUsd,
     confirmRealProviderCosts:true,
     allowExpert:false,
   });
-  console.log('PHASE4_AUTORUN_STARTED',JSON.stringify({runId:run?.id||null,totalCases:run?.totalCases||0,maxCostUsd}));
+  if(!run)throw new Error('Phase 4 autorun did not create a benchmark run.');
+  console.log('PHASE4_AUTORUN_STARTED',JSON.stringify({runId:run.id,totalCases:run.totalCases,maxCostUsd}));
+  const terminal=new Set(['completed','failed','interrupted','cancelled','budget_exhausted']);
+  const deadline=Date.now()+45*60*1000;
+  while(!terminal.has(run.status)){
+    if(Date.now()>deadline){
+      BenchmarkService.cancel(run.id,userId);
+      throw new Error('Phase 4 autorun exceeded 45 minute deadline.');
+    }
+    await new Promise(resolve=>setTimeout(resolve,1000));
+    const next=BenchmarkService.get(run.id,userId);
+    if(!next)throw new Error('Phase 4 autorun benchmark run disappeared.');
+    run=next;
+  }
+  const compactCases=(run.cases||[]).map((item:any)=>({
+    caseId:item.caseId,
+    category:item.category,
+    status:item.status,
+    score:item.score,
+    passed:item.passed,
+    providerReal:item.providerReal,
+    profileKey:item.profileKey,
+    providerKey:item.providerKey,
+    modelId:item.modelId,
+    costUsd:item.costUsd,
+    attempts:item.attempts,
+    repairs:item.repairs,
+    expertEscalations:item.expertEscalations,
+    validatorStatus:item.validatorStatus,
+    browserStatus:item.browserStatus,
+    failureReason:item.failureReason,
+    failedChecks:Array.isArray(item.evidence?.checks)
+      ? item.evidence.checks.filter((check:any)=>check?.passed===false).map((check:any)=>({key:check.key,detail:check.detail||null}))
+      : [],
+  }));
+  const gate=BenchmarkService.releaseGate(run.id,userId);
+  console.log('PHASE4_AUTORUN_RESULT',JSON.stringify({
+    id:run.id,status:run.status,totalCases:run.totalCases,completedCases:run.completedCases,
+    passedCases:run.passedCases,failedCases:run.failedCases,maxCostUsd:run.maxCostUsd,
+    spentUsd:run.spentUsd,allowExpert:run.allowExpert,summary:run.summary,
+  }));
+  console.log('PHASE4_AUTORUN_CASES',JSON.stringify(compactCases));
+  console.log('PHASE4_AUTORUN_GATE',JSON.stringify(gate));
 }
+
 
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
