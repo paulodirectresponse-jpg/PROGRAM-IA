@@ -313,3 +313,13 @@ test('phase2 provider can request bounded read tools before final answer', async
     cleanup(env);
   }
 });
+
+
+test('phase2 sandbox migration and tool provenance columns exist', () => {
+  const toolCols=new Set((db.prepare('PRAGMA table_info(tool_executions)').all() as any[]).map(row=>row.name));
+  assert.ok(toolCols.has('sandbox_id'));
+  const sandboxCols=new Set((db.prepare('PRAGMA table_info(sandboxes)').all() as any[]).map(row=>row.name));
+  for(const name of ['project_id','user_id','run_id','status','root_path','base_hash','base_manifest_json','validation_json']) assert.ok(sandboxCols.has(name));
+  const migration=db.prepare('SELECT name FROM schema_migrations WHERE version=6').get() as any;
+  assert.equal(migration?.name,'006_phase2_isolated_sandboxes');
+});
