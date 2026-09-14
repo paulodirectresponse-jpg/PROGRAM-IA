@@ -9,7 +9,7 @@ import { ToolExecutionJournal } from '../server/tooling/toolExecutionJournal.js'
 import { SandboxManager } from '../server/tooling/sandboxManager.js';
 import { SandboxProposalApplyService } from '../server/tooling/sandboxProposalApplyService.js';
 import { ProjectFileIndex } from '../server/context-engine/projectFileIndex.js';
-import { AgentEngine } from '../server/agent-engine/agentEngine.js';
+import { AgentEngine, AgentWorkflowEngine } from '../server/agent-engine/agentEngine.js';
 import { LLMAdapterService } from '../server/services/llmAdapter.js';
 import { RunService } from '../server/services/runService.js';
 
