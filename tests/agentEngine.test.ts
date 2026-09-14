@@ -87,8 +87,9 @@ test('agent workflow persists SCOUT, STUDIO, FORGE and validation handoff for vi
     });
     assert.equal(result.workflow.runId,runId);
     const steps=db.prepare('SELECT agent_key,status,order_index FROM agent_steps WHERE run_id=? ORDER BY order_index').all(runId) as any[];
-    assert.deepEqual(steps.map(s=>s.agent_key),['SCOUT','STUDIO','FORGE']);
-    assert.equal(result.workflow.status,'validating');
+    assert.deepEqual(steps.map(s=>s.agent_key),['SCOUT','STUDIO','FORGE','SENTINEL']);
+    assert.equal(result.workflow.status,'completed');
+    assert.equal(steps.at(-1)?.agent_key,'SENTINEL');
     assert.ok(steps.every(s=>s.status==='completed' || s.status==='failed'));
     assert.equal(steps.filter(s=>s.agent_key==='FORGE').length,1);
   } finally {
