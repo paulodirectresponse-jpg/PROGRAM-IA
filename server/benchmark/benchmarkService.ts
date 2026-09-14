@@ -46,7 +46,8 @@ function benchmarkScreenshotFile(userId:string,benchmarkRunId:string,caseId:stri
 }
 function persistBrowserEvidence(userId:string,benchmarkRunId:string,caseId:string,browserQuality:any){
   if(!browserQuality)return null;
-  const viewports=Array.isArray(browserQuality.viewports)?browserQuality.viewports.map((viewport:any)=>{
+  const source=browserQuality?.id?BrowserQualityService.get(String(browserQuality.id))||browserQuality:browserQuality;
+  const viewports=Array.isArray(source.viewports)?source.viewports.map((viewport:any)=>{
     const {screenshotPath,...publicViewport}=viewport||{};
     let screenshotAvailable=false;
     if(screenshotPath&&fs.existsSync(screenshotPath)){
@@ -60,17 +61,17 @@ function persistBrowserEvidence(userId:string,benchmarkRunId:string,caseId:strin
     return {...publicViewport,screenshotAvailable};
   }):[];
   return {
-    id:browserQuality.id||null,
-    status:browserQuality.status||null,
-    runtimeKind:browserQuality.runtimeKind||null,
-    framework:browserQuality.framework||null,
-    entryPath:browserQuality.entryPath||null,
-    url:browserQuality.url||null,
-    issues:Array.isArray(browserQuality.issues)?browserQuality.issues:[],
+    id:source.id||null,
+    status:source.status||null,
+    runtimeKind:source.runtimeKind||null,
+    framework:source.framework||null,
+    entryPath:source.entryPath||null,
+    url:source.url||null,
+    issues:Array.isArray(source.issues)?source.issues:[],
     viewports,
-    durationMs:Number(browserQuality.durationMs||0),
-    reason:browserQuality.reason||null,
-    createdAt:browserQuality.createdAt||null,
+    durationMs:Number(source.durationMs||0),
+    reason:source.reason||null,
+    createdAt:source.createdAt||null,
   };
 }
 function benchmarkModelOutputExcerpt(definition:BenchmarkCaseDefinition,result:any){
