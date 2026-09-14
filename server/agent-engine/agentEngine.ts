@@ -7,6 +7,7 @@ import { selectAgent } from './agentRegistry.js';
 import { ContextEngineV2, type ContextAgentKey, type ContextPack, type ContextScope } from '../context-engine/contextEngine.js';
 import { DEFAULT_CONTEXT_TOKEN_BUDGETS } from '../context-engine/contextCompiler.js';
 import { RequirementLedgerService } from '../services/requirementLedgerService.js';
+import { ProposalSandboxService } from '../tooling/proposalSandboxService.js';
 
 type Input = {
   prompt: string;
