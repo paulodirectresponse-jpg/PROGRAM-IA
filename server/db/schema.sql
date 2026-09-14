@@ -270,6 +270,29 @@ CREATE TABLE IF NOT EXISTS sandboxes (
 CREATE INDEX IF NOT EXISTS sandboxes_project_status ON sandboxes(project_id,status);
 CREATE INDEX IF NOT EXISTS sandboxes_run ON sandboxes(run_id,created_at);
 
+-- Phase 3: Browser Agent + Quality Gate
+CREATE TABLE IF NOT EXISTS browser_quality_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  run_id TEXT,
+  step_id TEXT,
+  sandbox_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  runtime_kind TEXT NOT NULL,
+  framework TEXT,
+  entry_path TEXT,
+  url TEXT,
+  issues_json TEXT NOT NULL DEFAULT '[]',
+  viewports_json TEXT NOT NULL DEFAULT '[]',
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  reason TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS browser_quality_project_created ON browser_quality_runs(project_id,created_at);
+CREATE INDEX IF NOT EXISTS browser_quality_run_created ON browser_quality_runs(run_id,created_at);
+CREATE INDEX IF NOT EXISTS browser_quality_sandbox_created ON browser_quality_runs(sandbox_id,created_at);
+
 -- 12. skills
 CREATE TABLE IF NOT EXISTS skills (
   id TEXT PRIMARY KEY,
