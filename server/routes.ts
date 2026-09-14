@@ -32,6 +32,42 @@ export const router = express.Router();
 const activeProjects = new Set<string>();
 const activeProjectControllers = new Map<string, AbortController>();
 
+function stripInternalAgentProtocol(value: unknown): string {
+  return String(value || '')
+    .replace(/<\|\s*DSML\s*\|\s*tool_calls\s*>[\s\S]*?(?:<\/\|\s*DSML\s*\|\s*tool_calls\s*>|$)/gi, '')
+    .replace(/<\|\s*DSML\s*\|\s*invoke[^>]*>[\s\S]*?(?:<\/\|\s*DSML\s*\|\s*invoke\s*>|$)/gi, '')
+    .replace(/<\/?\|\s*DSML\s*\|[^>]*>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function userFacingAgentReply(result: any, fallback = 'Concluí esta etapa.'): string {
+  const cleaned = stripInternalAgentProtocol(result?.replyText);
+  const structuredDump = /^\s*[\[{]/.test(cleaned)
+    || /"(?:type|files|plan|task_graph|requirements)"\s*:/.test(cleaned);
+
+  if (result?.hasErrors || result?.invalidResponse) {
+    return String(result?.errorMessage || result?.errorReason || cleaned || 'Não consegui concluir esta etapa com segurança.').trim();
+  }
+
+  if (result?.plan) {
+    const objective = String(result.plan.objective || '').trim();
+    return objective
+      ? `Preparei um plano para ${objective}. Revise os pontos abaixo e, quando estiver de acordo, aprove para eu seguir com a implementação.`
+      : 'Preparei o plano técnico. Revise os pontos abaixo e aprove quando estiver de acordo para eu seguir.';
+  }
+
+  if (result?.build || result?.proposal) {
+    const summary = String(result?.build?.summary || result?.proposal?.summary || '').trim();
+    const explanation = String(result?.build?.explanation || '').trim();
+    const conversational = [summary, explanation].filter(Boolean).join('\n\n');
+    if (conversational) return conversational;
+  }
+
+  if (cleaned && !structuredDump) return cleaned;
+  return fallback;
+}
+
 function ensureUserWorkspace(userId: string) {
   const id = `ws-${userId}`;
   const existing = db.prepare('SELECT id FROM workspaces WHERE id = ?').get(id) as { id: string } | undefined;
@@ -1146,6 +1182,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
 
     const now = new Date().toISOString();
     const agentMsgId = `msg-agent-${Date.now()}`;
+    const userFacingReply = userFacingAgentReply(result, 'A construção está pronta para sua revisão. Confira a proposta antes de aplicar.');
     const metadata = {
       mode: 'build',
       decisionType: result.decisionType,
@@ -1173,7 +1210,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
       db.prepare(`
         INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
         VALUES (?, ?, 'agent', ?, ?, ?)
-      `).run(agentMsgId, conversation.id, result.replyText, JSON.stringify(metadata), now);
+      `).run(agentMsgId, conversation.id, userFacingReply, JSON.stringify(metadata), now);
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
@@ -1189,7 +1226,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
         id: agentMsgId,
         conversation_id: conversation.id,
         sender: 'agent',
-        content: result.replyText,
+        content: userFacingReply,
         metadata,
         created_at: now,
       },
@@ -1484,6 +1521,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       checkpointId: checkpointCreatedId,
       filesAffected: result.build?.files?.map((f) => f.path) || result.plan?.files_affected || [],
       decisionType: result.decisionType,
+      plan: result.plan,
       proposal: result.proposal,
       hasErrors: result.hasErrors,
       invalidResponse: result.invalidResponse,
@@ -1497,10 +1535,11 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       buildDiagnostics: result.diagnostics,
     };
 
+    const userFacingReply = userFacingAgentReply(result);
     db.prepare(`
       INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
       VALUES (?, ?, 'agent', ?, ?, ?)
-    `).run(agentMsgId, conv.id, result.replyText, JSON.stringify(metadata), now);
+    `).run(agentMsgId, conv.id, userFacingReply, JSON.stringify(metadata), now);
 
     if (execution) {
       if (result.proposal?.status === 'pending' && !result.hasErrors) RunService.waitForApproval(execution.runId);
@@ -1511,7 +1550,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       agentMessage: {
         id: agentMsgId,
         sender: 'agent',
-        content: result.replyText,
+        content: userFacingReply,
         metadata,
         created_at: now,
       },
@@ -1670,10 +1709,11 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
       profileKey:result.profileKey,
       workflow:{runId:run.id,status:'waiting_approval',steps:RunService.trace(run.id).map((s:any)=>s.id),trace:RunService.trace(run.id),continued:true},
     };
+    const userFacingReply=userFacingAgentReply(result,'Continuação concluída. Revise a proposta antes de aplicar.');
     db.prepare(`INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)`)
-      .run(msgId, run.conversation_id, result.replyText || 'Continuação concluída. Revise a proposta antes de aplicar.', JSON.stringify(metadata), now);
+      .run(msgId, run.conversation_id, userFacingReply, JSON.stringify(metadata), now);
 
-    return res.json({success:true,runId:run.id,proposal:result.proposal,agentMessage:{id:msgId,conversation_id:run.conversation_id,sender:'agent',content:result.replyText || 'Continuação concluída.',metadata,created_at:now},trace:RunService.trace(run.id)});
+    return res.json({success:true,runId:run.id,proposal:result.proposal,agentMessage:{id:msgId,conversation_id:run.conversation_id,sender:'agent',content:userFacingReply,metadata,created_at:now},trace:RunService.trace(run.id)});
   } catch (err:any) {
     const lastStep = (RunService.trace(run.id) as any[]).slice(-1)[0];
     if (lastStep?.status === 'running') RunService.finishStep(lastStep.id, controller.signal.aborted ? 'aborted' : 'failed', {error:String(err?.message||err)});
