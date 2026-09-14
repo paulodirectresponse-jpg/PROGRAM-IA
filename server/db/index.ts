@@ -335,6 +335,17 @@ export function initializeDatabase() {
     );
   }
 
+  // Migration 010: prevent concurrent paid benchmark runs per user.
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS benchmark_runs_one_active_user ON benchmark_runs(user_id) WHERE status IN ('queued','running')");
+  const migration10Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 10').get() as { version: number } | undefined;
+  if (!migration10Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      10,
+      '010_phase4_single_active_benchmark_per_user',
+      new Date().toISOString()
+    );
+  }
+
   db.prepare("UPDATE tool_executions SET status='interrupted',error_code=COALESCE(error_code,'worker_interrupted'),finished_at=COALESCE(finished_at,?) WHERE status IN ('queued','running')").run(new Date().toISOString());
   const restartRecoveryAt=new Date().toISOString();
   db.prepare("UPDATE agent_steps SET status='aborted',finished_at=? WHERE status='running' AND run_id IN (SELECT DISTINCT run_id FROM tool_executions WHERE status='interrupted' AND run_id IS NOT NULL)")
