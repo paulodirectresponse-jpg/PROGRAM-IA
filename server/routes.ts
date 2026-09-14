@@ -1501,145 +1501,116 @@ router.post('/conversations/:projectId/abort', requireAuth, requireProjectOwner,
 });
 
 router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res: Response) => {
-  const run = db.prepare('SELECT * FROM agent_runs WHERE id=? AND user_id=?').get(req.params.runId, req.user!.id) as any;
-  if (!run) return res.status(404).json({ error: 'Execução não encontrada.' });
-  if (!['failed','aborted'].includes(run.status)) {
-    return res.status(409).json({ error: `Esta execução não pode ser continuada no estado atual (${run.status}).` });
-  }
-  if (!['build','auto'].includes(run.mode)) {
-    return res.status(409).json({ error: 'Continuação por etapa está disponível apenas para fluxos de construção.' });
-  }
-  if (activeProjects.has(run.project_id)) {
-    return res.status(409).json({ error: 'Já há uma execução ativa neste projeto.' });
-  }
+  const run=db.prepare('SELECT * FROM agent_runs WHERE id=? AND user_id=?').get(req.params.runId,req.user!.id) as any;
+  if(!run)return res.status(404).json({error:'Execução não encontrada.'});
+  if(!['failed','aborted'].includes(run.status))return res.status(409).json({error:`Esta execução não pode ser continuada no estado atual (${run.status}).`});
+  if(!['build','auto'].includes(run.mode))return res.status(409).json({error:'Continuação por etapa está disponível apenas para fluxos de construção.'});
+  if(activeProjects.has(run.project_id))return res.status(409).json({error:'Já há uma execução ativa neste projeto.'});
 
-  const trace = RunService.trace(run.id) as any[];
-  const scout = [...trace].reverse().find(step => step.agent_key === 'SCOUT' && step.status === 'completed');
-  if (!scout?.context?.objective) {
-    return res.status(409).json({ error: 'Esta execução não possui contexto persistido suficiente para continuar sem recomeçar.' });
-  }
-  const studio = [...trace].reverse().find(step => step.agent_key === 'STUDIO' && step.status === 'completed');
-  const objective = String(scout.context.objective || '').trim();
-  const scoutBrief = String(scout.context.brief || '').trim();
-  const studioGuidance = String(studio?.context?.guidance || '').trim();
+  const trace=RunService.trace(run.id) as any[];
+  const scout=[...trace].reverse().find(step=>step.agent_key==='SCOUT'&&step.status==='completed');
+  if(!scout?.context?.objective)return res.status(409).json({error:'Esta execução não possui contexto persistido suficiente para continuar sem recomeçar.'});
+  const studio=[...trace].reverse().find(step=>step.agent_key==='STUDIO'&&step.status==='completed');
+  const objective=String(scout.context.objective||'').trim();
+  const scoutBrief=String(scout.context.brief||'').trim();
+  const studioGuidance=String(studio?.context?.guidance||'').trim();
 
   activeProjects.add(run.project_id);
-  const controller = new AbortController();
-  activeProjectControllers.set(run.project_id, controller);
+  const controller=new AbortController();
+  activeProjectControllers.set(run.project_id,controller);
   RunService.resume(run.id);
+  let agentMessagePersisted=false;
+  res.status(202).json({success:true,accepted:true,runId:run.id});
 
-  try {
+  try{
     const interruptedTools=ToolExecutionJournal.recoverable(run.id);
     let recoverySandboxId:string|null=null;
     for(const execution of [...interruptedTools].reverse()){
       if(execution.sandboxId){
-        try{ SandboxManager.assertAccess(execution.sandboxId,req.user!.id,run.project_id); recoverySandboxId=execution.sandboxId; break; }catch{}
+        try{SandboxManager.assertAccess(execution.sandboxId,req.user!.id,run.project_id);recoverySandboxId=execution.sandboxId;break;}catch{}
       }
     }
-    const existingFiles = recoverySandboxId ? SandboxManager.getAllFilesContent(recoverySandboxId,req.user!.id,run.project_id) : WorkspaceManager.getAllFilesContent(run.project_id);
-    const continuedRequirementIds = workflowRequirementIds(run.project_id, run.id, null);
-    const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id=? ORDER BY created_at DESC, rowid DESC LIMIT 20')
-      .all(run.conversation_id).reverse() as any[];
-    const forge = RunService.createStep(
-      run.id,
-      'FORGE',
-      'Continuar proposta de código a partir do progresso salvo',
-      undefined,
-      'local',
-      RunService.context('local', {
-        objective,
-        acceptanceCriteria: ['Continuar sem repetir etapas já concluídas', 'Gerar alteração concreta e revisável'],
-        snippets: [{source:'ContextEngineV2',fileCount:Object.keys(existingFiles).length,recoverySandboxId}],
-        previousAttempt: 'SCOUT/STUDIO preservados; retomada iniciada no FORGE.',
-        constraints: ['Não refazer SCOUT/STUDIO concluídos', 'Não aplicar definitivamente antes da aprovação'],
+    const existingFiles=recoverySandboxId
+      ? SandboxManager.getAllFilesContent(recoverySandboxId,req.user!.id,run.project_id)
+      : WorkspaceManager.getAllFilesContent(run.project_id);
+    const continuedRequirementIds=workflowRequirementIds(run.project_id,run.id,null);
+    const history=db.prepare('SELECT sender,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20').all(run.conversation_id).reverse() as any[];
+    const forge=RunService.createStep(
+      run.id,'FORGE','Continuar implementação a partir do progresso salvo',undefined,'local',
+      RunService.context('local',{
+        objective,acceptanceCriteria:['Continuar sem repetir etapas já concluídas','Entregar alteração funcional e revisada'],
+        snippets:[{source:'ContextEngineV2',fileCount:Object.keys(existingFiles).length,recoverySandboxId}],
+        previousAttempt:'SCOUT/STUDIO preservados; retomada iniciada no FORGE.',
+        constraints:['Não refazer SCOUT/STUDIO concluídos','Validar e revisar antes do merge final'],
       })
     );
-
-    const prompt = [
+    const prompt=[
       objective,
-      scoutBrief ? 'BRIEF SALVO DO SCOUT:\n' + scoutBrief : '',
-      studioGuidance ? 'CRITÉRIOS SALVOS DO STUDIO:\n' + studioGuidance : '',
-      'CONTINUAÇÃO: retome a partir do FORGE. Não repita as etapas já concluídas.',
+      scoutBrief?'BRIEF SALVO DO SCOUT:\n'+scoutBrief:'',
+      studioGuidance?'CRITÉRIOS SALVOS DO STUDIO:\n'+studioGuidance:'',
+      'CONTINUAÇÃO: retome a partir do FORGE. Não repita etapas concluídas. Entregue a implementação para validação e revisão automática.',
     ].filter(Boolean).join('\n\n');
 
-    let result = await AgentEngine.execute({
-      prompt,
-      mode: 'build',
-      projectId: run.project_id,
-      existingFiles,
-      appliedSkills: [],
-      conversationHistory: history,
-      userId: req.user!.id,
-      runId: run.id,
-      stepId: forge,
-      signal: controller.signal,
-      requirementIds: continuedRequirementIds,
-      toolSandboxId: recoverySandboxId || undefined,
-      skipContextSync:Boolean(recoverySandboxId),
-    }, { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true });
+    let result=await AgentEngine.execute({
+      prompt,mode:'build',projectId:run.project_id,existingFiles,appliedSkills:[],conversationHistory:history,
+      userId:req.user!.id,runId:run.id,stepId:forge,signal:controller.signal,requirementIds:continuedRequirementIds,
+      toolSandboxId:recoverySandboxId||undefined,skipContextSync:Boolean(recoverySandboxId),
+    },{profile:'BASE_FREE',forcedAgentKey:'FORGE',allowExpertEscalation:true});
 
-    RunService.finishStep(forge, result.hasErrors ? 'failed' : 'completed', {
-      continuedFromRunId: run.id,
-      providerUsed: result.providerUsed,
-      modelUsed: result.modelUsed,
-      profileKey: result.profileKey,
-      files: result.build?.files?.map((file:any)=>file.path) || result.proposal?.files?.map((file:any)=>file.path) || [],
+    RunService.finishStep(forge,result.hasErrors?'failed':'completed',{
+      continuedFromRunId:run.id,providerUsed:result.providerUsed,modelUsed:result.modelUsed,profileKey:result.profileKey,
+      files:result.build?.files?.map((file:any)=>file.path)||result.proposal?.files?.map((file:any)=>file.path)||[],
     });
 
-    if (result.build?.files?.length && !result.proposal && !result.isDemonstrativeFallback && !result.hasErrors) {
-      result.proposal = {
-        id: `proposal-${crypto.randomUUID()}`,
-        summary: result.build.summary || 'Continuação da construção',
-        requiresConfirmation: true,
-        files: result.build.files,
-        status: 'pending',
-      };
+    if(result.build?.files?.length&&!result.proposal&&!result.isDemonstrativeFallback&&!result.hasErrors){
+      result.proposal={id:`proposal-${crypto.randomUUID()}`,summary:result.build.summary||'Continuação da construção',requiresConfirmation:false,files:result.build.files,status:'pending'};
     }
-
-    if(result.proposal?.files?.length&&!result.hasErrors){
+    if(result.hasErrors||result.invalidResponse||!result.proposal?.files?.length){
+      throw new Error(result.errorMessage||result.errorReason||'A continuação não produziu uma implementação válida.');
+    }
+    if(!result.proposal.sandboxId){
       await materializeProposalInSandbox({userId:req.user!.id,projectId:run.project_id,runId:run.id,stepId:forge,proposal:result.proposal,signal:controller.signal});
     }
 
-    if (result.hasErrors || result.invalidResponse || !result.proposal?.files?.length) {
-      const sentinel = RunService.createStep(run.id,'SENTINEL','Diagnosticar falha após continuação',undefined,'micro',
-        RunService.context('micro',{objective:'Diagnosticar a falha da continuação',errors:[result.errorMessage || result.errorReason || 'Resposta inválida']}));
-      RunService.finishStep(sentinel,'completed');
-      RunService.finish(run.id, forge, 'failed');
-      return res.status(422).json({ success:false, error: result.errorMessage || result.errorReason || 'A continuação não produziu uma proposta válida.', runId:run.id, trace:RunService.trace(run.id) });
-    }
-
-    const sentinel = RunService.createStep(run.id,'SENTINEL','Aguardar aplicação para executar quality gates',undefined,'micro',{
-      status:'pending_user_apply', validator:'ValidatorEngine', continued:true,
+    const applied=await SandboxProposalApplyService.apply({
+      userId:req.user!.id,projectId:run.project_id,proposal:result.proposal,runId:run.id,
+      summary:result.proposal.summary||'Continuação da construção',originalRequest:objective,signal:controller.signal,
     });
-    RunService.finishStep(sentinel,'completed');
-    RunService.waitForApproval(run.id);
+    if(!applied.success)throw Object.assign(new Error(applied.error||'A continuação não passou pela revisão final.'),{applyResult:applied});
+    result.proposal.status='applied';
 
-    const now = new Date().toISOString();
-    const msgId = `msg-agent-${Date.now()}`;
-    const metadata = {
-      mode:'build',
-      decisionType:result.decisionType,
-      providerUsed:result.providerUsed,
-      modelUsed:result.modelUsed,
-      proposal:result.proposal,
-      filesAffected:result.proposal.files.map((file:any)=>file.path),
-      hasErrors:false,
-      runId:run.id,
-      executionType:'agent_engine_continuation',
-      agentKey:'FORGE',
-      profileKey:result.profileKey,
-      workflow:{runId:run.id,status:'waiting_approval',steps:RunService.trace(run.id).map((s:any)=>s.id),trace:RunService.trace(run.id),continued:true},
+    const changedCount=Array.isArray(applied.changedFiles)?applied.changedFiles.length:result.proposal.files.length;
+    const summary=String(result.proposal.summary||'A continuação foi concluída').replace(/[.\s]+$/,'');
+    const replyText=`Pronto. ${summary}. Retomei do ponto salvo, revisei a implementação e atualizei o preview${changedCount?` em ${changedCount} arquivo(s)`:''}.`;
+    const now=new Date().toISOString();
+    const msgId=`msg-agent-${Date.now()}`;
+    const metadata:any={
+      mode:'build',decisionType:result.decisionType,providerUsed:result.providerUsed,modelUsed:result.modelUsed,
+      proposal:result.proposal,filesAffected:applied.changedFiles||result.proposal.files.map((file:any)=>file.path),hasErrors:false,
+      runId:run.id,executionType:'agent_engine_continuation',agentKey:'FORGE',profileKey:result.profileKey,
+      workflow:{runId:run.id,status:applied.needsVerification?'needs_verification':'completed',steps:RunService.trace(run.id).map((step:any)=>step.id),trace:RunService.trace(run.id),continued:true},
+      validation:applied.validation,browserQuality:applied.browserQuality,browserRepair:applied.browserRepair,sentinelReview:applied.sentinelReview,
+      checkpointId:applied.checkpointId,technicalReply:result.replyText,autoApplied:true,
     };
     db.prepare(`INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)`)
-      .run(msgId, run.conversation_id, result.replyText || 'Continuação concluída. Revise a proposta antes de aplicar.', JSON.stringify(metadata), now);
-
-    return res.json({success:true,runId:run.id,proposal:result.proposal,agentMessage:{id:msgId,conversation_id:run.conversation_id,sender:'agent',content:result.replyText || 'Continuação concluída.',metadata,created_at:now},trace:RunService.trace(run.id)});
-  } catch (err:any) {
-    const lastStep = (RunService.trace(run.id) as any[]).slice(-1)[0];
-    if (lastStep?.status === 'running') RunService.finishStep(lastStep.id, controller.signal.aborted ? 'aborted' : 'failed', {error:String(err?.message||err)});
-    RunService.finish(run.id, lastStep?.id || '', controller.signal.aborted ? 'aborted' : 'failed');
-    return res.status(controller.signal.aborted ? 499 : 500).json({error:controller.signal.aborted?'Continuação cancelada.':String(err?.message||err||'Falha ao continuar a execução.'),runId:run.id,trace:RunService.trace(run.id)});
-  } finally {
+      .run(msgId,run.conversation_id,replyText,JSON.stringify(metadata),now);
+    agentMessagePersisted=true;
+  }catch(err:any){
+    const lastStep=(RunService.trace(run.id) as any[]).slice(-1)[0];
+    if(lastStep?.status==='running')RunService.finishStep(lastStep.id,controller.signal.aborted?'aborted':'failed',{error:String(err?.message||err)});
+    try{RunService.finish(run.id,lastStep?.id||'',controller.signal.aborted?'aborted':'failed');}catch{}
+    if(!agentMessagePersisted){
+      const now=new Date().toISOString();
+      const msgId=`msg-agent-${Date.now()}`;
+      const detail=String(err?.message||err||'Falha ao continuar a execução.');
+      const content=controller.signal.aborted?'A continuação foi interrompida. O progresso concluído continua salvo.':`Não consegui concluir a retomada com segurança. ${detail}`;
+      const metadata={mode:'build',hasErrors:true,errorMessage:detail,runId:run.id,
+        workflow:{runId:run.id,status:controller.signal.aborted?'aborted':'failed',trace:RunService.trace(run.id)},
+        validation:err?.applyResult?.validation||null,browserQuality:err?.applyResult?.browserQuality||null,sentinelReview:err?.applyResult?.sentinelReview||null};
+      db.prepare(`INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)`)
+        .run(msgId,run.conversation_id,content,JSON.stringify(metadata),now);
+    }
+  }finally{
     activeProjects.delete(run.project_id);
     activeProjectControllers.delete(run.project_id);
   }
