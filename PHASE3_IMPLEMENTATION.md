@@ -109,3 +109,17 @@ Fluxos sem run também passam pelo browser gate; em falha executável, a propost
 - WebSocket/HMR autenticado do preview de produto;
 - E2E externos que dependem de credenciais reais;
 - isolamento adversarial de kernel/container/microVM.
+
+
+## Production / Railway hardening
+
+A conclusão da Fase 3 também fecha dois riscos de produção:
+
+- `playwright` é dependência de runtime, não somente devDependency;
+- a imagem de produção usa `node:24-bookworm` e instala Chromium + dependências do sistema com `playwright install --with-deps chromium`;
+- o Dockerfile é smoke-tested em PR: build da imagem, boot real do servidor e `GET /api/health`;
+- o bootstrap SQLite só executa `schema.sql` em banco realmente novo. Bancos persistentes existentes passam apenas pelas migrations incrementais;
+- isso evita o crash introduzido na Fase 2 em bancos legados, onde o snapshot de schema podia tentar criar índices de `tool_executions` usando colunas ainda não adicionadas pela Migration 005/006;
+- `Phase2RecoveryService.recoverStartup()` passou a ser best-effort: uma recuperação de sandbox inconsistente não derruba o processo principal depois de uma migration válida.
+
+Esses hardenings preservam o volume existente e não exigem reset destrutivo do banco.
