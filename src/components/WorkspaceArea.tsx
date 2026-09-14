@@ -433,7 +433,7 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
   const previewUrl = previewProposalId?`/api/preview-proposal/${project.id}/${previewProposalId}/${previewInfo.entryPath || 'index.html'}?t=${previewKey}`:`/api/preview/${project.id}/${previewInfo.entryPath || 'index.html'}?t=${previewKey}`;
 
   return (
-    <main id="workspace-main" className="flex-1 flex flex-col h-full bg-slate-950 overflow-hidden select-text">
+    <main id="workspace-main" className="min-w-0 flex-1 flex flex-col h-full bg-slate-950 overflow-hidden select-text">
       {/* Tab Navigation Header */}
       <div className="h-11 border-b border-slate-800/80 bg-slate-900/30 px-4 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-1 h-full">
@@ -646,9 +646,9 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
 
         {/* TAB 2: CODE & DIFF */}
         {activeTab === 'code' && (
-          <div className="flex h-full">
+          <div className="flex h-full min-w-0 overflow-hidden">
             {/* File selector sub-sidebar */}
-            <div className="w-56 border-r border-slate-800/80 bg-slate-900/40 p-3 flex flex-col gap-2">
+            <div className="w-56 shrink-0 border-r border-slate-800/80 bg-slate-900/40 p-3 flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-semibold uppercase font-mono text-slate-400">Arquivos</span>
                 <button
@@ -691,7 +691,7 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
             </div>
 
             {/* Code Editor */}
-            <div className="flex-1 flex flex-col bg-slate-950">
+            <div className="min-w-0 flex-1 flex flex-col bg-slate-950">
               <div className="h-10 border-b border-slate-800 px-4 flex items-center justify-between bg-slate-900/30">
                 <span className="text-xs font-mono text-slate-300">{selectedFilePath}</span>
                 <div className="flex items-center gap-2">
@@ -715,7 +715,8 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
                 id="code-editor-textarea"
                 value={fileContent}
                 onChange={(e) => setFileContent(e.target.value)}
-                className="flex-1 p-4 bg-slate-950 text-slate-200 font-mono text-xs resize-none focus:outline-none custom-scrollbar leading-relaxed"
+                className="min-w-0 flex-1 overflow-auto p-4 bg-slate-950 text-slate-200 font-mono text-xs resize-none focus:outline-none custom-scrollbar leading-relaxed selection:bg-cyan-700/70 selection:text-white"
+                style={{ color:'#e2e8f0', caretColor:'#22d3ee', WebkitTextFillColor:'#e2e8f0' }}
                 spellCheck={false}
               />
             </div>
