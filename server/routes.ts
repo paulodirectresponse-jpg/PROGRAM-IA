@@ -560,19 +560,24 @@ router.post('/projects/:projectId/context/compile', requireAuth, requireProjectO
     if (!task?.objective || typeof task.objective !== 'string') {
       return res.status(400).json({ error:'task.objective é obrigatório.' });
     }
+    const currentFiles = WorkspaceManager.getAllFilesContent(projectId);
     if (req.body?.sync !== false) {
-      ContextEngineV2.syncProject({ projectId, files:WorkspaceManager.getAllFilesContent(projectId) });
+      ContextEngineV2.syncProject({ projectId, files:currentFiles });
     }
+    const runId = req.body?.runId ? String(req.body.runId) : null;
+    const explicitRequirementIds = Array.isArray(req.body?.requirementIds) ? req.body.requirementIds.map(String) : [];
+    const requirementIds = [...new Set([...explicitRequirementIds,...(runId ? workflowRequirementIds(projectId,runId,null) : [])])];
     const pack = ContextEngineV2.compile({
       projectId,
       agentKey:String(req.body?.agentKey || 'FORGE'),
       scope:scope as any,
       task,
-      requirementIds:Array.isArray(req.body?.requirementIds) ? req.body.requirementIds.map(String) : [],
-      runId:req.body?.runId ? String(req.body.runId) : null,
+      requirementIds,
+      runId,
       stepId:req.body?.stepId ? String(req.body.stepId) : null,
       focusPaths:Array.isArray(req.body?.focusPaths) ? req.body.focusPaths.map(String) : [],
       tokenBudget:Number.isFinite(Number(req.body?.tokenBudget)) ? Number(req.body.tokenBudget) : undefined,
+      fileContents:currentFiles,
     });
     res.json({ success:true, pack });
   } catch (err:any) {
@@ -995,9 +1000,11 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
     const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
     const agentEngineEnabled = process.env.AGENT_ENGINE_ENABLED === 'true';
 
+    let executionRequirementIds: string[] = [];
     if (agentEngineEnabled) {
       execution = RunService.start(req.user!.id, projectId, conversation.id, 'build', .5);
       RequirementLedgerService.attachRun(projectId,planId,execution.runId);
+      executionRequirementIds = workflowRequirementIds(projectId, execution.runId, planId);
     }
 
     let result = !agentEngineEnabled
@@ -1025,6 +1032,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
           runId: execution!.runId,
           stepId: execution!.stepId,
           signal: controller.signal,
+          requirementIds: executionRequirementIds,
           reliableBuild: {
             requestedFiles: filesAffected,
             objective: String(plan.objective || ''),
@@ -1526,6 +1534,7 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
 
   try {
     const existingFiles = WorkspaceManager.getAllFilesContent(run.project_id);
+    const continuedRequirementIds = workflowRequirementIds(run.project_id, run.id, null);
     const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id=? ORDER BY created_at DESC, rowid DESC LIMIT 20')
       .all(run.conversation_id).reverse() as any[];
     const forge = RunService.createStep(
@@ -1561,6 +1570,7 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
       runId: run.id,
       stepId: forge,
       signal: controller.signal,
+      requirementIds: continuedRequirementIds,
     }, { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true });
 
     RunService.finishStep(forge, result.hasErrors ? 'failed' : 'completed', {

@@ -19,8 +19,18 @@ function tokens(text: string) {
   return Math.max(1, Math.ceil(text.length / 4));
 }
 
-function fileTokenEstimate(file: ProjectFileRecord) {
+function metadataTokenEstimate(file: ProjectFileRecord) {
   return tokens([file.path,file.language,file.summary,file.symbols.join(' '),file.imports.join(' '),file.exports.join(' '),file.moduleKey].join('\n'));
+}
+
+function contentTokenEstimate(file: ProjectFileRecord, fileContents?: Record<string,string>) {
+  const content = fileContents?.[file.path];
+  if (typeof content === 'string') return tokens(content);
+  return Math.max(1, Math.ceil(Math.max(0, file.sizeBytes) / 4));
+}
+
+function fileTokenEstimate(file: ProjectFileRecord, fileContents?: Record<string,string>) {
+  return metadataTokenEstimate(file) + contentTokenEstimate(file, fileContents);
 }
 
 function words(input: string) {
@@ -88,7 +98,7 @@ export class ContextCompiler {
       if (input.agentKey === 'SCOUT') {
         score += file.moduleKey === 'root' ? 20 : 8; reasons.push('scout_structure');
       }
-      return {file,score,reasons,estimatedTokens:fileTokenEstimate(file)};
+      return {file,score,reasons,estimatedTokens:fileTokenEstimate(file,input.fileContents)};
     }).sort((a,b) => b.score - a.score || a.file.path.localeCompare(b.file.path));
 
     const tokenBudget = Math.max(256, Math.floor(input.tokenBudget || DEFAULT_CONTEXT_TOKEN_BUDGETS[input.scope]));
@@ -98,9 +108,45 @@ export class ContextCompiler {
 
     for (const item of ranked) {
       const mustInclude = focus.has(item.file.path);
-      if (mustInclude || estimatedTokens + item.estimatedTokens <= tokenBudget) {
-        selectedFiles.push(item);
+      const metadataCost = metadataTokenEstimate(item.file);
+      const remaining = Math.max(0, tokenBudget - estimatedTokens);
+      const content = input.fileContents?.[item.file.path];
+
+      if (estimatedTokens + item.estimatedTokens <= tokenBudget) {
+        const end = typeof content === 'string' ? content.length : item.file.sizeBytes;
+        selectedFiles.push({
+          ...item,
+          content: {
+            path:item.file.path,
+            mode:'full',
+            start:0,
+            end,
+            estimatedTokens:item.estimatedTokens,
+            omittedChars:0,
+            reason:'fits_budget',
+          },
+        });
         estimatedTokens += item.estimatedTokens;
+      } else if (mustInclude && typeof content === 'string' && remaining > metadataCost + 16) {
+        const availableContentTokens = Math.max(1, remaining - metadataCost);
+        const end = Math.min(content.length, availableContentTokens * 4);
+        const actualContentTokens = tokens(content.slice(0,end));
+        const partialCost = metadataCost + actualContentTokens;
+        selectedFiles.push({
+          ...item,
+          estimatedTokens:partialCost,
+          reasons:[...new Set([...item.reasons,'partial_oversized_focus'])],
+          content:{
+            path:item.file.path,
+            mode:'partial',
+            start:0,
+            end,
+            estimatedTokens:partialCost,
+            omittedChars:Math.max(0,content.length-end),
+            reason:'oversized_focus',
+          },
+        });
+        estimatedTokens += partialCost;
       } else {
         omittedFiles.push({path:item.file.path,estimatedTokens:item.estimatedTokens,reason:'budget_exhausted'});
       }
@@ -108,7 +154,8 @@ export class ContextCompiler {
 
     const selectedPaths = new Set(selectedFiles.map(item => item.file.path));
     const commitBudgetShare: Record<ContextScope,number> = {MICRO:.10,LOCAL:.15,TASK:.20,PROJECT:.25};
-    const maxCommitTokens = Math.max(256, Math.floor(tokenBudget * commitBudgetShare[input.scope]));
+    const remainingCommitBudget = Math.max(0, tokenBudget - estimatedTokens);
+    const maxCommitTokens = Math.min(remainingCommitBudget, Math.max(256, Math.floor(tokenBudget * commitBudgetShare[input.scope])));
     const recentCommits = [];
     let commitTokens = 0;
     for (const commit of commits) {
@@ -149,7 +196,7 @@ export class ContextCompiler {
     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       pack.id,pack.projectId,pack.runId ?? null,pack.stepId ?? null,pack.agentKey,pack.scope,pack.projectHash,
       pack.tokenBudget,pack.estimatedTokens,
-      JSON.stringify(pack.selectedFiles.map(item=>({path:item.file.path,score:item.score,reasons:item.reasons}))),
+      JSON.stringify(pack.selectedFiles.map(item=>({path:item.file.path,score:item.score,reasons:item.reasons,estimatedTokens:item.estimatedTokens,content:item.content}))),
       JSON.stringify(pack.omittedFiles),JSON.stringify(pack),pack.createdAt
     );
     return pack;
@@ -163,6 +210,7 @@ export class ContextCompiler {
       estimatedTokens:Number(row.estimated_tokens),
       selectedFiles:JSON.parse(row.selected_files_json || '[]'),
       omittedFiles:JSON.parse(row.omitted_files_json || '[]'),
+      requirementIds:(()=>{try{return JSON.parse(row.pack_json || '{}')?.requirementIds || [];}catch{return[];}})(),
       createdAt:row.created_at,
     }));
   }

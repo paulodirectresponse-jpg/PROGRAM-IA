@@ -5,6 +5,8 @@ import { ProgressRetryController, type AttemptEvidence } from '../services/progr
 import { contractPrompt } from './agentContracts.js';
 import { selectAgent } from './agentRegistry.js';
 import { ContextEngineV2, type ContextAgentKey, type ContextPack, type ContextScope } from '../context-engine/contextEngine.js';
+import { DEFAULT_CONTEXT_TOKEN_BUDGETS } from '../context-engine/contextCompiler.js';
+import { RequirementLedgerService } from '../services/requirementLedgerService.js';
 
 type Input = {
   prompt: string;
@@ -31,6 +33,7 @@ type Input = {
 };
 
 type ExecuteOptions = { profile?: ProfileKey; forcedAgentKey?: string; allowExpertEscalation?: boolean; repair?: boolean };
+type RetryStrategy = 'same_candidate'|'next_candidate'|'reduce_context'|'fragment_task'|'expert'|'stop';
 
 function relevantFiles(files: Record<string, string>, previewLimit: number) {
   // Never hide the project tree. Content previews remain bounded until Context Engine V2,
@@ -42,18 +45,12 @@ function relevantFiles(files: Record<string, string>, previewLimit: number) {
   }));
 }
 
-function reducedRetryFiles(files:Record<string,string>,maxFiles=12){
-  const entries=Object.entries(files);
-  if(entries.length<=maxFiles)return files;
-  return Object.fromEntries(entries
-    .sort(([a],[b])=>{
-      const score=(p:string)=>/package\.json|tsconfig|vite\.config|src\/(app|main|index)|index\.html/i.test(p)?0:/src\//i.test(p)?1:2;
-      return score(a)-score(b);
-    })
-    .slice(0,maxFiles));
+function resolvedRequirementIds(x: Input) {
+  const persisted = x.runId
+    ? RequirementLedgerService.listByRun(x.runId).map(item => item.requirement_key)
+    : [];
+  return [...new Set([...(x.requirementIds || []),...persisted].map(String).filter(Boolean))];
 }
-
-
 function contextScopeFor(agentKey: string, mode: AgentMode, repair?: boolean, filesCount = 0): ContextScope {
   if (agentKey === 'SENTINEL') return repair ? 'LOCAL' : 'MICRO';
   if (agentKey === 'STUDIO') return 'LOCAL';
@@ -67,38 +64,65 @@ function normalizeFocus(paths: string[] = []) {
   return [...new Set(paths.filter(Boolean).map(path => path.replace(/\\/g,'/').replace(/^\.\//,'')))];
 }
 
-function compileContextForStep(x: Input, agentKey: string, options: ExecuteOptions): ContextPack {
+function compileContextForStep(x: Input, agentKey: string, options: ExecuteOptions, retryStrategy: RetryStrategy = 'same_candidate'): ContextPack {
   ContextEngineV2.syncProject({ projectId: x.projectId, files: x.existingFiles });
   const focusPaths = normalizeFocus([
     ...(x.focusPaths || []),
     ...(x.reliableBuild?.requestedFiles || []),
   ]);
+  const requirementIds = resolvedRequirementIds(x);
+  let scope = contextScopeFor(agentKey, x.mode, options.repair, Object.keys(x.existingFiles).length);
+  let tokenBudget: number | undefined;
+  if (retryStrategy === 'reduce_context') {
+    if (scope === 'PROJECT' || scope === 'TASK') scope = 'LOCAL';
+    tokenBudget = Math.max(512, Math.floor(DEFAULT_CONTEXT_TOKEN_BUDGETS[scope] * 0.65));
+  } else if (retryStrategy === 'fragment_task') {
+    scope = agentKey === 'SENTINEL' ? 'MICRO' : 'LOCAL';
+    tokenBudget = Math.max(512, Math.floor(DEFAULT_CONTEXT_TOKEN_BUDGETS[scope] * 0.45));
+  }
   return ContextEngineV2.compile({
     projectId: x.projectId,
     runId: x.runId,
     stepId: x.stepId,
     agentKey: agentKey as ContextAgentKey,
-    scope: contextScopeFor(agentKey, x.mode, options.repair, Object.keys(x.existingFiles).length),
+    scope,
     task: {
-      objective: x.prompt,
+      objective: retryStrategy === 'same_candidate' || retryStrategy === 'next_candidate'
+        ? x.prompt
+        : `${x.prompt}\nRetry strategy: ${retryStrategy}`,
       title: x.reliableBuild?.objective || x.prompt.slice(0, 120),
       acceptanceCriteria: x.reliableBuild?.acceptanceCriteria || [],
       currentFile: focusPaths[0],
       changedFiles: focusPaths,
     },
-    requirementIds: x.requirementIds || [],
+    requirementIds,
     focusPaths,
+    tokenBudget,
+    fileContents:x.existingFiles,
   });
 }
 
 function contextSelectedFiles(x: Input, pack: ContextPack): Record<string,string> {
-  const selected = new Set(pack.selectedFiles.map(item => item.file.path));
-  for (const path of x.reliableBuild?.requestedFiles || []) selected.add(path.replace(/\\/g,'/').replace(/^\.\//,''));
-  for (const path of x.focusPaths || []) selected.add(path.replace(/\\/g,'/').replace(/^\.\//,''));
+  const selections = new Map(pack.selectedFiles.map(item => [
+    item.file.path,
+    item.content || {
+      path:item.file.path,
+      mode:'full' as const,
+      start:0,
+      end:Number.MAX_SAFE_INTEGER,
+      estimatedTokens:item.estimatedTokens,
+      omittedChars:0,
+      reason:'fits_budget' as const,
+    },
+  ]));
   const out: Record<string,string> = {};
   for (const [path, content] of Object.entries(x.existingFiles)) {
     const normalized = path.replace(/\\/g,'/').replace(/^\.\//,'');
-    if (selected.has(normalized)) out[normalized] = content;
+    const selection = selections.get(normalized);
+    if (!selection) continue;
+    out[normalized] = selection.mode === 'partial'
+      ? content.slice(selection.start,selection.end)
+      : content;
   }
   return out;
 }
@@ -107,6 +131,7 @@ function serializeContextPack(pack: ContextPack) {
   const fileLines = pack.selectedFiles.map(item => [
     `- ${item.file.path}`,
     `  language=${item.file.language}; module=${item.file.moduleKey}; tokens≈${item.estimatedTokens}`,
+    item.content ? `  content=${item.content.mode}; range=${item.content.start}-${item.content.end}; omittedChars=${item.content.omittedChars}` : '  content=legacy-full',
     item.file.summary ? `  summary=${item.file.summary}` : '',
     item.file.symbols.length ? `  symbols=${item.file.symbols.slice(0,20).join(', ')}` : '',
     item.file.imports.length ? `  imports=${item.file.imports.slice(0,20).join(', ')}` : '',
@@ -137,10 +162,17 @@ function serializeContextPack(pack: ContextPack) {
   ].filter(Boolean).join('\n');
 }
 
-function withCompiledContext(x: Input, agentKey: string, options: ExecuteOptions): Input {
-  const pack = x.contextPack || compileContextForStep(x, agentKey, options);
+function withCompiledContext(x: Input, agentKey: string, options: ExecuteOptions, retryStrategy: RetryStrategy = 'same_candidate'): Input {
+  const requirementIds = resolvedRequirementIds(x);
+  const canReuseProvidedPack = retryStrategy === 'same_candidate'
+    && Boolean(x.contextPack)
+    && requirementIds.every(id => x.contextPack?.requirementIds.includes(id));
+  const pack = canReuseProvidedPack && x.contextPack
+    ? x.contextPack
+    : compileContextForStep({ ...x, requirementIds }, agentKey, options, retryStrategy);
   return {
     ...x,
+    requirementIds,
     existingFiles: contextSelectedFiles(x, pack),
     contextPack: pack,
     contextBrief: serializeContextPack(pack),
@@ -157,7 +189,7 @@ function recordContextCommitFromStep(x: Input, agentKey: string, scope: ContextS
     task,
     decisions: details.decisions || [],
     changedFiles: details.changedFiles || [],
-    requirementIds: x.requirementIds || [],
+    requirementIds: resolvedRequirementIds(x),
     validation: details.validation ?? null,
     blockers: details.blockers || [],
     nextState: details.nextState ?? null,
@@ -218,20 +250,19 @@ export class AgentEngine {
     const maxAttempts = Math.max(1, Number(available[0]?.max_attempts || 1));
     let last: any;
     const attemptHistory:AttemptEvidence[]=[];
-    let retryStrategy:'same_candidate'|'next_candidate'|'reduce_context'|'fragment_task'|'expert'|'stop'='same_candidate';
+    let retryStrategy:RetryStrategy='same_candidate';
     for (let i = 0; i < maxAttempts; i++) {
       x.signal?.throwIfAborted();
       RunService.recordAttempt(x.stepId);
       const candidateIndex=retryStrategy==='next_candidate' ? Math.min(i,available.length-1) : i % available.length;
       const candidate = available[candidateIndex];
       const started = Date.now();
-      const contextBase = withCompiledContext(x, agentKey, options);
+      const contextBase = withCompiledContext(x, agentKey, options, retryStrategy);
       try {
         ModelRouter.assertBudget(x.userId, Number(candidate.max_cost_usd || 0), { runId: x.runId });
         const attemptInput = retryStrategy==='reduce_context' || retryStrategy==='fragment_task'
           ? {
               ...contextBase,
-              existingFiles: reducedRetryFiles(contextBase.existingFiles, retryStrategy==='fragment_task'?8:12),
               conversationHistory: x.conversationHistory.slice(-2),
               prompt: [
                 x.prompt,
@@ -293,6 +324,13 @@ export class AgentEngine {
           contextSelectedFiles: attemptInput.contextPack?.selectedFiles.map(item=>item.file.path),
           contextOmittedFilesCount: attemptInput.contextPack?.omittedFiles.length,
         });
+        if (agentKey === 'SENTINEL') {
+          recordContextCommitFromStep(attemptInput, 'SENTINEL', attemptInput.contextPack?.scope || 'MICRO', 'Sentinel diagnostic completed', {
+            decisions:[result.replyText || 'diagnostic completed'],
+            changedFiles:attemptInput.contextPack?.selectedFiles.map(item=>item.file.path) || [],
+            nextState:{ status:'diagnosed' },
+          });
+        }
         return { ...result, agentKey, profileKey: profile };
       } catch (e: any) {
         last = e;
