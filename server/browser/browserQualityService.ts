@@ -199,6 +199,29 @@ function persist(result:BrowserQualityResult,userId:string){
   db.prepare(`INSERT INTO browser_quality_runs(id,project_id,user_id,run_id,step_id,sandbox_id,status,runtime_kind,framework,entry_path,url,issues_json,viewports_json,duration_ms,reason,created_at)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(result.id,result.projectId,userId,result.runId||null,result.stepId||null,result.sandboxId,result.status,result.runtimeKind,
     result.framework||null,result.entryPath||null,result.url||null,JSON.stringify(result.issues),JSON.stringify(result.viewports),result.durationMs,result.reason||null,result.createdAt);
+  const verificationStatus=result.status==='passed'?'pass':result.status==='failed'?'fail':'warn';
+  db.prepare('INSERT INTO verifications(id,project_id,checkpoint_id,gate_type,status,details_json,created_at) VALUES(?,?,?,?,?,?,?)')
+    .run(
+      `ver-${crypto.randomUUID()}`,
+      result.projectId,
+      null,
+      'preview',
+      verificationStatus,
+      JSON.stringify({
+        source:'browser_quality',
+        browserQualityRunId:result.id,
+        sandboxId:result.sandboxId,
+        status:result.status,
+        issueCount:result.issues.length,
+        errorCount:result.issues.filter(issue=>issue.severity==='error').length,
+        warningCount:result.issues.filter(issue=>issue.severity==='warning').length,
+        viewportCount:result.viewports.length,
+        runtimeKind:result.runtimeKind,
+        framework:result.framework||null,
+        reason:result.reason||null,
+      }),
+      result.createdAt
+    );
 }
 function hydrate(row:any):BrowserQualityResult{return {id:row.id,status:row.status,projectId:row.project_id,sandboxId:row.sandbox_id,runId:row.run_id||null,stepId:row.step_id||null,
   runtimeKind:row.runtime_kind,framework:row.framework||undefined,entryPath:row.entry_path||undefined,url:row.url||undefined,
