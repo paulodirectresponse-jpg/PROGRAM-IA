@@ -1473,6 +1473,12 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     }
 
     let replyText=String(result.replyText||'').trim();
+    if(conversationalOnly&&replyText.length>900){
+      const head=replyText.slice(0,900);
+      const boundary=Math.max(head.lastIndexOf('\n\n'),head.lastIndexOf('. '),head.lastIndexOf('! '),head.lastIndexOf('? '));
+      replyText=(boundary>420?head.slice(0,boundary+1):head).trim();
+      replyText+='\n\nSe quiser, eu detalho a parte mais importante.';
+    }
     if(result.proposal?.files?.length&&resolvedMode==='build'){
       applyResult=await SandboxProposalApplyService.apply({
         userId:req.user!.id,projectId,proposal:result.proposal,runId:execution?.runId||null,planId:savedPlanId,
