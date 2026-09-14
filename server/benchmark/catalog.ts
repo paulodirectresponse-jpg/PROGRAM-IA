@@ -197,19 +197,19 @@ export const PHASE4_BENCHMARK_CASES:BenchmarkCaseDefinition[]=[
     id:'P4-28',title:'Review concrete runtime bug',category:'review',mode:'review',agentKey:'SENTINEL',
     prompt:'Revise o projeto e identifique a falha marcada PHASE4_REVIEW_28. Cite arquivo e causa sem inventar outras falhas.',
     fixtureFiles:{'src/app.js':'const user=null; console.log(user.name); // PHASE4_REVIEW_28\n'},
-    checks:{replyIncludes:['PHASE4_REVIEW_28','src/app.js']},
+    checks:{replyIncludes:['PHASE4_REVIEW_28','src/app.js'],replyIncludesAny:[['user.name','acesso a name','.name'],['null','nulo']]},
   },
   {
     id:'P4-29',title:'Review security evidence',category:'review',mode:'review',agentKey:'SENTINEL',
     prompt:'Revise somente auth.js. Identifique por que PHASE4_REVIEW_29 representa exposição de segredo no browser.',
     fixtureFiles:{'auth.js':'export const API_SECRET="PHASE4_REVIEW_29";\n'},
-    checks:{replyIncludes:['PHASE4_REVIEW_29','auth.js']},
+    checks:{replyIncludes:['PHASE4_REVIEW_29','auth.js','API_SECRET']},
   },
   {
     id:'P4-30',title:'Review requirement miss',category:'review',mode:'review',agentKey:'SENTINEL',
     prompt:'Compare REQUIREMENTS.md e index.html. Diga se PHASE4_REVIEW_30 está atendido e cite a evidência concreta.',
     fixtureFiles:{'REQUIREMENTS.md':'PHASE4_REVIEW_30: deve existir data-testid="checkout".\n','index.html':html('<button id="buy">Comprar</button>')},
-    checks:{replyIncludes:['PHASE4_REVIEW_30','index.html','checkout']},
+    checks:{replyIncludes:['PHASE4_REVIEW_30','index.html','checkout','data-testid'],replyIncludesAny:[['não atendido','não está atendido','não foi atendido','ausente','faltando','missing']]},
   },
 ];
 
