@@ -1034,214 +1034,179 @@ router.get('/conversations/:projectId', requireAuth, requireProjectOwner, (req: 
 });
 
 router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
-  const projectId = req.params.projectId;
-  if (activeProjects.has(projectId)) {
-    return res.status(409).json({ error: 'Já há uma execução neste projeto. Aguarde ou cancele antes de aprovar o plano.' });
+  const projectId=req.params.projectId;
+  const {planId}=req.body||{};
+  if(!planId)return res.status(400).json({error:'Identificador do plano é obrigatório.'});
+
+  const plan=db.prepare('SELECT * FROM plans WHERE id=? AND project_id=?').get(planId,projectId) as any;
+  if(!plan)return res.status(404).json({error:'Plano não encontrado neste projeto.'});
+  const conversation=db.prepare('SELECT * FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+  if(!conversation)return res.status(404).json({error:'Conversa não encontrada.'});
+
+  if(plan.status==='approved'){
+    const latest=db.prepare('SELECT id,status FROM agent_runs WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+    return res.status(latest?.status==='running'?202:200).json({
+      success:true,accepted:latest?.status==='running',alreadyApproved:true,runId:latest?.id||null,status:latest?.status||'approved',
+    });
+  }
+  if(plan.status!=='draft')return res.status(409).json({error:`Este plano não está mais aguardando aprovação (${plan.status||'estado inválido'}).`});
+  if(activeProjects.has(projectId)){
+    const latest=db.prepare('SELECT id,status FROM agent_runs WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+    return res.status(202).json({success:true,accepted:true,runId:latest?.id||null,status:'already_running'});
   }
 
-  activeProjects.add(projectId);
-  const controller = new AbortController();
-  activeProjectControllers.set(projectId, controller);
-  let execution: { runId: string; stepId: string } | null = null;
+  const providerConfig=LLMAdapterService.getActiveProviderConfig(req.user!.id);
+  if(!providerConfig)return res.status(409).json({error:'Selecione e salve um provedor de IA antes de construir o plano.'});
 
-  const parseStoredList = (value: unknown): string[] => {
-    if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
-    if (typeof value !== 'string' || !value.trim()) return [];
-    try {
-      const parsed = JSON.parse(value);
-      return Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : [String(parsed)];
-    } catch {
-      return [value];
-    }
+  activeProjects.add(projectId);
+  const controller=new AbortController();
+  activeProjectControllers.set(projectId,controller);
+  let execution:{runId:string;stepId:string}|null=null;
+  let acceptedEarly=false;
+  let agentMessagePersisted=false;
+
+  const parseStoredList=(value:unknown):string[]=>{
+    if(Array.isArray(value))return value.map(item=>String(item)).filter(Boolean);
+    if(typeof value!=='string'||!value.trim())return[];
+    try{const parsed=JSON.parse(value);return Array.isArray(parsed)?parsed.map(item=>String(item)).filter(Boolean):[String(parsed)];}
+    catch{return[value];}
   };
 
-  try {
-    const { planId } = req.body || {};
-    if (!planId) return res.status(400).json({ error: 'Identificador do plano é obrigatório.' });
-
-    const plan = db.prepare('SELECT * FROM plans WHERE id = ? AND project_id = ?').get(planId, projectId) as any;
-    if (!plan) return res.status(404).json({ error: 'Plano não encontrado neste projeto.' });
-    if (plan.status !== 'draft') {
-      return res.status(409).json({ error: `Este plano não está mais aguardando aprovação (${plan.status || 'estado inválido'}).` });
-    }
-
-    const conversation = db.prepare('SELECT * FROM conversations WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
-    if (!conversation) return res.status(404).json({ error: 'Conversa não encontrada.' });
-
-    const providerConfig = LLMAdapterService.getActiveProviderConfig(req.user!.id);
-    if (!providerConfig) {
-      return res.status(409).json({ error: 'Selecione e salve um provedor de IA antes de construir o plano.' });
-    }
-
-    const legacyFiles = parseStoredList(plan.files_affected_json);
-    const existingFilesToModify = parseStoredList(plan.existing_files_json);
-    const newFilesToCreate = parseStoredList(plan.new_files_json);
-    const filesToDelete = parseStoredList(plan.files_to_delete_json);
-    const filesAffected = [...new Set([...existingFilesToModify,...newFilesToCreate,...filesToDelete,...legacyFiles])];
-    const integrations = parseStoredList(plan.integrations_json);
-    const risks = parseStoredList(plan.risks_json);
-    const acceptanceCriteria = parseStoredList(plan.acceptance_criteria_json);
-    const planRequirements = (()=>{try{return JSON.parse(plan.requirements_json||'[]')}catch{return[]}})();
-    const taskGraph = (()=>{try{return JSON.parse(plan.task_graph_json||'[]')}catch{return[]}})();
+  try{
+    const legacyFiles=parseStoredList(plan.files_affected_json);
+    const existingFilesToModify=parseStoredList(plan.existing_files_json);
+    const newFilesToCreate=parseStoredList(plan.new_files_json);
+    const filesToDelete=parseStoredList(plan.files_to_delete_json);
+    const filesAffected=[...new Set([...existingFilesToModify,...newFilesToCreate,...filesToDelete,...legacyFiles])];
+    const integrations=parseStoredList(plan.integrations_json);
+    const risks=parseStoredList(plan.risks_json);
+    const acceptanceCriteria=parseStoredList(plan.acceptance_criteria_json);
+    const planRequirements=(()=>{try{return JSON.parse(plan.requirements_json||'[]')}catch{return[]}})();
+    const taskGraph=(()=>{try{return JSON.parse(plan.task_graph_json||'[]')}catch{return[]}})();
     const architectureSummary=String(plan.architecture_summary||'').trim();
-    const buildPrompt = [
-      'O usuário aprovou este plano técnico. Implemente-o agora no workspace atual.',
-      '',
-      `OBJETIVO:\n${plan.objective || ''}`,
-      architectureSummary ? `ARQUITETURA APROVADA:\n${architectureSummary}` : '',
-      `ESCOPO INCLUÍDO:\n${plan.scope_in || ''}`,
-      `ESCOPO EXCLUÍDO:\n${plan.scope_out || ''}`,
-      existingFilesToModify.length ? `ARQUIVOS EXISTENTES A MODIFICAR:\n- ${existingFilesToModify.join('\n- ')}` : '',
-      newFilesToCreate.length ? `NOVOS ARQUIVOS A CRIAR:\n- ${newFilesToCreate.join('\n- ')}` : '',
-      filesToDelete.length ? `ARQUIVOS A REMOVER:\n- ${filesToDelete.join('\n- ')}` : '',
-      planRequirements.length ? `REQUISITOS:\n${planRequirements.map((r:any)=>`- ${r.id}: ${r.title||r.description}`).join('\n')}` : '',
-      taskGraph.length ? `GRAFO DE TAREFAS:\n${taskGraph.map((t:any)=>`- ${t.id}: ${t.title} [${(t.requirement_ids||[]).join(', ')}]`).join('\n')}` : '',
-      integrations.length ? `INTEGRAÇÕES:\n- ${integrations.join('\n- ')}` : '',
-      risks.length ? `RISCOS:\n- ${risks.join('\n- ')}` : '',
-      acceptanceCriteria.length ? `CRITÉRIOS DE ACEITE:\n- ${acceptanceCriteria.join('\n- ')}` : '',
-      '',
-      'Gere uma proposta concreta e multi-arquivo quando a arquitetura exigir. Não aplique nada automaticamente; retorne os arquivos estruturados para revisão do usuário.',
+    const buildPrompt=[
+      'O usuário aprovou este plano técnico. Implemente-o agora no workspace atual e entregue o resultado final.',
+      `OBJETIVO:\n${plan.objective||''}`,
+      architectureSummary?`ARQUITETURA APROVADA:\n${architectureSummary}`:'',
+      `ESCOPO INCLUÍDO:\n${plan.scope_in||''}`,
+      `ESCOPO EXCLUÍDO:\n${plan.scope_out||''}`,
+      existingFilesToModify.length?`ARQUIVOS EXISTENTES A MODIFICAR:\n- ${existingFilesToModify.join('\n- ')}`:'',
+      newFilesToCreate.length?`NOVOS ARQUIVOS A CRIAR:\n- ${newFilesToCreate.join('\n- ')}`:'',
+      filesToDelete.length?`ARQUIVOS A REMOVER:\n- ${filesToDelete.join('\n- ')}`:'',
+      planRequirements.length?`REQUISITOS:\n${planRequirements.map((item:any)=>`- ${item.id}: ${item.title||item.description}`).join('\n')}`:'',
+      taskGraph.length?`GRAFO DE TAREFAS:\n${taskGraph.map((item:any)=>`- ${item.id}: ${item.title} [${(item.requirement_ids||[]).join(', ')}]`).join('\n')}`:'',
+      integrations.length?`INTEGRAÇÕES:\n- ${integrations.join('\n- ')}`:'',
+      risks.length?`RISCOS:\n- ${risks.join('\n- ')}`:'',
+      acceptanceCriteria.length?`CRITÉRIOS DE ACEITE:\n- ${acceptanceCriteria.join('\n- ')}`:'',
+      'Construa em sandbox. O sistema fará validação, revisão SENTINEL e merge automaticamente; não peça nova aprovação.',
     ].filter(Boolean).join('\n\n');
 
-    const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 20')
-      .all(conversation.id).reverse() as any[];
-    const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
-    const agentEngineEnabled = process.env.AGENT_ENGINE_ENABLED === 'true';
+    const history=db.prepare('SELECT sender,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20').all(conversation.id).reverse() as any[];
+    const existingFiles=WorkspaceManager.getAllFilesContent(projectId);
+    const agentEngineEnabled=process.env.AGENT_ENGINE_ENABLED==='true';
+    let executionRequirementIds:string[]=[];
+    const approvedAt=new Date().toISOString();
 
-    let executionRequirementIds: string[] = [];
-    if (agentEngineEnabled) {
-      execution = RunService.start(req.user!.id, projectId, conversation.id, 'build', .5);
+    db.prepare("UPDATE plans SET status='approved',updated_at=? WHERE id=? AND project_id=? AND status='draft'").run(approvedAt,planId,projectId);
+    db.prepare("UPDATE conversations SET mode='build',updated_at=? WHERE id=?").run(approvedAt,conversation.id);
+    db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'user',?,?,?)")
+      .run('msg-user-'+Date.now(),conversation.id,'Aprovado. Pode construir o plano.',JSON.stringify({mode:'build',action:'approve_plan',planId}),approvedAt);
+
+    if(agentEngineEnabled){
+      execution=RunService.start(req.user!.id,projectId,conversation.id,'build',.5);
       RequirementLedgerService.attachRun(projectId,planId,execution.runId);
-      executionRequirementIds = workflowRequirementIds(projectId, execution.runId, planId);
+      executionRequirementIds=workflowRequirementIds(projectId,execution.runId,planId);
+      acceptedEarly=true;
+      res.status(202).json({success:true,accepted:true,runId:execution.runId,planId});
     }
 
-    let result = !agentEngineEnabled
+    let result=!agentEngineEnabled
       ? await LLMAdapterService.buildApprovedPlanReliably({
-          projectId,
-          providerKey: providerConfig.key,
-          modelId: providerConfig.modelId,
-          userId: req.user!.id,
-          existingFiles,
-          requestedFiles: filesAffected,
-          objective: String(plan.objective || ''),
-          scopeIn: [architectureSummary ? 'ARQUITETURA: '+architectureSummary : '', String(plan.scope_in || '')].filter(Boolean).join('\n\n'),
-          scopeOut: String(plan.scope_out || ''),
-          acceptanceCriteria,
-          signal: controller.signal,
+          projectId,providerKey:providerConfig.key,modelId:providerConfig.modelId,userId:req.user!.id,existingFiles,
+          requestedFiles:filesAffected,objective:String(plan.objective||''),
+          scopeIn:[architectureSummary?'ARQUITETURA: '+architectureSummary:'',String(plan.scope_in||'')].filter(Boolean).join('\n\n'),
+          scopeOut:String(plan.scope_out||''),acceptanceCriteria,signal:controller.signal,
         })
       : await AgentWorkflowEngine.executeWorkflow({
-          prompt: buildPrompt,
-          mode: 'build',
-          projectId,
-          existingFiles,
-          appliedSkills: [],
-          conversationHistory: history,
-          userId: req.user!.id,
-          runId: execution!.runId,
-          stepId: execution!.stepId,
-          signal: controller.signal,
-          requirementIds: executionRequirementIds,
-          reliableBuild: {
-            requestedFiles: filesAffected,
-            objective: String(plan.objective || ''),
-              scopeIn: [architectureSummary ? 'ARQUITETURA: '+architectureSummary : '', String(plan.scope_in || '')].filter(Boolean).join('\n\n'),
-            scopeOut: String(plan.scope_out || ''),
-            acceptanceCriteria,
+          prompt:buildPrompt,mode:'build',projectId,existingFiles,appliedSkills:[],conversationHistory:history,
+          userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal,
+          requirementIds:executionRequirementIds,
+          reliableBuild:{
+            requestedFiles:filesAffected,objective:String(plan.objective||''),
+            scopeIn:[architectureSummary?'ARQUITETURA: '+architectureSummary:'',String(plan.scope_in||'')].filter(Boolean).join('\n\n'),
+            scopeOut:String(plan.scope_out||''),acceptanceCriteria,
           },
         });
-
     controller.signal.throwIfAborted();
 
-    const formatRepairAttempted = false;
-
-    if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
-      return res.status(409).json({ error: 'Os arquivos mudaram durante a construção. Aprove o plano novamente para usar a versão atual.' });
+    if(JSON.stringify(WorkspaceManager.getAllFilesContent(projectId))!==JSON.stringify(existingFiles)){
+      throw new Error('Os arquivos mudaram durante a construção. Tente novamente para usar a versão atual.');
     }
-
-    if (result.build?.files?.length && !result.proposal && !result.isDemonstrativeFallback && !result.hasErrors) {
-      result.proposal = {
-        id: `proposal-${crypto.randomUUID()}`,
-        summary: result.build.summary || `Construção do plano: ${String(plan.objective || '').slice(0, 80)}`,
-        requiresConfirmation: true,
-        files: result.build.files,
-        status: 'pending',
+    if(result.build?.files?.length&&!result.proposal&&!result.isDemonstrativeFallback&&!result.hasErrors){
+      result.proposal={
+        id:`proposal-${crypto.randomUUID()}`,summary:result.build.summary||`Construção do plano: ${String(plan.objective||'').slice(0,80)}`,
+        requiresConfirmation:false,files:result.build.files,status:'pending',
       };
     }
-
-    if (result.hasErrors || result.invalidResponse || !result.proposal?.files?.length) {
-      if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
-      return res.status(422).json({
-        success: false,
-        error: result.errorMessage || result.errorReason || 'O modelo não retornou uma proposta de construção válida. O plano continua aguardando aprovação.',
-      });
+    if(result.hasErrors||result.invalidResponse||!result.proposal?.files?.length){
+      throw new Error(result.errorMessage||result.errorReason||'O modelo não retornou uma implementação válida.');
     }
 
-    const now = new Date().toISOString();
-    const agentMsgId = `msg-agent-${Date.now()}`;
-    const metadata = {
-      mode: 'build',
-      decisionType: result.decisionType,
-      providerUsed: result.providerUsed,
-      modelUsed: result.modelUsed,
-      planId,
-      planApproved: true,
-      filesAffected: result.build?.files?.map((file) => file.path) || [],
-      proposal: result.proposal,
-      hasErrors: false,
-      runId: execution?.runId,
-      executionType: agentEngineEnabled ? 'agent_engine' : 'direct_llm',
-      agentKey: agentEngineEnabled ? ((result as any).agentKey || 'PROGRAM') : undefined,
-      profileKey: (result as any).profileKey,
-      workflow: (result as any).workflow,
-      formatRepairAttempted,
-      buildDiagnostics: result.diagnostics,
-    };
-
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      db.prepare("UPDATE plans SET status = 'approved', updated_at = ? WHERE id = ? AND project_id = ? AND status = 'draft'")
-        .run(now, planId, projectId);
-      db.prepare("UPDATE conversations SET mode = 'build', updated_at = ? WHERE id = ?").run(now, conversation.id);
-      db.prepare(`
-        INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
-        VALUES (?, ?, 'agent', ?, ?, ?)
-      `).run(agentMsgId, conversation.id, result.replyText, JSON.stringify(metadata), now);
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
-
-    if (execution) RunService.waitForApproval(execution.runId);
-
-    res.json({
-      success: true,
-      plan: { ...plan, status: 'approved', updated_at: now },
-      agentMessage: {
-        id: agentMsgId,
-        conversation_id: conversation.id,
-        sender: 'agent',
-        content: result.replyText,
-        metadata,
-        created_at: now,
-      },
-      build: result.build,
-      proposal: result.proposal,
+    await materializeProposalInSandbox({
+      userId:req.user!.id,projectId,runId:execution?.runId||null,stepId:execution?.stepId||null,
+      proposal:result.proposal,signal:controller.signal,
     });
-  } catch (err: any) {
-    if (execution) {
-      RunService.finish(execution.runId, execution.stepId, controller.signal.aborted ? 'aborted' : 'failed');
-    }
-    if (!res.headersSent && !res.destroyed) {
-      const detail = String(err?.message || err || '').trim();
-      res.status(controller.signal.aborted ? 499 : 500).json({
-        error: controller.signal.aborted
-          ? 'Construção cancelada. O plano continua aguardando aprovação.'
-          : detail || 'Falha ao aprovar e construir o plano.',
-        code: controller.signal.aborted ? 'PLAN_BUILD_ABORTED' : 'PLAN_BUILD_FAILED',
+
+    const applied=await SandboxProposalApplyService.apply({
+      userId:req.user!.id,projectId,proposal:result.proposal,runId:execution?.runId||null,planId,
+      summary:result.proposal.summary||String(plan.objective||'Plano aprovado'),
+      originalRequest:String(plan.objective||'')+'\n'+String(plan.scope_in||''),shipRequested:false,signal:controller.signal,
+    });
+    if(!applied.success)throw Object.assign(new Error(applied.error||'A implementação não passou pela revisão final.'),{applyResult:applied});
+
+    result.proposal.status='applied';
+    const changedCount=Array.isArray(applied.changedFiles)?applied.changedFiles.length:result.proposal.files.length;
+    const summary=String(result.proposal.summary||'A implementação aprovada foi concluída').replace(/[.\s]+$/,'');
+    const replyText=`Pronto. ${summary}. O plano foi construído, revisado e aplicado ao preview${changedCount?` em ${changedCount} arquivo(s)`:''}.`;
+    const messageNow=new Date().toISOString();
+    const agentMsgId='msg-agent-'+Date.now();
+    const metadata:any={
+      mode:'build',decisionType:result.decisionType,providerUsed:result.providerUsed,modelUsed:result.modelUsed,
+      planId,planApproved:true,filesAffected:applied.changedFiles||result.proposal.files.map((item:any)=>item.path),
+      proposal:result.proposal,hasErrors:false,runId:execution?.runId,executionType:agentEngineEnabled?'agent_engine':'direct_llm',
+      agentKey:agentEngineEnabled?((result as any).agentKey||'PROGRAM'):undefined,profileKey:(result as any).profileKey,
+      workflow:execution?{...((result as any).workflow||{}),runId:execution.runId,status:applied.needsVerification?'needs_verification':'completed',trace:RunService.trace(execution.runId)}:(result as any).workflow,
+      validation:applied.validation,browserQuality:applied.browserQuality,browserRepair:applied.browserRepair,sentinelReview:applied.sentinelReview,
+      checkpointId:applied.checkpointId,technicalReply:result.replyText,autoApplied:true,
+    };
+    db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)")
+      .run(agentMsgId,conversation.id,replyText,JSON.stringify(metadata),messageNow);
+    agentMessagePersisted=true;
+
+    if(!res.headersSent&&!res.destroyed){
+      res.json({
+        success:true,plan:{...plan,status:'approved',updated_at:approvedAt},
+        agentMessage:{id:agentMsgId,conversation_id:conversation.id,sender:'agent',content:replyText,metadata,created_at:messageNow},
+        proposal:result.proposal,checkpointId:applied.checkpointId,
       });
     }
-  } finally {
+  }catch(err:any){
+    try{db.prepare("UPDATE plans SET status='draft',updated_at=? WHERE id=? AND project_id=?").run(new Date().toISOString(),planId,projectId);}catch{}
+    if(execution){try{RunService.finish(execution.runId,execution.stepId,controller.signal.aborted?'aborted':'failed');}catch{}}
+    const detail=String(err?.message||err||'Falha ao aprovar e construir o plano.').trim();
+    if(acceptedEarly&&!agentMessagePersisted){
+      const failedAt=new Date().toISOString();
+      const msgId='msg-agent-'+Date.now();
+      const content=controller.signal.aborted?'A construção foi interrompida. O plano voltou a ficar disponível.':`Não consegui concluir a construção com segurança. ${detail}`;
+      const metadata={mode:'build',hasErrors:true,errorMessage:detail,planId,runId:execution?.runId,
+        workflow:execution?{runId:execution.runId,status:controller.signal.aborted?'aborted':'failed',trace:RunService.trace(execution.runId)}:undefined,
+        validation:err?.applyResult?.validation||null,browserQuality:err?.applyResult?.browserQuality||null,sentinelReview:err?.applyResult?.sentinelReview||null};
+      db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)")
+        .run(msgId,conversation.id,content,JSON.stringify(metadata),failedAt);
+    }else if(!res.headersSent&&!res.destroyed){
+      res.status(controller.signal.aborted?499:500).json({error:controller.signal.aborted?'Construção cancelada. O plano continua aguardando aprovação.':detail});
+    }
+  }finally{
     activeProjects.delete(projectId);
     activeProjectControllers.delete(projectId);
   }
