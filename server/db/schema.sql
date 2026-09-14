@@ -313,6 +313,7 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
   finished_at TEXT
 );
 CREATE INDEX IF NOT EXISTS benchmark_runs_user_created ON benchmark_runs(user_id,created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS benchmark_runs_one_active_user ON benchmark_runs(user_id) WHERE status IN ('queued','running');
 
 CREATE TABLE IF NOT EXISTS benchmark_case_runs (
   id TEXT PRIMARY KEY,
