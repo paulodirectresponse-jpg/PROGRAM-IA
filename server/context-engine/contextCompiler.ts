@@ -196,7 +196,7 @@ export class ContextCompiler {
     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       pack.id,pack.projectId,pack.runId ?? null,pack.stepId ?? null,pack.agentKey,pack.scope,pack.projectHash,
       pack.tokenBudget,pack.estimatedTokens,
-      JSON.stringify(pack.selectedFiles.map(item=>({path:item.file.path,score:item.score,reasons:item.reasons}))),
+      JSON.stringify(pack.selectedFiles.map(item=>({path:item.file.path,score:item.score,reasons:item.reasons,estimatedTokens:item.estimatedTokens,content:item.content}))),
       JSON.stringify(pack.omittedFiles),JSON.stringify(pack),pack.createdAt
     );
     return pack;
@@ -210,6 +210,7 @@ export class ContextCompiler {
       estimatedTokens:Number(row.estimated_tokens),
       selectedFiles:JSON.parse(row.selected_files_json || '[]'),
       omittedFiles:JSON.parse(row.omitted_files_json || '[]'),
+      requirementIds:(()=>{try{return JSON.parse(row.pack_json || '{}')?.requirementIds || [];}catch{return[];}})(),
       createdAt:row.created_at,
     }));
   }
