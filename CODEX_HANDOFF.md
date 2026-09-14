@@ -34,6 +34,8 @@ Limite de segurança conhecido: o sandbox atual é lógico (filesystem/processo/
 
 A Fase 3 está implementada. Não reimplementar `BrowserQualityService`, `browser.inspect_page`, Migration 007, evidence/screenshot routes ou o browser repair loop.
 
+Leia `PHASE3_IMPLEMENTATION.md` antes de alterar qualquer gate de browser/runtime.
+
 Contrato existente:
 - browser real roda sobre o candidato no sandbox;
 - desktop/mobile evidence é persistida;
