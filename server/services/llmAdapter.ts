@@ -857,10 +857,26 @@ export class LLMAdapterService {
 
     if (out.length === 0) {
       const isPlaceholder=(path:string)=>path==='index.html'&&/forge-placeholder:\s*preview-only/i.test(String(existingFiles[path]||''));
-      const core = existingPaths
-        .filter((path) => this.isSafeBuildTarget(path) && !isPlaceholder(path))
-        .sort((a, b) => this.buildTargetPriority(a) - this.buildTargetPriority(b));
-      for (const path of core) add(path);
+      const normalizedPrompt=String(prompt||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,' ');
+      const stop=new Set(['para','como','este','esta','isso','essa','esse','uma','com','sem','mais','menos','deixe','fazer','alterar','corrigir','criar','implementar','melhorar','adicionar','remover']);
+      const terms=[...new Set(normalizedPrompt.split(/[^a-z0-9_.-]+/).filter(term=>term.length>=4&&!stop.has(term)))];
+      const scored=existingPaths
+        .filter(path=>this.isSafeBuildTarget(path)&&!isPlaceholder(path))
+        .map(path=>{
+          const lower=path.toLowerCase();
+          const content=String(existingFiles[path]||'').slice(0,12000).toLowerCase();
+          let relevance=0;
+          for(const term of terms){
+            if(lower.includes(term))relevance+=12;
+            else if(content.includes(term))relevance+=2;
+          }
+          const structural=Math.max(0,8-this.buildTargetPriority(path));
+          return {path,relevance,structural};
+        });
+      const relevant=scored.filter(item=>item.relevance>0).sort((a,b)=>b.relevance-a.relevance||b.structural-a.structural);
+      const fallback=scored.filter(item=>item.path!=='package.json').sort((a,b)=>b.structural-a.structural);
+      const chosen=(relevant.length?relevant:fallback).slice(0,relevant.length?6:4);
+      for(const item of chosen)add(item.path);
     }
 
     if (out.length === 0) {
