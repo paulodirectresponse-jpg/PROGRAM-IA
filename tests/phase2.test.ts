@@ -49,6 +49,9 @@ function cleanup(input:{userId:string;workspaceId:string;projectId:string}) {
   db.prepare('DELETE FROM sandboxes WHERE project_id=?').run(input.projectId);
   db.prepare('DELETE FROM tool_executions WHERE project_id=?').run(input.projectId);
   db.prepare('DELETE FROM projects WHERE id=?').run(input.projectId);
+  db.prepare('DELETE FROM model_candidates WHERE profile_id IN (SELECT id FROM model_profiles WHERE user_id=?)').run(input.userId);
+  db.prepare('DELETE FROM model_profiles WHERE user_id=?').run(input.userId);
+  db.prepare('DELETE FROM providers WHERE user_id=?').run(input.userId);
   db.prepare('DELETE FROM workspaces WHERE id=?').run(input.workspaceId);
   db.prepare('DELETE FROM users WHERE id=?').run(input.userId);
 }
