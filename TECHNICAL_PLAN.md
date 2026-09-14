@@ -1,6 +1,6 @@
 # PROGRAM-IA — Plano técnico atual
 
-Atualizado em 2026-09-13.
+Atualizado em 2026-09-14.
 
 ## 1. Princípios
 
@@ -56,20 +56,29 @@ Papéis:
 - SENTINEL — interpretação de falha concreta;
 - SHIP — publicação solicitada.
 
-Estado atual: state machine determinística implementada com `forcedAgentKey`, vínculo ao ValidatorEngine, repair bounded/escalonamento local e Context Engine V2 integrado ao prompt real. Próximo gate fora da Fase 1: WebSocket/HMR, E2E framework real e benchmark real.
+Estado atual: state machine determinística implementada com `forcedAgentKey`, Context Engine V2, Tool-First/Sandbox, vínculo ao ValidatorEngine, repair bounded/escalonamento local e merge atômico após aprovação. Próximos blocos independentes: Browser Agent da Fase 3, benchmark da Fase 4 e runtime/HMR de produto.
 
 ## 5.1 Tool-First — Fase 2
 
-A camada Tool-First possui registry backend e journal durável. Ferramentas são classificadas por risco (`read`, `write`, `process`, `network`), disponibilidade e política de resume.
+A Fase 2 está implementada como camada operacional do Agent Engine.
 
-No estágio atual:
-- reads seguros do workspace podem executar e deixam evidência em `tool_executions`;
-- conteúdo sensível conhecido é bloqueado;
-- writes, patch e processos são declarados no registry, mas retornam `sandbox_required` até existir isolamento real;
-- nenhuma ferramenta mutável pode escrever no workspace oficial como atalho;
-- request content não é persistido no journal; somente hash e summary estrutural.
+- Tool Registry backend com contratos de risco, schema, availability e resume policy.
+- Tool journal durável por project/run/step/sandbox, com request hash, idempotency, status, erro e duração.
+- Reads podem consultar workspace oficial ou sandbox conforme o contexto.
+- Writes, deletes, patches e processos exigem sandbox.
+- FORGE materializa propostas em sandbox; o workspace oficial permanece intocado até aprovação.
+- Provider pode solicitar tools read-only em loop bounded por rounds, execuções e evidence budget.
+- Processos usam cwd do sandbox, HOME/TMP/config sintéticos, env allowlisted, output redacted, timeout, AbortSignal e process-tree cleanup.
+- ValidatorEngine continua sendo o único quality gate canônico.
+- Approval verifica conteúdo candidato, revisão-base e allowlist de paths.
+- Build/test artifacts extras não são promovidos automaticamente.
+- Merge final usa staging + segunda verificação de base + swap atômico + checkpoint + Context Engine sync.
+- Falha durante finalização ou persistência do workflow aciona restauração do estado oficial anterior.
+- Restart converte execução incerta em `interrupted`; mutation/process com side effect incerto não é repetido silenciosamente.
+- Continuação pode recuperar sandbox sobrevivente e contexto persistido.
 
-O próximo gate da Fase 2 é conectar os agentes a um worktree/sandbox por run, implementar supervisão de processo, recovery após restart e merge atômico somente depois de aprovação/validação.
+O sandbox desta fase é uma fronteira lógica do PROGRAM-IA. Ele não deve ser descrito como container/microVM ou isolamento adversarial de kernel; esse hardening pertence à infraestrutura caso o produto passe a executar código deliberadamente hostil.
+
 
 ## 6. Validação
 
