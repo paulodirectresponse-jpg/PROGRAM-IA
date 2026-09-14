@@ -1223,6 +1223,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
   let conv:any=null;
   let agentMessagePersisted=false;
   let acceptedEarly=false;
+  let conversationalOnly=false;
 
   try{
     const {content,mode='auto',appliedSkills=[]}=req.body;
@@ -1230,7 +1231,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
 
     const selectedMode=mode as AgentMode;
     const resolvedMode=LLMAdapterService.resolveRequestedMode(String(content),selectedMode);
-    const conversationalOnly=selectedMode==='auto'&&resolvedMode==='auto';
+    conversationalOnly=selectedMode==='auto'&&resolvedMode==='auto';
     const now=new Date().toISOString();
     conv=db.prepare('SELECT * FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
 
