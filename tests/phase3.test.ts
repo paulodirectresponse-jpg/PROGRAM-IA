@@ -91,12 +91,13 @@ test('phase3 real browser inspects static candidate on desktop and mobile with p
 test('phase3 browser blocks external requests while preserving local quality evidence',async()=>{
   const env=setupProject();
   try{
-    WorkspaceManager.writeFile(env.projectId,'index.html',`<!doctype html><html><body><h1>Local</h1><img alt="remote" src="https://example.com/remote.png"></body></html>`);
+    WorkspaceManager.writeFile(env.projectId,'index.html',`<!doctype html><html><body><h1>Local</h1><img alt="remote" src="https://example.com/remote.png?TOKEN=phase3-secret-value"><script>console.error('TOKEN=phase3-secret-value')</script></body></html>`);
     const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-browser-network'});
     const quality=await BrowserQualityService.inspect({userId:env.userId,projectId:env.projectId,sandboxId:sandbox.id,runId:'run-browser-network'});
     assert.equal(quality.status,'passed');
     assert.ok(quality.viewports.every(v=>v.blockedExternalRequests.some(url=>url.includes('example.com'))));
     assert.ok(quality.issues.some(issue=>issue.code==='external_requests_blocked'&&issue.severity==='info'));
+    assert.equal(JSON.stringify(quality).includes('phase3-secret-value'),false);
   }finally{cleanup(env);}
 });
 
