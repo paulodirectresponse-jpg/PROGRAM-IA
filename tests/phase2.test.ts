@@ -26,7 +26,10 @@ function setupProject() {
 }
 
 function cleanup(input:{userId:string;workspaceId:string;projectId:string}) {
+  const sandboxes=db.prepare('SELECT id FROM sandboxes WHERE project_id=?').all(input.projectId) as Array<{id:string}>;
+  for(const sandbox of sandboxes) SandboxManager.cleanup(sandbox.id,input.userId);
   WorkspaceManager.deleteProject(input.projectId);
+  db.prepare('DELETE FROM sandboxes WHERE project_id=?').run(input.projectId);
   db.prepare('DELETE FROM tool_executions WHERE project_id=?').run(input.projectId);
   db.prepare('DELETE FROM projects WHERE id=?').run(input.projectId);
   db.prepare('DELETE FROM workspaces WHERE id=?').run(input.workspaceId);
