@@ -1529,6 +1529,7 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
 
   try {
     const existingFiles = WorkspaceManager.getAllFilesContent(run.project_id);
+    const continuedRequirementIds = workflowRequirementIds(run.project_id, run.id, null);
     const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id=? ORDER BY created_at DESC, rowid DESC LIMIT 20')
       .all(run.conversation_id).reverse() as any[];
     const forge = RunService.createStep(
@@ -1564,6 +1565,7 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
       runId: run.id,
       stepId: forge,
       signal: controller.signal,
+      requirementIds: continuedRequirementIds,
     }, { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true });
 
     RunService.finishStep(forge, result.hasErrors ? 'failed' : 'completed', {
