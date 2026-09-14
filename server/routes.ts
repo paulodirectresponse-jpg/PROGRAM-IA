@@ -1776,7 +1776,7 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
       try {
         metadata.proposal.status = 'pending';
         metadata.hasErrors = true;
-        metadata.errorMessage = 'A aplicação falhou antes de concluir o merge aprovado. Você pode tentar novamente.';
+        metadata.errorMessage = 'A aplicação falhou de forma segura; o workspace oficial foi restaurado ou preservado no estado anterior. Você pode tentar novamente.';
         db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
       } catch {}
     }
