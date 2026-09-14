@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { db } from '../db/index.js';
 import { AgentEngine } from '../agent-engine/agentEngine.js';
 import { BrowserQualityService } from '../browser/browserQualityService.js';
@@ -20,6 +22,72 @@ const MAX_BENCHMARK_COST_USD=3;
 function now(){return new Date().toISOString();}
 function parseJson<T>(value:unknown,fallback:T):T{try{return typeof value==='string'?JSON.parse(value):((value as T)??fallback);}catch{return fallback;}}
 function roundMoney(value:number){return Math.round(value*1_000_000)/1_000_000;}
+
+function redactBenchmarkEvidence(value:string){
+  return String(value||'')
+    .replace(/\b(?:sk|ghp|github_pat|xox[baprs])-[-A-Za-z0-9_]{12,}\b/g,'[REDACTED]')
+    .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s]+/ig,'$1[REDACTED]')
+    .replace(/\b(API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY)\s*[:=]\s*[^\s&]+/ig,'$1=[REDACTED]');
+}
+function safeArtifactSegment(value:string){
+  const clean=String(value||'');
+  if(!/^[A-Za-z0-9._-]+$/.test(clean))throw new Error('Invalid benchmark artifact segment.');
+  return clean;
+}
+function benchmarkArtifactRoot(){
+  return path.resolve(process.env.FORGE_DATA_DIR||path.join(process.cwd(),'.data'),'benchmark-evidence');
+}
+function benchmarkScreenshotFile(userId:string,benchmarkRunId:string,caseId:string,viewport:string){
+  const segments=[userId,benchmarkRunId,caseId,viewport].map(safeArtifactSegment);
+  const root=benchmarkArtifactRoot();
+  const file=path.resolve(root,segments[0],segments[1],segments[2],`${segments[3]}.png`);
+  if(!file.startsWith(root+path.sep))throw new Error('Invalid benchmark artifact path.');
+  return file;
+}
+function persistBrowserEvidence(userId:string,benchmarkRunId:string,caseId:string,browserQuality:any){
+  if(!browserQuality)return null;
+  const viewports=Array.isArray(browserQuality.viewports)?browserQuality.viewports.map((viewport:any)=>{
+    const {screenshotPath,...publicViewport}=viewport||{};
+    let screenshotAvailable=false;
+    if(screenshotPath&&fs.existsSync(screenshotPath)){
+      try{
+        const target=benchmarkScreenshotFile(userId,benchmarkRunId,caseId,String(viewport.name||'viewport'));
+        fs.mkdirSync(path.dirname(target),{recursive:true});
+        fs.copyFileSync(screenshotPath,target);
+        screenshotAvailable=true;
+      }catch{}
+    }
+    return {...publicViewport,screenshotAvailable};
+  }):[];
+  return {
+    id:browserQuality.id||null,
+    status:browserQuality.status||null,
+    runtimeKind:browserQuality.runtimeKind||null,
+    framework:browserQuality.framework||null,
+    entryPath:browserQuality.entryPath||null,
+    url:browserQuality.url||null,
+    issues:Array.isArray(browserQuality.issues)?browserQuality.issues:[],
+    viewports,
+    durationMs:Number(browserQuality.durationMs||0),
+    reason:browserQuality.reason||null,
+    createdAt:browserQuality.createdAt||null,
+  };
+}
+function benchmarkModelOutputExcerpt(definition:BenchmarkCaseDefinition,result:any){
+  const payload=definition.mode==='review'
+    ? String(result.replyText||'')
+    : definition.mode==='plan'
+      ? JSON.stringify(result.plan||{})
+      : JSON.stringify({proposal:result.proposal||null,build:result.build||null});
+  return redactBenchmarkEvidence(payload).slice(0,12000);
+}
+function benchmarkCheckedFiles(definition:BenchmarkCaseDefinition,files:Record<string,string>){
+  const paths=[...new Set([
+    ...(definition.checks.requiredPaths||[]),
+    ...(definition.checks.content||[]).map(item=>item.path),
+  ])];
+  return Object.fromEntries(paths.map(file=>[file,redactBenchmarkEvidence(String(files[file]??'')).slice(0,8000)]));
+}
 
 function publicRun(row:any){
   return {
@@ -255,6 +323,7 @@ async function executeCase(runRow:any,caseRow:any,definition:BenchmarkCaseDefini
       result.errorReason||result.errorMessage||scored.checks.filter(item=>!item.passed).map(item=>item.key).join(',')
     );
 
+    const browserEvidence=persistBrowserEvidence(userId,benchmarkRunId,definition.id,apply?.browserQuality);
     const evidence={
       suiteKey:PHASE4_SUITE_KEY,
       title:definition.title,
@@ -265,9 +334,12 @@ async function executeCase(runRow:any,caseRow:any,definition:BenchmarkCaseDefini
       agentKey:result.agentKey,
       providerUsed:result.providerUsed,
       modelUsed:result.modelUsed,
+      modelOutputExcerpt:benchmarkModelOutputExcerpt(definition,result),
+      checkedFiles:benchmarkCheckedFiles(definition,finalFiles),
       validatorStatus:apply?.validation?.status||null,
       browserStatus:apply?.browserQuality?.status||null,
       browserQualityRunId:apply?.browserQuality?.id||null,
+      browserEvidence,
       toolExecutions:Number((db.prepare('SELECT COUNT(*) c FROM tool_executions WHERE run_id=?').get(agentRunId) as any)?.c||0),
       contextPacks:Number((db.prepare('SELECT COUNT(*) c FROM context_packs WHERE run_id=?').get(agentRunId) as any)?.c||0),
       invocations:metrics.invocationEvidence,
@@ -305,6 +377,14 @@ async function executeCase(runRow:any,caseRow:any,definition:BenchmarkCaseDefini
 }
 
 export class BenchmarkService {
+  static screenshotPath(benchmarkRunId:string,caseId:string,viewport:string,userId:string){
+    const row=db.prepare(`SELECT c.case_id FROM benchmark_case_runs c JOIN benchmark_runs r ON r.id=c.benchmark_run_id WHERE r.id=? AND r.user_id=? AND c.case_id=?`)
+      .get(benchmarkRunId,userId,caseId) as any;
+    if(!row)return null;
+    let file:string;
+    try{file=benchmarkScreenshotFile(userId,benchmarkRunId,caseId,viewport);}catch{return null;}
+    return fs.existsSync(file)?file:null;
+  }
   static preflight(userId:string,allowExpert=false){
     const base=configuredCandidates(userId,'BASE_FREE').map((candidate:any)=>({
       providerKey:candidate.provider_key,modelId:candidate.model_id,maxCostUsd:Number(candidate.max_cost_usd||0),priority:Number(candidate.priority||0),
