@@ -24,6 +24,7 @@ import { ToolRegistry } from './tooling/toolRegistry.js';
 import { ToolExecutionService } from './tooling/toolExecutionService.js';
 import { ToolExecutionJournal } from './tooling/toolExecutionJournal.js';
 import { SandboxManager } from './tooling/sandboxManager.js';
+import { BrowserQualityService } from './browser/browserQualityService.js';
 import { SandboxProposalApplyService } from './tooling/sandboxProposalApplyService.js';
 
 export const router = express.Router();
@@ -1730,6 +1731,8 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
     });
     metadata.proposal.sandboxId=sandboxApply.sandboxId || metadata.proposal.sandboxId;
     metadata.validation=sandboxApply.validation || null;
+    metadata.browserQuality=sandboxApply.browserQuality || null;
+    metadata.browserRepair=sandboxApply.browserRepair || null;
     metadata.hasErrors=!sandboxApply.success;
     if(!sandboxApply.success){
       metadata.proposal.status='failed_validation';
@@ -1744,6 +1747,8 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
         validation:sandboxApply.validation,
         sandboxId:sandboxApply.sandboxId,
         repair:(sandboxApply as any).repair,
+        browserQuality:sandboxApply.browserQuality,
+        browserRepair:sandboxApply.browserRepair,
       });
     }
     metadata.proposal.status='applied';
@@ -1766,6 +1771,8 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
       changedFiles:sandboxApply.changedFiles,
       needsVerification:sandboxApply.needsVerification,
       repair:(sandboxApply as any).repair || undefined,
+      browserQuality:sandboxApply.browserQuality,
+      browserRepair:sandboxApply.browserRepair,
       message:sandboxApply.needsVerification
         ? 'Alterações validadas em sandbox e aplicadas por merge atômico, mas ainda existem gates não executáveis.'
         : 'Alterações validadas em sandbox e aplicadas por merge atômico com sucesso.',
@@ -2409,6 +2416,49 @@ router.post('/projects/:projectId/runtime/stop', requireAuth, requireProjectOwne
 });
 
 function findPendingProposal(projectId:string,proposalId:string){const conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;if(!conversation)return null;const rows=db.prepare("SELECT metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[];for(const row of rows){try{const proposal=JSON.parse(row.metadata_json||'{}')?.proposal;if(proposal?.id===proposalId&&['pending','previewing'].includes(proposal.status))return proposal;}catch{}}return null;}
+function publicBrowserQuality(result:any){
+  if(!result)return result;
+  return {
+    ...result,
+    viewports:Array.isArray(result.viewports)
+      ? result.viewports.map(({screenshotPath:_screenshotPath,...viewport}:any)=>viewport)
+      : [],
+  };
+}
+
+router.post('/projects/:projectId/browser-quality/run',requireAuth,requireProjectOwner,async(req:Request,res:Response)=>{
+  try{
+    const sandboxId=String(req.body?.sandboxId||'');
+    if(!sandboxId)return res.status(400).json({error:'sandboxId é obrigatório.'});
+    const result=await BrowserQualityService.inspect({
+      userId:req.user!.id,
+      projectId:req.params.projectId,
+      sandboxId,
+      runId:req.body?.runId?String(req.body.runId):null,
+      stepId:req.body?.stepId?String(req.body.stepId):null,
+      entryPath:req.body?.entryPath?String(req.body.entryPath):undefined,
+    });
+    res.status(result.status==='failed'?422:200).json({success:result.status!=='failed',quality:publicBrowserQuality(result)});
+  }catch(error:any){
+    res.status(error?.code==='sandbox_forbidden'?403:500).json({error:String(error?.message||error)});
+  }
+});
+
+router.get('/projects/:projectId/browser-quality/:qualityRunId',requireAuth,requireProjectOwner,(req:Request,res:Response)=>{
+  const result=BrowserQualityService.get(req.params.qualityRunId);
+  if(!result||result.projectId!==req.params.projectId)return res.status(404).json({error:'Browser quality run não encontrado.'});
+  const sandbox=SandboxManager.get(result.sandboxId);
+  if(!sandbox||sandbox.userId!==req.user!.id)return res.status(404).json({error:'Browser quality run não encontrado.'});
+  res.json({success:true,quality:publicBrowserQuality(result)});
+});
+
+router.get('/projects/:projectId/browser-quality/:qualityRunId/screenshot/:viewport',requireAuth,requireProjectOwner,(req:Request,res:Response)=>{
+  const file=BrowserQualityService.screenshotPath(req.params.qualityRunId,req.params.viewport,req.user!.id,req.params.projectId);
+  if(!file)return res.status(404).json({error:'Screenshot não encontrado.'});
+  res.setHeader('Cache-Control','private, no-store');
+  res.sendFile(file);
+});
+
 router.get('/projects/:projectId/proposals/:proposalId/preview/status',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).json({status:'error',message:'Proposta temporÃ¡ria nÃ£o encontrada.'});const entry=proposal.files.find((f:any)=>f.action!=='delete'&&/(^|\/)index\.html$/i.test(f.path))?.path||WorkspaceManager.getPreviewInfo(req.params.projectId).entryPath;if(!entry)return res.status(422).json({status:'error',message:'A proposta nÃ£o possui um arquivo HTML de entrada.'});res.json({status:'running',entryPath:entry,message:'Preview temporÃ¡rio da proposta.'});});
 router.get('/preview-proposal/:projectId/:proposalId/*',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).send('Proposta temporÃ¡ria nÃ£o encontrada.');const preview=WorkspaceManager.getPreviewInfo(req.params.projectId),requested=path.normalize(req.params[0]||proposal.files.find((f:any)=>/(^|\/)index\.html$/i.test(f.path))?.path||preview.entryPath||'index.html').replace(/^(\.\.[\/\\])+/, '').replace(/\\/g,'/');const proposed=proposal.files.find((f:any)=>f.path.replace(/\\/g,'/')===requested);if(proposed?.action==='delete')return res.status(404).end();res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Content-Security-Policy',"sandbox allow-scripts; default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; connect-src 'self' https: wss:; form-action 'none'");if(proposed){res.type(path.extname(requested)||'text/plain').send(proposed.content);return;}const fallback=WorkspaceManager.resolveSafePath(req.params.projectId,requested);if(!fs.existsSync(fallback)||fs.statSync(fallback).isDirectory())return res.status(404).end();res.sendFile(fallback);});
 
