@@ -88,11 +88,15 @@ Ainda faltam correção automática localizada com revalidação, escalonamento 
 - Context Compiler V2 + ContextPack + telemetria implementados;
 - APIs de sync/snapshot/compile/commit/telemetry preservadas;
 - ContextPack agora alimenta SCOUT, STUDIO, FORGE e SENTINEL como fonte primária do prompt real;
+- requirement IDs são recuperados do Requirement Ledger pelo run e combinados com IDs explícitos;
 - continue, repair, waiting_approval/resume, apply-proposal, validation e checkpoint restore preservam continuidade via ContextCommit/Requirement Ledger;
+- retries contextuais recompilam novos ContextPacks por scope/budget/relevância, sem hard cap fixo de arquivos;
+- token budget considera conteúdo real quando disponível; arquivos oversized entram como full/partial/omitted explicitamente;
+- provider recebe o contexto representado pelo ContextPack sem truncamento oculto posterior;
 - model_invocations registra metadata contextual por ID de ContextPack;
 - ZIP/imports/checkpoints/workspace mutations sincronizam o índice;
 - nenhum limite lógico de quantidade de arquivos foi introduzido;
-- suíte da Fase 1 cobre integração real, invalidação, requirements, stale context e budget explícito.
+- suíte da Fase 1 cobre integração real, invalidação, requirements, stale context, retry e budget explícito.
 
 ## Pendências que bloqueiam “release completa”
 
