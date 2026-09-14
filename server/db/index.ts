@@ -216,6 +216,8 @@ export function initializeDatabase() {
     );
   }
 
+  db.prepare("UPDATE tool_executions SET status='interrupted',error_code=COALESCE(error_code,'worker_interrupted'),finished_at=COALESCE(finished_at,?) WHERE status IN ('queued','running')").run(new Date().toISOString());
+
     // Replace legacy global uniqueness with per-user uniqueness, preserving records.
   for (const [table, key] of [['providers', 'provider_key'], ['skills', 'slug']]) {
     const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table) as {sql:string};
