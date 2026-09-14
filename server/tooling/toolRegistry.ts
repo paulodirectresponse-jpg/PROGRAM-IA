@@ -73,6 +73,17 @@ const DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    key:'browser.inspect_page',
+    version:'1',
+    description:'Executa inspeção Playwright real do candidato no sandbox, em desktop e mobile, coletando evidência visual/runtime.',
+    risk:'network',
+    availability:'requires_sandbox',
+    resumePolicy:'replay_safe',
+    inputSchema:{
+      entryPath:{type:'string',description:'Entry path opcional para preview estático.'},
+    },
+  },
+  {
     key:'process.run',
     version:'1',
     description:'Executa processo supervisionado somente em sandbox isolado.',
