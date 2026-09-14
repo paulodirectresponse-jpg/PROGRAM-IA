@@ -13,6 +13,7 @@ function hydrate(row:any): ToolExecutionRecord {
     projectId:row.project_id || null,
     runId:row.run_id || null,
     stepId:row.step_id || null,
+    sandboxId:row.sandbox_id || null,
     toolKey:row.tool_key,
     toolVersion:row.tool_version || '1',
     status:row.status,
