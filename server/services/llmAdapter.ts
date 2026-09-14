@@ -60,6 +60,10 @@ export interface ChangeProposal {
   requiresConfirmation: boolean;
   files: FileChangeProposal[];
   status: 'pending' | 'previewing' | 'applied' | 'rejected' | 'failed_validation' | 'superseded';
+  sandboxId?: string;
+  baseRevision?: string;
+  sandboxValidation?: unknown;
+  toolExecutionIds?: string[];
 }
 
 export interface LLMExecutionResult {
