@@ -1115,7 +1115,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
     if(agentEngineEnabled){
       execution=RunService.start(req.user!.id,projectId,conversation.id,'build',.5);
       RequirementLedgerService.attachRun(projectId,planId,execution.runId);
-      executionRequirementIds=workflowRequirementIds(projectId,execution.runId,planId);
+      executionRequirementIds = workflowRequirementIds(projectId,execution.runId,planId);
       acceptedEarly=true;
       res.status(202).json({success:true,accepted:true,runId:execution.runId,planId});
     }
@@ -1533,7 +1533,7 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
     const existingFiles=recoverySandboxId
       ? SandboxManager.getAllFilesContent(recoverySandboxId,req.user!.id,run.project_id)
       : WorkspaceManager.getAllFilesContent(run.project_id);
-    const continuedRequirementIds=workflowRequirementIds(run.project_id,run.id,null);
+    const continuedRequirementIds = workflowRequirementIds(run.project_id,run.id,null);
     const history=db.prepare('SELECT sender,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20').all(run.conversation_id).reverse() as any[];
     const forge=RunService.createStep(
       run.id,'FORGE','Continuar implementação a partir do progresso salvo',undefined,'local',
