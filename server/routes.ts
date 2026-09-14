@@ -1746,6 +1746,59 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
       }
     }
 
+    const sandboxRunId = metadata.workflow?.runId || metadata.runId || null;
+    const sandboxApply = await SandboxProposalApplyService.apply({
+      userId:req.user!.id,
+      projectId,
+      proposal:metadata.proposal,
+      runId:sandboxRunId,
+      planId:metadata.planId || null,
+      summary,
+      originalRequest:metadata.originalRequest || summary,
+      shipRequested:Boolean(metadata.workflow?.shipRequested),
+    });
+    metadata.proposal.sandboxId=sandboxApply.sandboxId || metadata.proposal.sandboxId;
+    metadata.validation=sandboxApply.validation || null;
+    metadata.hasErrors=!sandboxApply.success;
+    if(!sandboxApply.success){
+      metadata.proposal.status='failed_validation';
+      metadata.errorMessage=sandboxApply.error;
+      if(metadata.workflow&&sandboxRunId){
+        metadata.workflow.status='failed';
+        metadata.workflow.trace=RunService.trace(sandboxRunId);
+      }
+      db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
+      return res.status(sandboxApply.statusCode || 422).json({
+        error:sandboxApply.error,
+        validation:sandboxApply.validation,
+        sandboxId:sandboxApply.sandboxId,
+        repair:(sandboxApply as any).repair,
+      });
+    }
+    metadata.proposal.status='applied';
+    metadata.checkpointId=sandboxApply.checkpointId;
+    metadata.sandbox={id:sandboxApply.sandboxId,baseRevision:metadata.proposal.baseRevision,changedFiles:sandboxApply.changedFiles};
+    metadata.hasErrors=false;
+    delete metadata.errorMessage;
+    if(metadata.workflow&&sandboxRunId){
+      metadata.workflow.status=sandboxApply.needsVerification?'needs_verification':'completed';
+      metadata.workflow.trace=RunService.trace(sandboxRunId);
+    }
+    db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'")
+      .run(new Date().toISOString(),projectId);
+    db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
+    return res.json({
+      success:true,
+      checkpointId:sandboxApply.checkpointId,
+      validation:sandboxApply.validation,
+      sandboxId:sandboxApply.sandboxId,
+      changedFiles:sandboxApply.changedFiles,
+      needsVerification:sandboxApply.needsVerification,
+      message:sandboxApply.needsVerification
+        ? 'Alterações validadas em sandbox e aplicadas por merge atômico, mas ainda existem gates não executáveis.'
+        : 'Alterações validadas em sandbox e aplicadas por merge atômico com sucesso.',
+    });
+
     rollbackCheckpointId = WorkspaceManager.createCheckpoint(projectId, `Antes: ${summary.slice(0, 60)}`);
     metadata.proposal.status = 'previewing';
     metadata.hasErrors = false;
