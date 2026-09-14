@@ -60,6 +60,10 @@ export interface ChangeProposal {
   requiresConfirmation: boolean;
   files: FileChangeProposal[];
   status: 'pending' | 'previewing' | 'applied' | 'rejected' | 'failed_validation' | 'superseded';
+  sandboxId?: string;
+  baseRevision?: string;
+  sandboxValidation?: unknown;
+  toolExecutionIds?: string[];
 }
 
 export interface LLMExecutionResult {
@@ -77,7 +81,7 @@ export interface LLMExecutionResult {
   invalidResponse?: boolean;
   errorReason?: string;
   usage?: {inputTokens:number;outputTokens:number;billedCostUsd:number};
-  diagnostics?: { strategy?: string; attempts?: number; targets?: string[]; failures?: string[] };
+  diagnostics?: { strategy?: string; attempts?: number; targets?: string[]; failures?: string[]; toolRounds?: number; toolExecutions?: number; toolBudgetExhausted?: boolean };
 }
 
 export interface ProviderConnectionTestResult {

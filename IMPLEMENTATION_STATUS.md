@@ -1,6 +1,6 @@
 # PROGRAM-IA — Implementation status
 
-Atualizado em 2026-09-13 após integração final local da Fase 1 — Context Engine V2.
+Atualizado em 2026-09-14 após conclusão técnica da Fase 2 — Tool-First + Sandbox + Resumability.
 
 A `main` está em consolidação para release. O CI remoto precisa terminar `success`; `cancelled`, `skipped` ou timeout não contam como verde.
 
@@ -98,6 +98,33 @@ Ainda faltam correção automática localizada com revalidação, escalonamento 
 - nenhum limite lógico de quantidade de arquivos foi introduzido;
 - suíte da Fase 1 cobre integração real, invalidação, requirements, stale context, retry e budget explícito.
 
+### Fase 2 — Tool-First + Sandbox + Resumability — CONCLUÍDA
+
+Implementado e coberto por suíte:
+- Tool Registry tipado com reads, writes, delete, patch e process;
+- policy de path/sensitive files, symlink e traversal;
+- journal durável de `tool_executions` com sandbox provenance, request hash, idempotency e resume policy;
+- sandbox por proposta/run com base manifest/hash e stale detection;
+- FORGE e fluxo direct-LLM materializam alterações no sandbox sem mutar o workspace oficial antes da aprovação;
+- tool loop real do provider usa somente reads e possui budgets/rounds bounded;
+- mutation tools escrevem apenas no sandbox;
+- `process.run` usa cwd isolado, HOME/TMP/config sintéticos, env allowlisted, redaction, timeout, AbortSignal e cleanup de árvore;
+- ValidatorEngine executa quality gates no sandbox e permanece canônico;
+- repair automático é localizado, tem no máximo uma tentativa por falha e revalidação;
+- approval verifica base revision e integridade do candidato;
+- arquivos extras gerados por build/test não entram no merge;
+- merge final promove somente paths allowlisted, usa staging/swap e rollback em falhas de finalização;
+- falha pós-merge de Requirement Ledger/ContextCommit/run state restaura o workspace anterior;
+- Context Engine é sincronizado depois de merge/rollback;
+- restart marca side effects incertos como `interrupted` e não os repete silenciosamente;
+- continue pode reutilizar sandbox sobrevivente;
+- não existe hard cap lógico de arquivos introduzido pela Fase 2;
+- migrations locais 005/006 cobrem tool journal e sandboxes;
+- Supabase remoto não foi alterado.
+
+Limite explicitamente documentado: o sandbox é uma fronteira lógica de filesystem/processo do PROGRAM-IA, não uma microVM/container de kernel para código deliberadamente hostil.
+
+
 ## Pendências que bloqueiam “release completa”
 
-Ver `CODEX_HANDOFF.md`: WebSocket/HMR, E2E externo real, Agent Engine com repair bounded, benchmark real e remoção destrutiva pós-reconciliação.
+Pendências fora da Fase 2: Browser Agent/quality loop da Fase 3, benchmark real de 30 tarefas da Fase 4, WebSocket/HMR + E2E de frameworks, E2E de integrações externas e remoções destrutivas somente após reconciliação.

@@ -13,6 +13,7 @@ import {ValidatorEngine} from '../server/services/validatorEngine.js';
 import {RunService} from '../server/services/runService.js';
 import {RequirementLedgerService} from '../server/services/requirementLedgerService.js';
 import {AgentEngine} from '../server/agent-engine/agentEngine.js';
+import {SandboxManager} from '../server/tooling/sandboxManager.js';
 import type {Server} from 'node:http';
 
 let server:Server, base:string, tokenA:string, tokenB:string, userA:string, userB:string;
@@ -689,6 +690,44 @@ function configureLifecycleProfile(userId:string, profile:'BASE_FREE'|'EXPERT_PA
   db.prepare('INSERT INTO model_candidates(id,profile_id,provider_key,model_id,priority,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
     .run(`candidate-${userId}-${profile}-${Date.now()}`,profileId,providerKey,modelId,0,1,now,now);
 }
+
+test('direct LLM build becomes sandbox proposal and never mutates official workspace before approval', async (t) => {
+  delete process.env.AGENT_ENGINE_ENABLED;
+  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
+  db.prepare("UPDATE providers SET is_active=1,is_configured=1,connection_status='connected' WHERE user_id=? AND provider_key='omniroute'").run(userA);
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>({
+    replyText:'proposta pronta',
+    mode:'build',
+    decisionType:'change',
+    isDemonstrativeFallback:false,
+    providerUsed:'OmniRoute',
+    modelUsed:'auto',
+    hasErrors:false,
+    build:{summary:'change',explanation:'change',files:[{path:'index.html',action:'modify',content:'<html><body>NEW</body></html>'}]},
+    usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}
+  } as any));
+  const projectId=createLifecycleProject('direct-sandbox-proposal');
+  WorkspaceManager.writeFile(projectId,'index.html','<html><body>ORIGINAL</body></html>');
+  try {
+    const r=await fetch(`${base}/conversations/${projectId}/messages`,{
+      method:'POST',
+      headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
+      body:JSON.stringify({content:'altere a página',mode:'build'})
+    });
+    assert.equal(r.status,200);
+    const body=await r.json();
+    assert.equal(body.proposal?.status,'pending');
+    assert.ok(body.proposal?.sandboxId);
+    assert.equal(WorkspaceManager.readFile(projectId,'index.html'),'<html><body>ORIGINAL</body></html>');
+    assert.equal(SandboxManager.readFile(body.proposal.sandboxId,userA,'index.html',projectId),'<html><body>NEW</body></html>');
+    const writes=db.prepare("SELECT COUNT(*) c FROM tool_executions WHERE project_id=? AND sandbox_id=? AND tool_key='workspace.write_file' AND status='succeeded'")
+      .get(projectId,body.proposal.sandboxId) as any;
+    assert.equal(writes.c,1);
+  } finally {
+    WorkspaceManager.deleteProject(projectId);
+    db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
+  }
+});
 
 test('agent proposal lifecycle waits for approval instead of completing run', async (t) => {
   process.env.AGENT_ENGINE_ENABLED='true';

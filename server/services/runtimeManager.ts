@@ -116,11 +116,11 @@ export async function killProcessTree(child: ChildProcessWithoutNullStreams) {
   try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch {} }
 }
 
-async function runTool(cwd: string, packageManager: string, args: string[], timeoutMs: number, signal?: AbortSignal) {
+async function runTool(cwd: string, packageManager: string, args: string[], timeoutMs: number, signal?: AbortSignal, envOverride?: NodeJS.ProcessEnv) {
   const { command, prefix } = toolCommand(packageManager);
   const started = Date.now();
   return await new Promise<{ ok: boolean; output: string; durationMs: number; timedOut: boolean }>((resolve) => {
-    const child = spawn(command, [...prefix, ...args], { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32', env: ExecutionWorker.safeEnvironment() });
+    const child = spawn(command, [...prefix, ...args], { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32', env: envOverride || ExecutionWorker.safeEnvironment() });
     let output = '';
     let settled = false;
     const finish = (value: { ok: boolean; output: string; durationMs: number; timedOut: boolean }) => {
@@ -138,6 +138,15 @@ async function runTool(cwd: string, packageManager: string, args: string[], time
     child.on('error', e => finish({ ok: false, output: e.message, durationMs: Date.now() - started, timedOut: false }));
     child.on('close', code => finish({ ok: code === 0, output, durationMs: Date.now() - started, timedOut: signal?.aborted || Date.now() - started >= timeoutMs }));
   });
+}
+
+export async function ensureDependenciesAt(cwd:string,signal?:AbortSignal){
+  const pkg=readPackage(cwd);
+  if(!pkg)return {ok:true,skipped:true,output:'Projeto sem package.json.',durationMs:0,packageManager:'none'};
+  const packageManager=detectPackageManager(cwd);
+  if(fs.existsSync(path.join(cwd,'node_modules')))return {ok:true,skipped:true,output:'Dependências já presentes.',durationMs:0,packageManager};
+  const result=await runTool(cwd,packageManager,installArgs(packageManager,cwd),INSTALL_TIMEOUT_MS,signal,ExecutionWorker.sandboxEnvironment(cwd));
+  return {...result,skipped:false,packageManager};
 }
 
 async function waitForHttp(port: number, signal?: AbortSignal) {

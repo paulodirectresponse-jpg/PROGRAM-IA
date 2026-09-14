@@ -1,6 +1,6 @@
 # PROGRAM-IA — Handoff para Codex
 
-Atualizado em 2026-09-13 após endurecimento local de C/H/G sobre `19aa28f`.
+Atualizado em 2026-09-14 após conclusão técnica da Fase 2.
 
 Este arquivo contém somente pendências reais. Não trate itens já implementados como abertos, e não declare gates externos sem credencial/teste real.
 
@@ -19,6 +19,15 @@ Este arquivo contém somente pendências reais. Não trate itens já implementad
 A Fase 1 está integrada localmente. `ContextEngineV2` alimenta SCOUT, STUDIO, FORGE e SENTINEL; `ContextPack` entra no prompt real do provider; requirements sobrevivem ao workflow; ContextCommit registra transitions materiais; workspace/import/checkpoint invalidam índice por hash; model_invocations guarda metadata contextual.
 
 **Não reimplementar** `ProjectFileIndex`, `ArchitectureGraphService`, `ContextCommitService`, `ContextCompiler`, schemas ou APIs do Context Engine V2. Próximos trabalhos devem partir desse contrato já validado.
+
+## Fase 2 — Tool-First + Sandbox + Resumability
+
+A Fase 2 está implementada. Não reimplementar Tool Registry, ToolPolicy, ToolExecutionJournal, SandboxManager, process supervisor, proposal sandbox, bounded tool loop, restart recovery ou atomic merge.
+
+Antes de alterar esse fluxo, leia `PHASE2_CODEX_HANDOFF.md`, que agora documenta o contrato final e seus gates.
+
+Limite de segurança conhecido: o sandbox atual é lógico (filesystem/processo/env) e não deve ser promovido como microVM/container de kernel para execução adversarial. Se o threat model mudar para código deliberadamente hostil, adicionar isolamento infra sem enfraquecer os gates atuais.
+
 
 ## C — Runtime de frameworks e preview executável
 
@@ -56,20 +65,23 @@ A Fase 1 está integrada localmente. `ContextEngineV2` alimenta SCOUT, STUDIO, F
 
 ## H — Agent Engine
 
-### Implementado localmente
-1. State machine determinística básica: SCOUT, STUDIO quando visual, FORGE, SENTINEL e SHIP quando publicação é solicitada.
-2. SCOUT/STUDIO registram pacotes de contexto sem chain-of-thought.
-3. FORGE executa com `forcedAgentKey`, impedindo divergência entre `agent_steps.agent_key` e `model_invocations.agent_key`.
-4. ValidatorEngine é registrado no fluxo definitivo de `apply-proposal`.
-5. Falha de validation cria evidência SENTINEL e rollback seguro já existente.
-6. Testes cobrem backend sem STUDIO, visual com STUDIO, publish com SHIP e consistência de agent key.
+### Implementado
+1. State machine determinística: SCOUT, STUDIO quando visual, FORGE, SENTINEL e SHIP.
+2. Context Engine V2 é fonte primária e requirements sobrevivem ao workflow.
+3. Tool loop read-only bounded integra provider e Tool Registry.
+4. FORGE materializa proposta no sandbox; nenhuma alteração gerada é aplicada no workspace oficial antes da aprovação.
+5. ValidatorEngine valida o sandbox antes de merge.
+6. Falha executada produz SENTINEL evidence e um único FORGE repair localizado com revalidação.
+7. BASE_FREE → EXPERT_PAID ocorre apenas no step bloqueado; steps seguintes voltam a BASE_FREE.
+8. AbortSignal cobre provider/tool/process supervision testada.
+9. Restart/interrupted side effects são recuperados sem replay silencioso.
+10. Merge aprovado é base-aware, allowlisted e rollback-safe.
 
-### Ainda falta para gate completo
-1. WebSocket/runtime error evidence acoplado ao SENTINEL.
-2. Correção automática localizada após falha executada, com uma tentativa bounded e revalidação success/fail.
-3. Escalonamento BASE_FREE → EXPERT_PAID somente no step bloqueado, com retorno ao BASE_FREE no step seguinte.
-4. Abort cobrindo provider, worker, runtime relacionado e promises pendentes em teste integrado.
-5. Benchmark real de 30 tarefas com providers reais.
+### Ainda falta fora da Fase 2
+1. Browser/runtime visual evidence e repair loop da Fase 3.
+2. WebSocket/HMR autenticado acoplado ao runtime/browser.
+3. Benchmark real de 30 tarefas com providers reais da Fase 4.
+
 
 ## B / I — remoção física do snapshot legado
 
@@ -81,10 +93,6 @@ O fluxo operacional usa persistência canônica normalizada. `forge_sync_snapsho
 3. Depois da janela de rollback aprovada, remover leitura de snapshot legado e tabela antiga por migration destrutiva versionada.
 4. Remover colunas espelho antigas somente após reconciliação real.
 
-## Validação local desta rodada
+## Validação
 
-- Fase 1 isolada/integrada: 10/10 PASS.
-- Suíte direcionada `foundation/http/directPersistence/regression/agentEngine/phase0/phase1`: 104/104 PASS.
-- `npm test`: 64/64 PASS.
-- `npm run build`: PASS.
-- `npx playwright test`: 1/1 PASS.
+A branch da Fase 2 deve ser integrada à `main` somente com lint, suíte direcionada incluindo `phase2.test.ts`, `npm test`, build e Playwright em verde no HEAD final.

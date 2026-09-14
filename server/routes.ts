@@ -20,6 +20,11 @@ import { CloudSyncService } from './services/cloudSyncService.js';
 import { RuntimeManager } from './services/runtimeManager.js';
 import { RequirementLedgerService } from './services/requirementLedgerService.js';
 import { ContextEngineV2, ContextCommitService, ContextCompiler } from './context-engine/contextEngine.js';
+import { ToolRegistry } from './tooling/toolRegistry.js';
+import { ToolExecutionService } from './tooling/toolExecutionService.js';
+import { ToolExecutionJournal } from './tooling/toolExecutionJournal.js';
+import { SandboxManager } from './tooling/sandboxManager.js';
+import { SandboxProposalApplyService } from './tooling/sandboxProposalApplyService.js';
 
 export const router = express.Router();
 const activeProjects = new Set<string>();
@@ -55,6 +60,40 @@ function upsertRepository(projectId: string, remoteUrl: string, branch: string, 
 function workflowRequirementIds(projectId: string, runId?: string | null, planId?: string | null): string[] {
   const rows = runId ? RequirementLedgerService.listByRun(runId) : (planId ? RequirementLedgerService.listByPlan(projectId, planId) : []);
   return rows.map(row => row.requirement_key).filter(Boolean);
+}
+
+async function materializeProposalInSandbox(input:{
+  userId:string;
+  projectId:string;
+  runId?:string|null;
+  stepId?:string|null;
+  proposal:any;
+  signal?:AbortSignal;
+}) {
+  if(!input.proposal?.id || !Array.isArray(input.proposal?.files) || !input.proposal.files.length) return input.proposal;
+  if(input.proposal.sandboxId) return input.proposal;
+  const sandbox=SandboxManager.create({userId:input.userId,projectId:input.projectId,runId:input.runId||null,stepId:input.stepId||null});
+  const executionIds:string[]=[];
+  for(const file of input.proposal.files){
+    const execution=await ToolExecutionService.execute({
+      userId:input.userId,projectId:input.projectId,runId:input.runId||null,stepId:input.stepId||null,sandboxId:sandbox.id,signal:input.signal,
+    },{
+      toolKey:file.action==='delete'?'workspace.delete_file':'workspace.write_file',
+      input:file.action==='delete'?{path:file.path}:{path:file.path,content:String(file.content||'')},
+      idempotencyKey:`${input.proposal.id}:${file.action}:${file.path}`,
+    });
+    if(execution.executionId)executionIds.push(execution.executionId);
+    if(execution.status!=='succeeded')throw Object.assign(new Error(execution.message||'Falha ao materializar proposta no sandbox.'),{code:execution.errorCode||'sandbox_materialization_failed'});
+  }
+  const validation=await ValidatorEngine.validate({
+    projectId:input.projectId,runId:input.runId||undefined,stepId:input.stepId||undefined,
+    signal:input.signal,sandboxId:sandbox.id,userId:input.userId,
+  });
+  input.proposal.sandboxId=sandbox.id;
+  input.proposal.baseRevision=sandbox.baseHash;
+  input.proposal.sandboxValidation=validation;
+  input.proposal.toolExecutionIds=executionIds;
+  return input.proposal;
 }
 
 function projectRepositoryContext(projectId: string, legacyProject?: any) {
@@ -529,6 +568,35 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 // ==========================================
 // PHASE 1 — CONTEXT ENGINE V2 CORE API
 // ==========================================
+
+router.get('/projects/:projectId/tools', requireAuth, requireProjectOwner, (_req: Request, res: Response) => {
+  res.json({ success:true, tools:ToolRegistry.list() });
+});
+
+router.post('/projects/:projectId/tools/execute', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  try {
+    const result=await ToolExecutionService.execute({
+      userId:req.user!.id,
+      projectId:req.params.projectId,
+      runId:req.body?.runId ? String(req.body.runId) : null,
+      stepId:req.body?.stepId ? String(req.body.stepId) : null,
+      sandboxId:req.body?.sandboxId ? String(req.body.sandboxId) : null,
+    },{
+      toolKey:String(req.body?.toolKey || ''),
+      input:req.body?.input && typeof req.body.input==='object' ? req.body.input : {},
+      idempotencyKey:req.body?.idempotencyKey ? String(req.body.idempotencyKey) : null,
+    });
+    const status=result.status==='blocked' ? 409 : result.status==='failed' ? 422 : result.status==='aborted' ? 499 : 200;
+    res.status(status).json({success:result.status==='succeeded',result});
+  } catch (err:any) {
+    res.status(500).json({error:String(err?.message || err)});
+  }
+});
+
+router.get('/projects/:projectId/tool-executions/:runId', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  const rows=ToolExecutionJournal.listByRun(String(req.params.runId || '')).filter(row=>!row.projectId || row.projectId===req.params.projectId);
+  res.json({success:true,executions:rows});
+});
 
 router.post('/projects/:projectId/context/sync', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   try {
@@ -1329,11 +1397,10 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     }
 
     let checkpointCreatedId: string | null = null;
-    let rollbackCheckpointId: string | null = null;
     let validation: Awaited<ReturnType<typeof ValidatorEngine.validate>>|null=null;
 
-    // Every code change is a server-owned proposal. The browser receives a copy for review,
-    // but approval later resolves the immutable files stored with this message.
+    // Every code change is a server-owned proposal. The browser receives a copy for review;
+    // no generated code is ever written to the official workspace before explicit approval.
     if (result.build?.files?.length && !result.proposal && !result.isDemonstrativeFallback && !result.hasErrors) {
       result.proposal = {
         id: `proposal-${crypto.randomUUID()}`,
@@ -1344,55 +1411,16 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       };
     }
 
-    // STRICT SAFETY CHECK:
-    // Fallback mode or invalid responses NEVER apply code or create checkpoints!
-    const canApplyFiles =
-      !result.isDemonstrativeFallback &&
-      !result.hasErrors &&
-      result.decisionType !== 'invalid_response' &&
-      result.decisionType !== 'blocked_no_provider';
-
-    if (canApplyFiles && result.build?.files?.length && (mode === 'build' || mode === 'auto') && !result.proposal) {
-      for (const file of result.build.files) WorkspaceManager.resolveSafePath(projectId, file.path);
-      rollbackCheckpointId=WorkspaceManager.createCheckpoint(projectId, `Antes: ${content.slice(0, 60)}`, 'Ponto de restauraÃ§Ã£o antes da alteraÃ§Ã£o.');
-    }
-    if (canApplyFiles) {
-      if (mode === 'build' && !result.proposal && result.build?.files && result.build.files.length > 0) {
-        for (const file of result.build.files) {
-          if (file.action === 'delete') {
-            WorkspaceManager.deleteFile(projectId, file.path);
-          } else {
-            WorkspaceManager.writeFile(projectId, file.path, file.content);
-          }
-        }
-        checkpointCreatedId = WorkspaceManager.createCheckpoint(
-          projectId,
-          `Build: ${content.slice(0, 30)}...`,
-          result.build.summary || 'AlteraÃ§Ãµes validadas e aplicadas no workspace'
-        );
-      } else if (mode === 'auto' && result.build?.files && !result.proposal) {
-        for (const file of result.build.files) {
-          if (file.action === 'delete') {
-            WorkspaceManager.deleteFile(projectId, file.path);
-          } else {
-            WorkspaceManager.writeFile(projectId, file.path, file.content);
-          }
-        }
-        checkpointCreatedId = WorkspaceManager.createCheckpoint(
-          projectId,
-          `Auto: ${content.slice(0, 30)}...`,
-          result.build.summary || 'AlteraÃ§Ãµes aplicadas automaticamente'
-        );
-      }
-    }
-    if(checkpointCreatedId){
-      validation=await ValidatorEngine.validate({projectId,checkpointId:checkpointCreatedId,runId:execution?.runId,stepId:execution?.stepId,signal:controller.signal});
-      if(validation.status==='failed'&&rollbackCheckpointId){
-        WorkspaceManager.restoreCheckpoint(projectId,rollbackCheckpointId);
-        result.hasErrors=true;
-        result.errorMessage='A alteraÃ§Ã£o foi revertida automaticamente porque uma verificaÃ§Ã£o real falhou.';
-        checkpointCreatedId=null;
-      }
+    if(result.proposal?.files?.length && !result.hasErrors && !result.isDemonstrativeFallback){
+      await materializeProposalInSandbox({
+        userId:req.user!.id,
+        projectId,
+        runId:execution?.runId || null,
+        stepId:execution?.stepId || null,
+        proposal:result.proposal,
+        signal:controller.signal,
+      });
+      validation=(result.proposal as any).sandboxValidation || null;
     }
 
     // Save plan if generated
@@ -1533,7 +1561,14 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
   RunService.resume(run.id);
 
   try {
-    const existingFiles = WorkspaceManager.getAllFilesContent(run.project_id);
+    const interruptedTools=ToolExecutionJournal.recoverable(run.id);
+    let recoverySandboxId:string|null=null;
+    for(const execution of [...interruptedTools].reverse()){
+      if(execution.sandboxId){
+        try{ SandboxManager.assertAccess(execution.sandboxId,req.user!.id,run.project_id); recoverySandboxId=execution.sandboxId; break; }catch{}
+      }
+    }
+    const existingFiles = recoverySandboxId ? SandboxManager.getAllFilesContent(recoverySandboxId,req.user!.id,run.project_id) : WorkspaceManager.getAllFilesContent(run.project_id);
     const continuedRequirementIds = workflowRequirementIds(run.project_id, run.id, null);
     const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id=? ORDER BY created_at DESC, rowid DESC LIMIT 20')
       .all(run.conversation_id).reverse() as any[];
@@ -1546,7 +1581,7 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
       RunService.context('local', {
         objective,
         acceptanceCriteria: ['Continuar sem repetir etapas já concluídas', 'Gerar alteração concreta e revisável'],
-        snippets: Object.entries(existingFiles).slice(0,10).map(([file,content])=>({file,content:String(content).slice(0,6000)})),
+        snippets: [{source:'ContextEngineV2',fileCount:Object.keys(existingFiles).length,recoverySandboxId}],
         previousAttempt: 'SCOUT/STUDIO preservados; retomada iniciada no FORGE.',
         constraints: ['Não refazer SCOUT/STUDIO concluídos', 'Não aplicar definitivamente antes da aprovação'],
       })
@@ -1571,6 +1606,8 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
       stepId: forge,
       signal: controller.signal,
       requirementIds: continuedRequirementIds,
+      toolSandboxId: recoverySandboxId || undefined,
+      skipContextSync:Boolean(recoverySandboxId),
     }, { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true });
 
     RunService.finishStep(forge, result.hasErrors ? 'failed' : 'completed', {
@@ -1589,6 +1626,10 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
         files: result.build.files,
         status: 'pending',
       };
+    }
+
+    if(result.proposal?.files?.length&&!result.hasErrors){
+      await materializeProposalInSandbox({userId:req.user!.id,projectId:run.project_id,runId:run.id,stepId:forge,proposal:result.proposal,signal:controller.signal});
     }
 
     if (result.hasErrors || result.invalidResponse || !result.proposal?.files?.length) {
@@ -1638,8 +1679,6 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
 
 router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   const projectId = req.params.projectId;
-  let rollbackCheckpointId: string | null = null;
-  let workspaceMutated = false;
   let proposalMessage: any = null;
   let metadata: any = null;
 
@@ -1678,249 +1717,71 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
       }
     }
 
-    rollbackCheckpointId = WorkspaceManager.createCheckpoint(projectId, `Antes: ${summary.slice(0, 60)}`);
-    metadata.proposal.status = 'previewing';
-    metadata.hasErrors = false;
-    delete metadata.errorMessage;
-    db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
-
-    workspaceMutated = true;
-    for (const file of files) {
-      if (file.action === 'delete') WorkspaceManager.deleteFile(projectId, file.path);
-      else WorkspaceManager.writeFile(projectId, file.path, file.content);
-    }
-
-    const checkpointId = WorkspaceManager.createCheckpoint(projectId, summary.slice(0, 100), summary);
-    const workflowRunId = metadata.workflow?.runId || metadata.runId || null;
-    const activeRequirementIds = workflowRequirementIds(projectId, workflowRunId, metadata.planId || null);
-    const requirementUpdate=(status:'pending'|'implemented'|'verified'|'failed'|'waived',evidence?:any,changedFiles?:string[])=>{
-      if(workflowRunId) RequirementLedgerService.setStatusForRun(workflowRunId,status,evidence,changedFiles);
-      else if(metadata.planId) RequirementLedgerService.setStatusForPlan(projectId,metadata.planId,status,evidence,changedFiles);
-    };
-    requirementUpdate('implemented',{type:'proposal_applied',checkpointId,at:new Date().toISOString()},files.map((file:any)=>file.path));
-    if (workflowRunId) ContextEngineV2.recordCommit({ projectId, runId: workflowRunId, agentKey: 'FORGE', scope: 'TASK', task: metadata.originalRequest || summary, changedFiles: files.map((file:any)=>file.path), requirementIds: activeRequirementIds, validation: { status: 'applied', checkpointId }, nextState: { next: 'VALIDATE' } });
-    if (workflowRunId) RunService.resume(workflowRunId);
-    const validationStepId = workflowRunId
-      ? RunService.createStep(workflowRunId, 'SENTINEL', 'Executar ValidatorEngine após aplicação', RunService.nextOrderIndex(workflowRunId), 'micro', { proposalId, checkpointId })
-      : undefined;
-
-    const validation = await ValidatorEngine.validate({
+    const sandboxRunId = metadata.workflow?.runId || metadata.runId || null;
+    const sandboxApply = await SandboxProposalApplyService.apply({
+      userId:req.user!.id,
       projectId,
-      checkpointId,
-      runId: workflowRunId || undefined,
-      stepId: validationStepId,
+      proposal:metadata.proposal,
+      runId:sandboxRunId,
+      planId:metadata.planId || null,
+      summary,
+      originalRequest:metadata.originalRequest || summary,
+      shipRequested:Boolean(metadata.workflow?.shipRequested),
     });
-
-    if (validationStepId) {
-      ContextEngineV2.recordCommit({ projectId, runId: workflowRunId || null, taskId: validationStepId, agentKey: 'SENTINEL', scope: 'MICRO', task: 'ValidatorEngine após aplicação', changedFiles: files.map((file:any)=>file.path), requirementIds: activeRequirementIds, validation, blockers: validation.status === 'failed' ? [String(validation.results.find((item:any)=>item.status==='fail')?.output || 'validation_failed')] : [], nextState: { status: validation.status } });
-      RunService.finishStep(validationStepId, validation.status === 'failed' ? 'failed' : 'completed', {
-        validator: 'ValidatorEngine',
-        status: validation.status,
-        failedGate: validation.results.find((item: any) => item.status === 'fail')?.tool || null,
-        security: validation.security?.status,
+    metadata.proposal.sandboxId=sandboxApply.sandboxId || metadata.proposal.sandboxId;
+    metadata.validation=sandboxApply.validation || null;
+    metadata.hasErrors=!sandboxApply.success;
+    if(!sandboxApply.success){
+      metadata.proposal.status='failed_validation';
+      metadata.errorMessage=sandboxApply.error;
+      if(metadata.workflow&&sandboxRunId){
+        metadata.workflow.status='failed';
+        metadata.workflow.trace=RunService.trace(sandboxRunId);
+      }
+      db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
+      return res.status(sandboxApply.statusCode || 422).json({
+        error:sandboxApply.error,
+        validation:sandboxApply.validation,
+        sandboxId:sandboxApply.sandboxId,
+        repair:(sandboxApply as any).repair,
       });
     }
-
-    if (validation.status === 'failed') {
-      WorkspaceManager.restoreCheckpoint(projectId, rollbackCheckpointId);
-      workspaceMutated = false;
-      const failedResult = validation.results.find((item: any) => item.status === 'fail');
-      const errorOutput = failedResult?.output || validation.security?.issues?.join('; ') || 'Gate executado falhou';
-      const affectedFiles = files.map((file: any) => file.path);
-      const diagnosis = {
-        cause: `Falha no gate ${failedResult?.tool || validation.security?.status || 'validator'}`,
-        affectedFiles,
-        repairInstruction: 'Corrija somente a falha apontada pelo ValidatorEngine, mantendo o escopo da proposta original.',
-        confidence: 0.7,
-      };
-      const evidenceStepId = workflowRunId
-        ? RunService.createStep(workflowRunId, 'SENTINEL', 'Diagnosticar falha real de validação', RunService.nextOrderIndex(workflowRunId), 'micro', RunService.context('micro', {
-            objective: 'Identificar a causa concreta desta falha e a menor correção necessária.',
-            snippets: [{ failedGate: failedResult?.tool || null, affectedFiles, originalProposal: files.map((file: any) => ({ path: file.path, action: file.action })) }],
-            errors: [errorOutput],
-            previousAttempt: 'A proposta original foi aplicada, validada, falhou e foi revertida para o checkpoint anterior.',
-            constraints: ['Sem revisão genérica', 'Sem carregar projeto inteiro', 'Sem aplicar terceira tentativa automática'],
-          }))
-        : undefined;
-      if (evidenceStepId) {
-        ContextEngineV2.recordCommit({ projectId, runId: workflowRunId || null, taskId: evidenceStepId, agentKey: 'SENTINEL', scope: 'MICRO', task: 'Diagnóstico de falha real de validação', decisions: [diagnosis.cause, diagnosis.repairInstruction], changedFiles: affectedFiles, requirementIds: activeRequirementIds, validation, blockers: [errorOutput], nextState: { next: 'FORGE_REPAIR' } });
-        RunService.finishStep(evidenceStepId, 'completed', diagnosis);
-      }
-
-      if (workflowRunId) {
-        let repairStepId: string | null = null;
-        let repairRollbackId: string | null = null;
-        try {
-          repairStepId = RunService.createStep(workflowRunId, 'FORGE', 'Corrigir falha de validação', RunService.nextOrderIndex(workflowRunId), 'micro', RunService.context('micro', {
-            objective: metadata.originalRequest || summary,
-            snippets: [{ affectedFiles, failedGate: failedResult?.tool || null, diagnosis }],
-            diff: files.map((file: any) => ({ path: file.path, action: file.action })),
-            errors: [errorOutput],
-            previousAttempt: 'Repair automático bounded: única correção automática permitida para esta aprovação.',
-            constraints: ['Corrigir somente a falha evidenciada', 'Não ampliar escopo', 'Não tentar terceira correção automática'],
-          }));
-          const repairResult = await AgentEngine.execute({
-            prompt: `${diagnosis.repairInstruction}
-Falha concreta: ${errorOutput}`,
-            mode: 'build',
-            projectId,
-            existingFiles: WorkspaceManager.getAllFilesContent(projectId),
-            appliedSkills: [],
-            conversationHistory: [],
-            userId: req.user!.id,
-            runId: workflowRunId,
-            stepId: repairStepId,
-            requirementIds: activeRequirementIds,
-            focusPaths: affectedFiles,
-          }, { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true, repair: true });
-          const repairFiles = repairResult.build?.files || repairResult.proposal?.files || [];
-          if (!Array.isArray(repairFiles) || repairFiles.length === 0) throw new Error('Repair não retornou arquivos aplicáveis.');
-          for (const file of repairFiles) {
-            WorkspaceManager.resolveSafePath(projectId, file.path);
-            if (!['create', 'update', 'delete', 'modify'].includes(file.action) || (file.action !== 'delete' && typeof file.content !== 'string')) throw new Error('Repair retornou arquivo inválido.');
-          }
-          repairRollbackId = WorkspaceManager.createCheckpoint(projectId, `Antes do repair: ${summary.slice(0, 50)}`);
-          workspaceMutated = true;
-          for (const file of repairFiles) {
-            if (file.action === 'delete') WorkspaceManager.deleteFile(projectId, file.path);
-            else WorkspaceManager.writeFile(projectId, file.path, file.content);
-          }
-          const repairCheckpointId = WorkspaceManager.createCheckpoint(projectId, `Repair: ${summary.slice(0, 70)}`, 'Correção automática bounded após falha real do ValidatorEngine.');
-          ContextEngineV2.recordCommit({ projectId, runId: workflowRunId, taskId: repairStepId, agentKey: 'FORGE', scope: 'LOCAL', task: 'Repair automático bounded aplicado', decisions: ['Corrigir somente falha evidenciada pelo ValidatorEngine'], changedFiles: repairFiles.map((file:any)=>file.path), requirementIds: activeRequirementIds, validation: { status: 'repair_applied', checkpointId: repairCheckpointId }, blockers: [], nextState: { next: 'REVALIDATE' } });
-          const revalidationStepId = RunService.createStep(workflowRunId, 'SENTINEL', 'Reexecutar ValidatorEngine após repair', RunService.nextOrderIndex(workflowRunId), 'micro', { proposalId, repairCheckpointId });
-          const repairValidation = await ValidatorEngine.validate({ projectId, checkpointId: repairCheckpointId, runId: workflowRunId, stepId: revalidationStepId });
-          ContextEngineV2.recordCommit({ projectId, runId: workflowRunId, taskId: revalidationStepId, agentKey: 'SENTINEL', scope: 'MICRO', task: 'Revalidação após repair', changedFiles: repairFiles.map((file:any)=>file.path), requirementIds: activeRequirementIds, validation: repairValidation, blockers: repairValidation.status === 'failed' ? ['repair_validation_failed'] : [], nextState: { status: repairValidation.status } });
-          RunService.finishStep(revalidationStepId, repairValidation.status === 'failed' ? 'failed' : 'completed', { validator: 'ValidatorEngine', status: repairValidation.status });
-          if (repairValidation.status === 'failed') {
-            WorkspaceManager.restoreCheckpoint(projectId, repairRollbackId);
-            workspaceMutated = false;
-            RunService.finishStep(repairStepId, 'failed', { repair: 'failed', validation: repairValidation });
-            RunService.finish(workflowRunId, revalidationStepId, 'failed');
-            metadata.proposal.status = 'failed_validation';
-            metadata.validation = validation;
-            metadata.repair = { attempted: true, status: 'failed', validation: repairValidation, profileKey: repairResult.profileKey };
-            metadata.hasErrors = true;
-            metadata.errorMessage = 'A proposta e o repair automático falharam na validação; alterações revertidas.';
-            requirementUpdate('failed',{type:'repair_validation_failed',validation:repairValidation,at:new Date().toISOString()},repairFiles.map((file:any)=>file.path));
-            if (metadata.workflow) metadata.workflow.trace = RunService.trace(workflowRunId);
-            db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
-            return res.status(422).json({ error: metadata.errorMessage, validation: repairValidation, repair: metadata.repair });
-          }
-          workspaceMutated = false;
-          RunService.finishStep(repairStepId, 'completed', { repair: 'passed', checkpointId: repairCheckpointId, profileKey: repairResult.profileKey });
-          if (metadata.workflow?.shipRequested && repairValidation.status === 'passed') {
-            const ship = RunService.createStep(workflowRunId, 'SHIP', 'Preparar publicação solicitada após validação', RunService.nextOrderIndex(workflowRunId), 'task', { requested: true, status: 'waiting_for_publish_adapter' });
-            RunService.finishStep(ship, 'completed');
-          }
-          if (repairValidation.status === 'passed') RunService.finish(workflowRunId, repairStepId, 'completed');
-          else {
-            RunService.closeDanglingSteps(workflowRunId, 'aborted');
-            RunService.setStatus(workflowRunId, 'needs_verification', true);
-          }
-          metadata.proposal.status = 'applied';
-          metadata.validation = repairValidation;
-          metadata.initialValidation = validation;
-          metadata.repair = { attempted: true, status: 'passed', checkpointId: repairCheckpointId, profileKey: repairResult.profileKey, files: repairFiles.map((file: any) => file.path) };
-          metadata.checkpointId = repairCheckpointId;
-          metadata.hasErrors = false;
-          if (metadata.workflow) metadata.workflow.status = repairValidation.status==='passed'?'completed':'needs_verification';
-          requirementUpdate(repairValidation.status==='passed'?'verified':'implemented',{
-            type:repairValidation.status==='passed'?'repair_verified':'repair_unverified',
-            validation:repairValidation,
-            at:new Date().toISOString(),
-          },repairFiles.map((file:any)=>file.path));
-          if (metadata.workflow) metadata.workflow.trace = RunService.trace(workflowRunId);
-          db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
-          return res.json({
-            success: true,
-            checkpointId: repairCheckpointId,
-            validation: repairValidation,
-            repair: metadata.repair,
-            needsVerification: repairValidation.status !== 'passed',
-            message: repairValidation.status === 'passed'
-              ? 'Alterações aplicadas após repair automático e verificadas com sucesso.'
-              : 'Alterações aplicadas após repair, mas ainda sem verificação automática suficiente. A execução permanece como needs_verification.',
-          });
-        } catch (repairError: any) {
-          if (workspaceMutated && repairRollbackId) { try { WorkspaceManager.restoreCheckpoint(projectId, repairRollbackId); } catch {} }
-          workspaceMutated = false;
-          if (repairStepId) RunService.finishStep(repairStepId, repairError?.name === 'AbortError' ? 'aborted' : 'failed', { error: String(repairError?.message || repairError) });
-          RunService.finish(workflowRunId, repairStepId || evidenceStepId || validationStepId || '', repairError?.name === 'AbortError' ? 'aborted' : 'failed');
-          metadata.proposal.status = 'failed_validation';
-          metadata.validation = validation;
-          metadata.repair = { attempted: true, status: repairError?.name === 'AbortError' ? 'aborted' : 'failed', error: String(repairError?.message || repairError) };
-          metadata.hasErrors = true;
-          metadata.errorMessage = repairError?.name === 'AbortError' ? 'Repair cancelado.' : 'A alteração foi revertida e o repair automático não conseguiu gerar correção válida.';
-          requirementUpdate('failed',{type:'repair_failed',error:String(repairError?.message||repairError),at:new Date().toISOString()},files.map((file:any)=>file.path));
-          if (metadata.workflow) metadata.workflow.trace = RunService.trace(workflowRunId);
-          db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
-          return res.status(repairError?.name === 'AbortError' ? 499 : 422).json({ error: metadata.errorMessage, validation, repair: metadata.repair });
-        }
-      }
-
-      metadata.proposal.status = 'failed_validation';
-      metadata.validation = validation;
-      metadata.hasErrors = true;
-      metadata.errorMessage = 'Uma verificação executada falhou; a alteração foi revertida integralmente.';
-      requirementUpdate('failed',{type:'validation_failed',validation,at:new Date().toISOString()},files.map((file:any)=>file.path));
-      if (metadata.workflow && workflowRunId) metadata.workflow.trace = RunService.trace(workflowRunId);
-      db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
-      return res.status(422).json({ error: metadata.errorMessage, validation });
+    metadata.proposal.status='applied';
+    metadata.checkpointId=sandboxApply.checkpointId;
+    metadata.sandbox={id:sandboxApply.sandboxId,baseRevision:metadata.proposal.baseRevision,changedFiles:sandboxApply.changedFiles};
+    metadata.hasErrors=false;
+    delete metadata.errorMessage;
+    if(metadata.workflow&&sandboxRunId){
+      metadata.workflow.status=sandboxApply.needsVerification?'needs_verification':'completed';
+      metadata.workflow.trace=RunService.trace(sandboxRunId);
     }
-
-    if (workflowRunId) ContextEngineV2.recordCommit({ projectId, runId: workflowRunId, agentKey: 'SENTINEL', scope: 'TASK', task: 'Aplicação concluída após validação', changedFiles: files.map((file:any)=>file.path), requirementIds: activeRequirementIds, validation, blockers: [], nextState: { status: validation.status === 'passed' ? 'completed' : 'needs_verification' } });
-
-    if (metadata.workflow?.shipRequested && workflowRunId && validation.status === 'passed') {
-      const ship = RunService.createStep(workflowRunId, 'SHIP', 'Preparar publicação solicitada após validação', RunService.nextOrderIndex(workflowRunId), 'task', { requested: true, status: 'waiting_for_publish_adapter' });
-      RunService.finishStep(ship, 'completed');
-    }
-    if (workflowRunId) {
-      if (validation.status === 'passed') RunService.finish(workflowRunId, validationStepId || '', 'completed');
-      else {
-        RunService.closeDanglingSteps(workflowRunId, 'aborted');
-        RunService.setStatus(workflowRunId, 'needs_verification', true);
-      }
-    }
-    metadata.proposal.status = 'applied';
-    metadata.validation = validation;
-    metadata.checkpointId = checkpointId;
-    metadata.hasErrors = false;
-    if (metadata.workflow) metadata.workflow.status = validation.status==='passed'?'completed':'needs_verification';
-    requirementUpdate(validation.status==='passed'?'verified':'implemented',{
-      type:validation.status==='passed'?'validator_verified':'validator_unverified',
-      validation,
-      at:new Date().toISOString(),
-    },files.map((file:any)=>file.path));
     db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'")
       .run(new Date().toISOString(),projectId);
-    if (metadata.workflow && workflowRunId) metadata.workflow.trace = RunService.trace(workflowRunId);
-    db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
-
-    workspaceMutated = false;
-    res.json({
-      success: true,
-      checkpointId,
-      validation,
-      needsVerification: validation.status !== 'passed',
-      message: validation.status === 'unverified'
-        ? 'Alterações aplicadas, mas ainda sem verificação automática suficiente. A execução permanece como needs_verification.'
-        : 'Alterações aplicadas e verificadas com sucesso.',
+    db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
+    return res.json({
+      success:true,
+      checkpointId:sandboxApply.checkpointId,
+      validation:sandboxApply.validation,
+      sandboxId:sandboxApply.sandboxId,
+      changedFiles:sandboxApply.changedFiles,
+      needsVerification:sandboxApply.needsVerification,
+      repair:(sandboxApply as any).repair || undefined,
+      message:sandboxApply.needsVerification
+        ? 'Alterações validadas em sandbox e aplicadas por merge atômico, mas ainda existem gates não executáveis.'
+        : 'Alterações validadas em sandbox e aplicadas por merge atômico com sucesso.',
     });
-  } catch (err: any) {
-    if (workspaceMutated && rollbackCheckpointId) {
-      try { WorkspaceManager.restoreCheckpoint(projectId, rollbackCheckpointId); } catch {}
-    }
 
+  } catch (err: any) {
     if (proposalMessage && metadata?.proposal) {
       try {
         metadata.proposal.status = 'pending';
         metadata.hasErrors = true;
-        metadata.errorMessage = 'A aplicação falhou e o workspace foi restaurado. Você pode tentar novamente.';
+        metadata.errorMessage = 'A aplicação falhou de forma segura; o workspace oficial foi restaurado ou preservado no estado anterior. Você pode tentar novamente.';
         db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
       } catch {}
     }
 
-    res.status(500).json({ error: 'A aplicação falhou de forma segura; nenhuma alteração parcial foi mantida.' });
+    res.status(500).json({ error: 'A aplicação falhou de forma segura; o merge não foi concluído.' });
   }
 });
 
