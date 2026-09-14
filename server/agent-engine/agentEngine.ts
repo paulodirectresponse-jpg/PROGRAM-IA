@@ -520,8 +520,10 @@ export class AgentEngine {
         const declaredKind=['operational','incompatible','capacity'].includes(String(e?.kind)) ? e.kind as FailureKind : null;
         const operational = /429|5\d\d|timeout|fetch|network|indispon/i.test(message);
         const terminalModelMismatch=/invalid[_ -]?model|model[^\n]{0,40}(?:not found|unsupported|does not support)|unsupported[^\n]{0,30}model|incompatible[^\n]{0,30}(?:model|provider)/i.test(message);
+        const terminalProviderOutage=/HTTP\s*530|Error\s*1033|Cloudflare Tunnel error|trycloudflare\.com/i.test(message);
         const kind: FailureKind = declaredKind || (operational ? 'operational' : 'incompatible');
-        ModelRouter.recordCandidateResult(candidate.id, false, kind);
+        if(terminalProviderOutage)ModelRouter.openCandidateCircuit(candidate.id,30,'provider_outage');
+        else ModelRouter.recordCandidateResult(candidate.id, false, kind);
         ModelRouter.recordInvocation({
           userId: x.userId,
           projectId: x.projectId,
@@ -550,6 +552,9 @@ export class AgentEngine {
           strategy:retryStrategy,
           progressMarkers:[],
         };
+        if(terminalProviderOutage){
+          throw Object.assign(e,{kind:'operational',reason:'provider_outage',terminalCandidate:true});
+        }
         if(terminalModelMismatch){
           throw Object.assign(e,{kind:'incompatible',reason:'candidate_incompatible',terminalCandidate:true});
         }
