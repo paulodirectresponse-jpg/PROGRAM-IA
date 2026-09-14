@@ -5,6 +5,7 @@ import JSZip from 'jszip';
 import { AgentEngine, AgentWorkflowEngine } from '../server/agent-engine/agentEngine.js';
 import { LLMAdapterService } from '../server/services/llmAdapter.js';
 import { RunService } from '../server/services/runService.js';
+import { RequirementLedgerService } from '../server/services/requirementLedgerService.js';
 import { WorkspaceManager } from '../server/services/workspaceManager.js';
 import {
   ArchitectureGraphService, ContextCommitService, ContextCompiler, ContextEngineV2, ProjectFileIndex,
@@ -136,14 +137,14 @@ test('phase1 database exposes context engine v2 tables', () => {
 });
 
 
-function seedModel(userId: string, providerKey = 'mock-context', profileKey = 'BASE_FREE') {
+function seedModel(userId: string, providerKey = 'mock-context', profileKey = 'BASE_FREE', maxAttempts = 1, maxCostUsd = 0.01) {
   const now = new Date().toISOString();
   db.prepare('INSERT OR IGNORE INTO users(id,email,name,created_at) VALUES(?,?,?,?)').run(userId,`${userId}@example.test`,userId,now);
   db.prepare('INSERT OR REPLACE INTO providers(id,user_id,provider_key,name,base_url,model_id,is_configured,is_active,connection_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
     .run(`provider-${userId}-${providerKey}`,userId,providerKey,'Mock Context','https://mock.invalid/v1','mock-model',1,1,'connected',now);
   const profileId=`profile-${userId}-${profileKey}`;
   db.prepare('INSERT OR REPLACE INTO model_profiles(id,user_id,profile_key,level,max_attempts,max_cost_usd,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
-    .run(profileId,userId,profileKey,profileKey==='EXPERT_PAID'?2:1,1,0.01,1,now,now);
+    .run(profileId,userId,profileKey,profileKey==='EXPERT_PAID'?2:1,maxAttempts,maxCostUsd,1,now,now);
   db.prepare('INSERT OR REPLACE INTO model_candidates(id,profile_id,provider_key,model_id,priority,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
     .run(`candidate-${userId}-${providerKey}-${profileKey}`,profileId,providerKey,'mock-model',0,1,now,now);
 }
@@ -155,6 +156,7 @@ function cleanupRun(runId:string, projectId:string, userId:string) {
   db.prepare('DELETE FROM model_candidates WHERE profile_id IN (SELECT id FROM model_profiles WHERE user_id=?)').run(userId);
   db.prepare('DELETE FROM model_profiles WHERE user_id=?').run(userId);
   db.prepare('DELETE FROM providers WHERE user_id=?').run(userId);
+  db.prepare('DELETE FROM requirements WHERE project_id=?').run(projectId);
   cleanup(projectId);
   WorkspaceManager.deleteProject(projectId);
 }
