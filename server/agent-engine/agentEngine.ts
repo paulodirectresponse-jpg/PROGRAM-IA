@@ -33,6 +33,7 @@ type Input = {
 };
 
 type ExecuteOptions = { profile?: ProfileKey; forcedAgentKey?: string; allowExpertEscalation?: boolean; repair?: boolean };
+type RetryStrategy = 'same_candidate'|'next_candidate'|'reduce_context'|'fragment_task'|'expert'|'stop';
 
 function relevantFiles(files: Record<string, string>, previewLimit: number) {
   // Never hide the project tree. Content previews remain bounded until Context Engine V2,
@@ -63,38 +64,65 @@ function normalizeFocus(paths: string[] = []) {
   return [...new Set(paths.filter(Boolean).map(path => path.replace(/\\/g,'/').replace(/^\.\//,'')))];
 }
 
-function compileContextForStep(x: Input, agentKey: string, options: ExecuteOptions): ContextPack {
+function compileContextForStep(x: Input, agentKey: string, options: ExecuteOptions, retryStrategy: RetryStrategy = 'same_candidate'): ContextPack {
   ContextEngineV2.syncProject({ projectId: x.projectId, files: x.existingFiles });
   const focusPaths = normalizeFocus([
     ...(x.focusPaths || []),
     ...(x.reliableBuild?.requestedFiles || []),
   ]);
+  const requirementIds = resolvedRequirementIds(x);
+  let scope = contextScopeFor(agentKey, x.mode, options.repair, Object.keys(x.existingFiles).length);
+  let tokenBudget: number | undefined;
+  if (retryStrategy === 'reduce_context') {
+    if (scope === 'PROJECT' || scope === 'TASK') scope = 'LOCAL';
+    tokenBudget = Math.max(512, Math.floor(DEFAULT_CONTEXT_TOKEN_BUDGETS[scope] * 0.65));
+  } else if (retryStrategy === 'fragment_task') {
+    scope = agentKey === 'SENTINEL' ? 'MICRO' : 'LOCAL';
+    tokenBudget = Math.max(512, Math.floor(DEFAULT_CONTEXT_TOKEN_BUDGETS[scope] * 0.45));
+  }
   return ContextEngineV2.compile({
     projectId: x.projectId,
     runId: x.runId,
     stepId: x.stepId,
     agentKey: agentKey as ContextAgentKey,
-    scope: contextScopeFor(agentKey, x.mode, options.repair, Object.keys(x.existingFiles).length),
+    scope,
     task: {
-      objective: x.prompt,
+      objective: retryStrategy === 'same_candidate' || retryStrategy === 'next_candidate'
+        ? x.prompt
+        : `${x.prompt}\nRetry strategy: ${retryStrategy}`,
       title: x.reliableBuild?.objective || x.prompt.slice(0, 120),
       acceptanceCriteria: x.reliableBuild?.acceptanceCriteria || [],
       currentFile: focusPaths[0],
       changedFiles: focusPaths,
     },
-    requirementIds: x.requirementIds || [],
+    requirementIds,
     focusPaths,
+    tokenBudget,
+    fileContents:x.existingFiles,
   });
 }
 
 function contextSelectedFiles(x: Input, pack: ContextPack): Record<string,string> {
-  const selected = new Set(pack.selectedFiles.map(item => item.file.path));
-  for (const path of x.reliableBuild?.requestedFiles || []) selected.add(path.replace(/\\/g,'/').replace(/^\.\//,''));
-  for (const path of x.focusPaths || []) selected.add(path.replace(/\\/g,'/').replace(/^\.\//,''));
+  const selections = new Map(pack.selectedFiles.map(item => [
+    item.file.path,
+    item.content || {
+      path:item.file.path,
+      mode:'full' as const,
+      start:0,
+      end:Number.MAX_SAFE_INTEGER,
+      estimatedTokens:item.estimatedTokens,
+      omittedChars:0,
+      reason:'fits_budget' as const,
+    },
+  ]));
   const out: Record<string,string> = {};
   for (const [path, content] of Object.entries(x.existingFiles)) {
     const normalized = path.replace(/\\/g,'/').replace(/^\.\//,'');
-    if (selected.has(normalized)) out[normalized] = content;
+    const selection = selections.get(normalized);
+    if (!selection) continue;
+    out[normalized] = selection.mode === 'partial'
+      ? content.slice(selection.start,selection.end)
+      : content;
   }
   return out;
 }
