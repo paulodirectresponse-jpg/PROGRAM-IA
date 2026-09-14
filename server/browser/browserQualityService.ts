@@ -229,6 +229,30 @@ export class BrowserQualityService {
   }
   static get(id:string){const row=db.prepare('SELECT * FROM browser_quality_runs WHERE id=?').get(id) as any;return row?hydrate(row):null;}
   static listByRun(runId:string){return (db.prepare('SELECT * FROM browser_quality_runs WHERE run_id=? ORDER BY created_at ASC').all(runId) as any[]).map(hydrate);}
+  static cleanupProject(projectId:string,userId?:string){
+    const rows=db.prepare('SELECT id,user_id,viewports_json FROM browser_quality_runs WHERE project_id=?').all(projectId) as Array<{id:string;user_id:string;viewports_json:string}>;
+    let artifacts=0;
+    for(const row of rows){
+      if(userId&&row.user_id!==userId)continue;
+      let viewports:BrowserViewportEvidence[]=[];
+      try{viewports=JSON.parse(row.viewports_json||'[]');}catch{}
+      for(const viewport of viewports){
+        if(!viewport.screenshotPath)continue;
+        const expected=safeArtifactPath(row.id,viewport.name);
+        if(path.resolve(viewport.screenshotPath)!==path.resolve(expected))continue;
+        try{
+          if(fs.existsSync(expected)){fs.rmSync(expected,{force:true});artifacts++;}
+          const dir=path.dirname(expected);
+          if(fs.existsSync(dir)&&fs.readdirSync(dir).length===0)fs.rmdirSync(dir);
+        }catch{}
+      }
+    }
+    const deleted=userId
+      ? db.prepare('DELETE FROM browser_quality_runs WHERE project_id=? AND user_id=?').run(projectId,userId).changes
+      : db.prepare('DELETE FROM browser_quality_runs WHERE project_id=?').run(projectId).changes;
+    return {runs:Number(deleted||0),artifacts};
+  }
+
   static screenshotPath(id:string,viewport:string,userId:string,projectId:string){
     const row=db.prepare('SELECT user_id,project_id,viewports_json FROM browser_quality_runs WHERE id=?').get(id) as any;if(!row||row.user_id!==userId||row.project_id!==projectId)return null;
     const viewports=(()=>{try{return JSON.parse(row.viewports_json||'[]')}catch{return[]}})() as BrowserViewportEvidence[],item=viewports.find(v=>v.name===viewport);if(!item?.screenshotPath)return null;
