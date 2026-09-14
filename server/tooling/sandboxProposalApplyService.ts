@@ -396,7 +396,10 @@ export class SandboxProposalApplyService {
             'Faça a revisão final obrigatória desta implementação antes do merge.',
             'Compare o pedido, requisitos, arquivos atuais do sandbox e evidências dos quality gates.',
             'Procure bugs funcionais, regressões, inconsistências de estado, problemas de UX relevantes e violações dos requisitos.',
-            'Não proponha melhorias opcionais ou redesign subjetivo.',
+            'Não proponha melhorias opcionais, conteúdo não solicitado ou redesign subjetivo.',
+            'Para projetos estáticos, scripts de typecheck/build/test ausentes e marcados como skipped NÃO são falha quando ValidatorEngine.status=passed e staticValidationPassed=true.',
+            'Warnings de recurso externo bloqueado durante inspeção não são bloqueadores quando o Browser Quality Gate passou e a página renderizou corretamente.',
+            'Julgue somente problemas concretos que afetem o pedido do usuário. Não transforme verificações não aplicáveis em requisitos novos.',
             'Responda SOMENTE JSON no formato {"verdict":"pass|repair","summary":"resumo curto","issues":["problema concreto"]}.',
             'Use "repair" somente quando existir problema concreto que deva ser corrigido antes do merge.',
             JSON.stringify({originalRequest:input.originalRequest||input.summary,validation,browserQuality}),
@@ -447,63 +450,97 @@ export class SandboxProposalApplyService {
           validation,sandboxId,browserQuality,browserRepair,repair:repairSummary,sentinelReview,
         };
       }
+
       const affectedFiles=[...expectedByPath.keys()];
-      const repairStep=RunService.createStep(input.runId,'FORGE','Corrigir problemas encontrados pelo SENTINEL',undefined,'local',{
-        sandboxId,affectedFiles,issues:sentinelReview.issues,
-      });
-      try{
-        const repair=await AgentEngine.execute({
-          prompt:[
-            'Corrija somente os problemas concretos encontrados pela revisão final do SENTINEL. Não expanda o escopo.',
-            JSON.stringify({issues:sentinelReview.issues,summary:sentinelReview.summary}),
-          ].join('\n\n'),
-          mode:'build',
-          projectId:input.projectId,
-          existingFiles:SandboxManager.getAllFilesContent(sandboxId,input.userId,input.projectId),
-          appliedSkills:[],
-          conversationHistory:[],
-          userId:input.userId,
-          runId:input.runId,
-          stepId:repairStep,
-          requirementIds:reqIds,
-          focusPaths:affectedFiles,
-          signal:input.signal,
-          skipContextSync:true,
-          toolSandboxId:sandboxId,
-        },{profile:'BASE_FREE',forcedAgentKey:'FORGE',allowExpertEscalation:true,repair:true});
-        const repairFiles=repair.build?.files||repair.proposal?.files||[];
-        if(!repairFiles.length)throw new Error('O repair do SENTINEL não retornou arquivos aplicáveis.');
-        for(const file of repairFiles){
-          const execution=await ToolExecutionService.execute({
-            userId:input.userId,projectId:input.projectId,runId:input.runId,stepId:repairStep,sandboxId,signal:input.signal,
-          },{
-            toolKey:file.action==='delete'?'workspace.delete_file':'workspace.write_file',
-            input:file.action==='delete'?{path:file.path}:{path:file.path,content:String(file.content||'')},
-            idempotencyKey:`sentinel-repair:${proposal.id}:${file.action}:${file.path}`,
+      const repairSentinelIssues=async(attempt:number)=>{
+        const repairStep=RunService.createStep(
+          input.runId!,'FORGE',
+          attempt===1?'Corrigir problemas encontrados pelo SENTINEL':'Refinar correção após nova revisão do SENTINEL',
+          undefined,'local',
+          {sandboxId,affectedFiles,issues:sentinelReview.issues,attempt}
+        );
+        try{
+          const repair=await AgentEngine.execute({
+            prompt:[
+              'Corrija somente os problemas concretos encontrados pela revisão final do SENTINEL. Não expanda o escopo.',
+              'Resolva a causa funcional, não apenas o sintoma. Para links/âncoras sem destino, aponte para uma seção real com conteúdo coerente ou remova o link se ele não fizer parte do pedido.',
+              'Nunca considere scripts ausentes de typecheck/build/test um defeito em projeto HTML estático quando o ValidatorEngine marcou staticValidationPassed=true.',
+              'Depois da correção, preserve o restante da implementação.',
+              JSON.stringify({issues:sentinelReview.issues,summary:sentinelReview.summary,validation,browserQuality}),
+            ].join('\n\n'),
+            mode:'build',
+            projectId:input.projectId,
+            existingFiles:SandboxManager.getAllFilesContent(sandboxId,input.userId,input.projectId),
+            appliedSkills:[],
+            conversationHistory:[],
+            userId:input.userId,
+            runId:input.runId!,
+            stepId:repairStep,
+            requirementIds:reqIds,
+            focusPaths:affectedFiles,
+            signal:input.signal,
+            skipContextSync:true,
+            toolSandboxId:sandboxId,
+          },{profile:'BASE_FREE',forcedAgentKey:'FORGE',allowExpertEscalation:true,repair:true});
+
+          const repairFiles=repair.build?.files||repair.proposal?.files||[];
+          if(!repairFiles.length)throw new Error('O repair do SENTINEL não retornou arquivos aplicáveis.');
+          for(const file of repairFiles){
+            const execution=await ToolExecutionService.execute({
+              userId:input.userId,projectId:input.projectId,runId:input.runId!,stepId:repairStep,sandboxId,signal:input.signal,
+            },{
+              toolKey:file.action==='delete'?'workspace.delete_file':'workspace.write_file',
+              input:file.action==='delete'?{path:file.path}:{path:file.path,content:String(file.content||'')},
+              idempotencyKey:`sentinel-repair:${proposal.id}:${attempt}:${file.action}:${file.path}`,
+            });
+            if(execution.status!=='succeeded')throw new Error(execution.message||'Repair do SENTINEL falhou.');
+            expectedByPath.set(String(file.path),{path:String(file.path),action:String(file.action),content:file.content});
+          }
+
+          validation=await ValidatorEngine.validate({
+            projectId:input.projectId,runId:input.runId!,stepId:repairStep,signal:input.signal,sandboxId,userId:input.userId,
           });
-          if(execution.status!=='succeeded')throw new Error(execution.message||'Repair do SENTINEL falhou.');
-          expectedByPath.set(String(file.path),{path:String(file.path),action:String(file.action),content:file.content});
+          if(validation.status==='failed')throw new Error('O repair do SENTINEL falhou no ValidatorEngine.');
+          browserQuality=await executeBrowserGate(repairStep,2+attempt);
+          if(browserQuality?.status==='failed')throw new Error('O repair do SENTINEL falhou no Browser Quality Gate.');
+
+          RunService.finishStep(repairStep,'completed',{sandboxId,validation,browserQuality,profileKey:repair.profileKey,attempt});
+          repairSummary={attempted:true,status:'passed',source:'sentinel',attempt,profileKey:repair.profileKey,files:repairFiles.map((file:any)=>file.path)};
+          return repairStep;
+        }catch(error:any){
+          RunService.finishStep(repairStep,error?.name==='AbortError'?'aborted':'failed',{sandboxId,error:String(error?.message||error),attempt});
+          throw error;
         }
-        validation=await ValidatorEngine.validate({
-          projectId:input.projectId,runId:input.runId,stepId:repairStep,signal:input.signal,sandboxId,userId:input.userId,
-        });
-        if(validation.status==='failed')throw new Error('O repair do SENTINEL falhou no ValidatorEngine.');
-        browserQuality=await executeBrowserGate(repairStep,2);
-        if(browserQuality?.status==='failed')throw new Error('O repair do SENTINEL falhou no Browser Quality Gate.');
-        RunService.finishStep(repairStep,'completed',{sandboxId,validation,browserQuality,profileKey:repair.profileKey});
-        repairSummary={attempted:true,status:'passed',source:'sentinel',profileKey:repair.profileKey,files:repairFiles.map((file:any)=>file.path)};
-        sentinelReview=await executeSentinelReview('Revisar novamente após correção');
-        if(sentinelReview?.verdict!=='pass'){
-          throw new Error(sentinelReview?.verdict==='error'
-            ? 'A segunda revisão do SENTINEL não pôde ser concluída.'
-            : 'A segunda revisão do SENTINEL ainda encontrou problemas concretos.');
+      };
+
+      let sentinelRepairError:any=null;
+      for(let attempt=1;attempt<=2;attempt++){
+        try{
+          await repairSentinelIssues(attempt);
+          sentinelReview=await executeSentinelReview(attempt===1?'Revisar novamente após correção':'Revisão final após refinamento');
+          if(sentinelReview?.verdict==='pass')break;
+          if(sentinelReview?.verdict==='error'){
+            throw new Error('A revisão do SENTINEL não pôde ser concluída após o repair.');
+          }
+          if(attempt===2){
+            throw new Error('O SENTINEL ainda encontrou problemas concretos após duas correções bounded.');
+          }
+        }catch(error:any){
+          sentinelRepairError=error;
+          if(error?.name==='AbortError')break;
+          if(attempt===2||sentinelReview?.verdict==='error')break;
         }
-      }catch(error:any){
-        RunService.finishStep(repairStep,error?.name==='AbortError'?'aborted':'failed',{sandboxId,error:String(error?.message||error)});
-        RunService.finish(input.runId,repairStep,error?.name==='AbortError'?'aborted':'failed');
+      }
+
+      if(sentinelReview?.verdict!=='pass'){
+        const error=sentinelRepairError||new Error('A correção solicitada pelo SENTINEL não passou pela revisão final.');
+        RunService.finish(input.runId,undefined,error?.name==='AbortError'?'aborted':'failed');
         return {
-          success:false,statusCode:error?.name==='AbortError'?499:422,error:'A correção solicitada pelo SENTINEL não passou pela revisão final; o workspace oficial não foi alterado.',
-          validation,sandboxId,browserQuality,browserRepair,repair:{attempted:true,status:'failed',source:'sentinel',error:String(error?.message||error)},sentinelReview,
+          success:false,statusCode:error?.name==='AbortError'?499:422,
+          error:'A correção solicitada pelo SENTINEL não passou pela revisão final; o workspace oficial não foi alterado.',
+          validation,sandboxId,browserQuality,browserRepair,
+          repair:{attempted:true,status:'failed',source:'sentinel',error:String(error?.message||error)},
+          sentinelReview,
         };
       }
     }
