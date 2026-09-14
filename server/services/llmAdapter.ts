@@ -177,12 +177,13 @@ export class LLMAdapterService {
 
     // Ideação explícita continua sendo conversa mesmo quando o assunto é software.
     if(ideation.test(text)&&!executionAction.test(text))return 'auto';
-    if(/\b(?:ideia|conceito|estrategia)\b/.test(text)&&!/(?:implemente|construa|programe|codifique)/.test(text))return 'auto';
+    const textualObject=/\b(?:ideia|conceito|estrategia|frase|texto|copy|roteiro|mensagem|descricao)\b/.test(text);
+    if(textualObject&&!currentSoftware&&!/(?:implemente|construa|programe|codifique)/.test(text))return 'auto';
 
     // A decisão usa o pedido atual + o contexto recente. Assim "faça isso" após
     // discutir uma landing page executa, enquanto "me ajude a detalhar isso" conversa.
     const contextualExecution=
-      executionAction.test(text)&&(currentSoftware||(recentSoftware&&referential.test(text)))||
+      executionAction.test(text)&&(currentSoftware||recentSoftware||referential.test(text))||
       desire.test(text)&&currentSoftware&&!explanation.test(text);
 
     if(contextualExecution)return 'build';
