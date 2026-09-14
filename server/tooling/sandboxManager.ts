@@ -25,7 +25,9 @@ export interface SandboxRecord {
   updatedAt:string;
 }
 
-const SANDBOX_ROOT=path.resolve(process.env.FORGE_SANDBOX_DIR || path.join(os.tmpdir(),'program-ia-sandboxes'));
+function sandboxRoot(){
+  return path.resolve(process.env.FORGE_SANDBOX_DIR || path.join(os.tmpdir(),'program-ia-sandboxes'));
+}
 
 function ignoredRelative(relative:string){
   const normalized=relative.replace(/\\/g,'/').replace(/^\.\//,'');
@@ -109,9 +111,10 @@ export class SandboxManager {
 
   static create(input:{userId:string;projectId:string;runId?:string|null;stepId?:string|null}) {
     if(!WorkspaceManager.verifyProjectOwnership(input.projectId,input.userId))throw Object.assign(new Error('Projeto não pertence ao usuário.'),{code:'project_forbidden'});
-    fs.mkdirSync(SANDBOX_ROOT,{recursive:true});
+    const rootBase=sandboxRoot();
+    fs.mkdirSync(rootBase,{recursive:true});
     const id=`sbx-${crypto.randomUUID()}`;
-    const root=path.join(SANDBOX_ROOT,id);
+    const root=path.join(rootBase,id);
     const source=WorkspaceManager.getProjectDir(input.projectId);
     const baseManifest=manifestFrom(source);
     const baseHash=fingerprint(baseManifest);
