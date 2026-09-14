@@ -8,6 +8,7 @@ import { ContextEngineV2, type ContextAgentKey, type ContextPack, type ContextSc
 import { DEFAULT_CONTEXT_TOKEN_BUDGETS } from '../context-engine/contextCompiler.js';
 import { RequirementLedgerService } from '../services/requirementLedgerService.js';
 import { ProposalSandboxService } from '../tooling/proposalSandboxService.js';
+import { WorkspaceManager } from '../services/workspaceManager.js';
 
 type Input = {
   prompt: string;
@@ -587,6 +588,31 @@ export class AgentWorkflowEngine extends AgentEngine {
         { ...x, prompt: forgePrompt, reliableBuild, stepId: forge },
         { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true }
       );
+      const proposalFiles=result.proposal?.files || result.build?.files || [];
+      if(!result.hasErrors && proposalFiles.length && WorkspaceManager.verifyProjectOwnership(x.projectId,x.userId)){
+        if(!result.proposal){
+          result.proposal={
+            id:`proposal-${x.runId}-${forge}`,
+            summary:result.build?.summary || 'Proposta de alteração',
+            requiresConfirmation:true,
+            files:proposalFiles,
+            status:'pending',
+          };
+        }
+        const sandboxEvidence=await ProposalSandboxService.materialize({
+          userId:x.userId,
+          projectId:x.projectId,
+          runId:x.runId,
+          stepId:forge,
+          proposalId:result.proposal.id,
+          files:proposalFiles,
+          signal:x.signal,
+        });
+        result.proposal.sandboxId=sandboxEvidence.sandboxId;
+        result.proposal.baseRevision=sandboxEvidence.baseRevision;
+        result.proposal.sandboxValidation=sandboxEvidence.validation;
+        result.proposal.toolExecutionIds=sandboxEvidence.toolExecutionIds;
+      }
       recordContextCommitFromStep({ ...x, stepId: forge }, 'FORGE', 'TASK', 'Proposta de código gerada', { changedFiles: result.build?.files?.map(f => f.path) || result.proposal?.files?.map(f => f.path) || [], nextState: { next: result.hasErrors ? 'failed' : 'waiting_approval' } });
       RunService.finishStep(forge, result.hasErrors ? 'failed' : 'completed', {
         decisionType: result.decisionType,
