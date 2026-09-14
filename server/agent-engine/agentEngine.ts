@@ -250,14 +250,14 @@ export class AgentEngine {
     const maxAttempts = Math.max(1, Number(available[0]?.max_attempts || 1));
     let last: any;
     const attemptHistory:AttemptEvidence[]=[];
-    let retryStrategy:'same_candidate'|'next_candidate'|'reduce_context'|'fragment_task'|'expert'|'stop'='same_candidate';
+    let retryStrategy:RetryStrategy='same_candidate';
     for (let i = 0; i < maxAttempts; i++) {
       x.signal?.throwIfAborted();
       RunService.recordAttempt(x.stepId);
       const candidateIndex=retryStrategy==='next_candidate' ? Math.min(i,available.length-1) : i % available.length;
       const candidate = available[candidateIndex];
       const started = Date.now();
-      const contextBase = withCompiledContext(x, agentKey, options);
+      const contextBase = withCompiledContext(x, agentKey, options, retryStrategy);
       try {
         ModelRouter.assertBudget(x.userId, Number(candidate.max_cost_usd || 0), { runId: x.runId });
         const attemptInput = retryStrategy==='reduce_context' || retryStrategy==='fragment_task'
