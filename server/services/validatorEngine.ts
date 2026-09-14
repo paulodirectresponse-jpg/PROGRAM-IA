@@ -171,13 +171,22 @@ export class ValidatorEngine {
 
     const executed = results.filter((result) => result.status !== 'skipped');
     const failed = executed.some((result) => result.status === 'fail');
-    const status: ValidationStatus = failed ? 'failed' : executed.length === 0 ? 'unverified' : 'passed';
+    const normalizedNames=Object.keys(files).map(name=>name.replace(/\\/g,'/'));
+    const hasPackageManifest=normalizedNames.includes('package.json');
+    const hasStaticEntry=normalizedNames.some(name=>/(^|\/)index\.html$/i.test(name));
+    const staticValidationPassed=!hasPackageManifest&&hasStaticEntry&&advisory.status==='pass';
+    const status: ValidationStatus = failed
+      ? 'failed'
+      : executed.length === 0
+        ? staticValidationPassed ? 'passed' : 'unverified'
+        : 'passed';
     const final={
       passed: status === 'passed',
       status,
       results,
       security,
-      advisory: status === 'unverified' ? advisory : undefined,
+      advisory: executed.length === 0 ? advisory : undefined,
+      staticValidationPassed,
       sandboxId:input.sandboxId || null,
     };
     if(input.sandboxId&&input.userId)SandboxManager.markValidation(input.sandboxId,input.userId,final,input.projectId);
