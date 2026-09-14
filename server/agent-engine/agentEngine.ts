@@ -263,7 +263,6 @@ export class AgentEngine {
         const attemptInput = retryStrategy==='reduce_context' || retryStrategy==='fragment_task'
           ? {
               ...contextBase,
-              existingFiles: reducedRetryFiles(contextBase.existingFiles, retryStrategy==='fragment_task'?8:12),
               conversationHistory: x.conversationHistory.slice(-2),
               prompt: [
                 x.prompt,
