@@ -225,6 +225,31 @@ CREATE TABLE IF NOT EXISTS context_packs (
 CREATE INDEX IF NOT EXISTS idx_context_packs_project ON context_packs(project_id,created_at);
 CREATE INDEX IF NOT EXISTS idx_context_packs_run ON context_packs(run_id,created_at);
 
+-- Phase 2: Tool-first execution journal foundation
+CREATE TABLE IF NOT EXISTS tool_executions (
+  id TEXT PRIMARY KEY,
+  run_id TEXT,
+  step_id TEXT,
+  tool_key TEXT NOT NULL,
+  status TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  summary_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  project_id TEXT,
+  tool_version TEXT NOT NULL DEFAULT '1',
+  error_code TEXT,
+  attempt_index INTEGER NOT NULL DEFAULT 0,
+  idempotency_key TEXT,
+  request_hash TEXT,
+  resume_policy TEXT NOT NULL DEFAULT 'inspect_only',
+  started_at TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS tool_executions_run_created ON tool_executions(run_id,created_at);
+CREATE INDEX IF NOT EXISTS tool_executions_step_created ON tool_executions(step_id,created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS tool_executions_run_idempotency ON tool_executions(run_id,idempotency_key)
+  WHERE run_id IS NOT NULL AND idempotency_key IS NOT NULL;
+
 -- 12. skills
 CREATE TABLE IF NOT EXISTS skills (
   id TEXT PRIMARY KEY,
