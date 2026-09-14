@@ -425,7 +425,7 @@ export class BenchmarkService {
     const run=this.get(id,userId);
     if(!run)return null;
     const cases=run.cases as any[];
-    const summary=aggregate(id);
+    const summary=run.summary as BenchmarkRunSummary;
     const fullCatalog=new Set(PHASE4_BENCHMARK_CASES.map(item=>item.id));
     const caseIds=new Set(cases.map(item=>item.caseId));
     const fullSuite=run.totalCases===30
