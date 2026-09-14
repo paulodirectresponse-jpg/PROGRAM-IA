@@ -555,7 +555,7 @@ export type WorkflowResult = LLMExecutionResult & {
   workflow: {
     runId: string;
     steps: string[];
-    status: 'waiting_approval' | 'completed' | 'failed' | 'aborted';
+    status: 'validating' | 'waiting_approval' | 'completed' | 'failed' | 'aborted';
     shipRequested?: boolean;
     trace?: ReturnType<typeof RunService.trace>;
   };
@@ -644,7 +644,7 @@ export class AgentWorkflowEngine extends AgentEngine {
         snippets: visibleFiles,
         constraints: [
           'Não publicar sem solicitação explícita',
-          'Não aplicar arquivos antes da aprovação quando houver proposta',
+          'Não escrever no workspace oficial antes de sandbox, quality gates e revisão final',
           'Manter contexto limitado aos arquivos relevantes',
         ],
       }),
@@ -775,7 +775,7 @@ export class AgentWorkflowEngine extends AgentEngine {
         result.proposal.sandboxValidation=sandboxEvidence.validation;
         result.proposal.toolExecutionIds=sandboxEvidence.toolExecutionIds;
       }
-      recordContextCommitFromStep({ ...x, stepId: forge }, 'FORGE', 'TASK', 'Proposta de código gerada', { changedFiles: result.build?.files?.map(f => f.path) || result.proposal?.files?.map(f => f.path) || [], nextState: { next: result.hasErrors ? 'failed' : 'waiting_approval' } });
+      recordContextCommitFromStep({ ...x, stepId: forge }, 'FORGE', 'TASK', 'Proposta de código gerada', { changedFiles: result.build?.files?.map(f => f.path) || result.proposal?.files?.map(f => f.path) || [], nextState: { next: result.hasErrors ? 'failed' : 'validating' } });
       RunService.finishStep(forge, result.hasErrors ? 'failed' : 'completed', {
         decisionType: result.decisionType,
         providerUsed: result.providerUsed,
