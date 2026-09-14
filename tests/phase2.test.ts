@@ -7,6 +7,8 @@ import { ToolRegistry } from '../server/tooling/toolRegistry.js';
 import { ToolExecutionService } from '../server/tooling/toolExecutionService.js';
 import { ToolExecutionJournal } from '../server/tooling/toolExecutionJournal.js';
 import { SandboxManager } from '../server/tooling/sandboxManager.js';
+import { SandboxProposalApplyService } from '../server/tooling/sandboxProposalApplyService.js';
+import { ProjectFileIndex } from '../server/context-engine/projectFileIndex.js';
 
 initializeDatabase();
 
