@@ -98,6 +98,7 @@ export function scoreBenchmarkCase(input:BenchmarkScoreInput):BenchmarkCaseScore
   const mandatoryApply=definition.checks.requireApplySuccess!==true||input.apply?.success===true;
   const mandatoryValidator=definition.checks.requireValidatorPass!==true||input.apply?.validation?.status==='passed';
   const mandatoryBrowser=definition.checks.requireBrowserPass!==true||input.apply?.browserQuality?.status==='passed';
+  const mandatoryReview=definition.mode!=='review'||checks.filter(item=>item.key.startsWith('review_')).every(item=>item.passed);
 
-  return {score,passed:mandatoryProvider&&mandatoryApply&&mandatoryValidator&&mandatoryBrowser&&score>=80,checks};
+  return {score,passed:mandatoryProvider&&mandatoryApply&&mandatoryValidator&&mandatoryBrowser&&mandatoryReview&&score>=80,checks};
 }
