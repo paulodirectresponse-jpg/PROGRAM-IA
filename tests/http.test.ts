@@ -622,7 +622,7 @@ test('approving proposal with passing validator completes run after final sentin
   t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>({replyText:'{"verdict":"pass","summary":"ok","issues":[]}',mode:options.mode,decisionType:'review',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any));
   const projectId=createLifecycleProject('approval-pass');
   const {runId}=RunService.start(userA,projectId,`conv-placeholder-${Date.now()}`,'auto',0.5);RunService.waitForApproval(runId);
-  const {proposalId}=insertLifecycleProposal(projectId,runId,[{path:'index.html',action:'modify',content:'<html></html>'},{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(0)"'}})}]);
+  const {proposalId}=insertLifecycleProposal(projectId,runId,[{path:'index.html',action:'modify',content:'<html><body>Ready</body></html>'},{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(0)"'}})}]);
   try {
     const r=await fetch(`${base}/conversations/${projectId}/apply-proposal`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({proposalId,summary:'pass'})});
     assert.equal(r.status,200);
