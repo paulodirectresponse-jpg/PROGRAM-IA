@@ -358,10 +358,13 @@ export default function App() {
         }
         if (data.success === false) {
           const metadata = data.agentMessage.metadata || {};
-          setToastMessage({
-            text: metadata.errorMessage || data.error || 'A IA não conseguiu concluir esta etapa com segurança.',
-            type: 'error',
-          });
+          const conversationalFailure = metadata.decisionType === 'explanation' || metadata.resolvedMode === 'auto';
+          if (!conversationalFailure) {
+            setToastMessage({
+              text: metadata.errorMessage || data.error || 'A IA não conseguiu concluir esta etapa com segurança.',
+              type: 'error',
+            });
+          }
         }
         // Refresh files and preview
         await loadProjectDetails(activeProject.id);

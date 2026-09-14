@@ -275,15 +275,15 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                   </div>
                 )}
 
-                {/* Validation Error Badge */}
-                {meta.hasErrors && (
+                {/* Structured validation errors belong only to code-generation flows. */}
+                {meta.hasErrors && meta.decisionType !== 'explanation' && (
                   <div className="mb-2 p-2.5 rounded bg-rose-950/60 border border-rose-800/70 text-[11px] text-rose-300 flex items-start gap-2">
                     <AlertTriangle size={14} className="shrink-0 mt-0.5 text-rose-400" />
                     <div>
-                      <div className="font-semibold text-rose-200">Validação Estruturada Rejeitada</div>
+                      <div className="font-semibold text-rose-200">Não foi possível concluir a alteração</div>
                       <div className="text-rose-300/90 text-[10px] mt-0.5">
                         {meta.errorMessage ||
-                          'A resposta do modelo não contém estrutura válida de arquivos. Nenhuma alteração foi aplicada.'}
+                          'A resposta não pôde ser validada com segurança. Nenhuma alteração foi aplicada.'}
                       </div>
                     </div>
                   </div>
