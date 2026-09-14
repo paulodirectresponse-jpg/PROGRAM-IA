@@ -322,6 +322,19 @@ export function initializeDatabase() {
     );
   }
 
+  // Migration 009: retain real-provider benchmark cost provenance without polluting project state.
+  ensureColumn('model_invocations', 'benchmark_run_id', 'TEXT');
+  ensureColumn('model_invocations', 'benchmark_case_id', 'TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS model_invocations_benchmark_run ON model_invocations(benchmark_run_id,created_at)');
+  const migration9Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 9').get() as { version: number } | undefined;
+  if (!migration9Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      9,
+      '009_phase4_benchmark_invocation_provenance',
+      new Date().toISOString()
+    );
+  }
+
   db.prepare("UPDATE tool_executions SET status='interrupted',error_code=COALESCE(error_code,'worker_interrupted'),finished_at=COALESCE(finished_at,?) WHERE status IN ('queued','running')").run(new Date().toISOString());
   const restartRecoveryAt=new Date().toISOString();
   db.prepare("UPDATE agent_steps SET status='aborted',finished_at=? WHERE status='running' AND run_id IN (SELECT DISTINCT run_id FROM tool_executions WHERE status='interrupted' AND run_id IS NOT NULL)")
