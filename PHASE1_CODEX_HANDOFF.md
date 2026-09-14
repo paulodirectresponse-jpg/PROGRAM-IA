@@ -44,6 +44,15 @@ Antes de compilar contexto para uma ação de agente, o projeto é sincronizado 
 ### 6. Compatibilidade cloud
 Nenhuma alteração remota foi aplicada. A Fase 1 funciona localmente sobre SQLite/workspace; eventual persistência cloud do Context Engine fica para gate futuro versionado.
 
+## Correção final de auditoria
+
+- Requirement IDs agora são recuperados do Requirement Ledger pelo `runId` no boundary do Agent Engine e combinados com IDs explícitos.
+- Retries `reduce_context` e `fragment_task` recompilam novos ContextPacks por escopo e orçamento, sem hard cap de quantidade de arquivos.
+- O budget do Context Compiler considera o conteúdo real quando disponível; arquivos oversized obrigatórios entram como `partial` com range explícito ou ficam omitted.
+- O provider recebe exatamente os arquivos full/partial selecionados pelo ContextPack, sem truncamento silencioso posterior.
+- SENTINEL por modelo registra ContextPack/telemetria e ContextCommit com requirements preservados.
+- Plano aprovado, continue e API de compile recuperam requirements persistidos quando aplicável.
+
 ## Gate da Fase 1
 1. agentes principais usam ContextPack como fonte primária;
 2. continue/repair usam ContextPack;
