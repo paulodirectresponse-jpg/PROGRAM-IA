@@ -599,3 +599,33 @@ test('phase2 atomic merge restores official workspace when post-swap finalizatio
     assert.equal(SandboxManager.get(sandbox.id)?.status,'failed');
   } finally { cleanup(env); }
 });
+
+
+test('phase2 post-merge workflow persistence failure restores official workspace', async (t) => {
+  const env=setupProject();
+  const run=RunService.start(env.userId,env.projectId,'conv-post-merge-rollback','build');
+  try {
+    WorkspaceManager.writeFile(env.projectId,'index.html','<html><body>old</body></html>');
+    t.mock.method(RequirementLedgerService,'setStatusForRun',()=>{ throw new Error('forced ledger failure'); });
+    const proposal={
+      id:'proposal-post-merge-rollback',
+      summary:'update html',
+      requiresConfirmation:true,
+      status:'pending',
+      files:[{path:'index.html',action:'modify',content:'<html><body>new</body></html>'}],
+    };
+    const result=await SandboxProposalApplyService.apply({
+      userId:env.userId,projectId:env.projectId,proposal,runId:run.runId,summary:'rollback final state',
+    });
+    assert.equal(result.success,false);
+    assert.equal(result.errorCode,'post_merge_state_failed');
+    assert.equal(WorkspaceManager.readFile(env.projectId,'index.html'),'<html><body>old</body></html>');
+    assert.equal(SandboxManager.get(result.sandboxId!)?.status,'failed');
+    assert.notEqual((db.prepare('SELECT status FROM agent_runs WHERE id=?').get(run.runId) as any)?.status,'completed');
+  } finally {
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(run.runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(run.runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(run.runId);
+    cleanup(env);
+  }
+});
