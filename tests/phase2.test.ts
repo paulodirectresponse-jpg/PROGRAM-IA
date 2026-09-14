@@ -179,7 +179,7 @@ test('phase2 sandbox write stays isolated until merge', async () => {
     assert.equal(write.status,'succeeded');
     assert.equal(WorkspaceManager.readFile(env.projectId,'src/a.ts'),'export const a=1');
     assert.equal(SandboxManager.readFile(sandbox.id,env.userId,'src/a.ts',env.projectId),'export const a=2');
-    const merge=SandboxManager.mergeAtomic({sandboxId:sandbox.id,userId:env.userId,projectId:env.projectId,title:'merge test'});
+    const merge=SandboxManager.mergeAtomic({sandboxId:sandbox.id,userId:env.userId,projectId:env.projectId,title:'merge test',allowedChanges:[{path:'src/a.ts',action:'modify',content:'export const a=2'}]});
     assert.equal(WorkspaceManager.readFile(env.projectId,'src/a.ts'),'export const a=2');
     assert.ok(merge.checkpointId);
     assert.ok(ProjectFileIndex.get(env.projectId,'src/a.ts'));
@@ -198,7 +198,7 @@ test('phase2 sensitive project files are not exposed to sandbox tools and surviv
       {userId:env.userId,projectId:env.projectId,runId:'run-secret',sandboxId:sandbox.id},
       {toolKey:'workspace.write_file',input:{path:'src/a.ts',content:'export const a=3'},idempotencyKey:'secret-safe-write'}
     );
-    SandboxManager.mergeAtomic({sandboxId:sandbox.id,userId:env.userId,projectId:env.projectId,title:'secret preserving merge'});
+    SandboxManager.mergeAtomic({sandboxId:sandbox.id,userId:env.userId,projectId:env.projectId,title:'secret preserving merge',allowedChanges:[{path:'src/a.ts',action:'modify',content:'export const a=3'}]});
     assert.equal(WorkspaceManager.readFile(env.projectId,'.env'),'PRIVATE_TOKEN=keep-me');
   } finally { cleanup(env); }
 });
@@ -261,7 +261,7 @@ test('phase2 sandbox detects stale official revision before merge', async () => 
     WorkspaceManager.writeFile(env.projectId,'src/other.ts','export const other=1');
     assert.equal(SandboxManager.baseMatches(sandbox.id,env.userId,env.projectId),false);
     let code='';
-    try { SandboxManager.mergeAtomic({sandboxId:sandbox.id,userId:env.userId,projectId:env.projectId,title:'stale'}); }
+    try { SandboxManager.mergeAtomic({sandboxId:sandbox.id,userId:env.userId,projectId:env.projectId,title:'stale',allowedChanges:[{path:'src/a.ts',action:'modify',content:'export const a=2'}]}); }
     catch(error:any){ code=String(error?.code||''); }
     assert.equal(code,'stale_base_revision');
     assert.equal(WorkspaceManager.readFile(env.projectId,'src/a.ts'),'export const a=1');
