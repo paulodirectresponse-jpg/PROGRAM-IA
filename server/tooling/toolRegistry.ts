@@ -51,9 +51,20 @@ const DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    key:'workspace.delete_file',
+    version:'1',
+    description:'Remove um arquivo dentro do sandbox isolado.',
+    risk:'write',
+    availability:'requires_sandbox',
+    resumePolicy:'sandbox_required',
+    inputSchema:{
+      path:{type:'string',required:true,description:'Caminho relativo do arquivo.'},
+    },
+  },
+  {
     key:'workspace.apply_patch',
     version:'1',
-    description:'Aplica patch em sandbox/worktree isolado.',
+    description:'Aplica patch JSON determinístico em sandbox. Formato: {"path":"...","search":"...","replace":"..."}.',
     risk:'write',
     availability:'requires_sandbox',
     resumePolicy:'sandbox_required',
@@ -69,7 +80,7 @@ const DEFINITIONS: ToolDefinition[] = [
     availability:'requires_sandbox',
     resumePolicy:'sandbox_required',
     inputSchema:{
-      command:{type:'string',required:true,description:'Comando permitido pelo executor isolado.'},
+      script:{type:'string',required:true,description:'Nome de script npm declarado no package.json do sandbox.'},
       timeoutMs:{type:'integer',min:1,description:'Timeout explícito.'},
     },
   },
