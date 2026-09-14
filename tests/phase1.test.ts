@@ -265,3 +265,74 @@ test('phase1 ContextPack is immutable history and recompiles after project hash 
     assert.ok(budgeted.omittedFiles.every(file=>file.reason==='budget_exhausted'));
   } finally { cleanup(projectId); }
 });
+
+
+test('phase1 AgentEngine resolves Requirement Ledger ids without caller injection', async (t) => {
+  const suffix=safeIdSuffix();
+  const userId=`phase1-ledger-user-${suffix}`;
+  const projectId=`phase1-ledger-project-${suffix}`;
+  const planId=`phase1-plan-${suffix}`;
+  const run=RunService.start(userId,projectId,'conv-phase1','build');
+  seedModel(userId);
+  RequirementLedgerService.syncPlan({
+    projectId,conversationId:'conv-phase1',planId,
+    requirements:[
+      {id:'REQ-001',title:'Persist context',description:'ledger requirement',priority:'high',verification:['context pack contains requirement']} as any,
+      {id:'REQ-002',title:'Propagate runtime',description:'caller omits ids',priority:'high',verification:['provider receives requirement']} as any,
+    ],
+  });
+  RequirementLedgerService.attachRun(projectId,planId,run.runId);
+  const seen:any[]=[];
+  t.mock.method(LLMAdapterService,'getProviderConfig',()=>({key:'mock-context',type:'openai_compatible',apiKey:'x',baseUrl:'https://mock.invalid/v1',modelId:'mock-model',name:'Mock Context',isConfigured:true} as any));
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    seen.push(options);
+    return {replyText:'ok',mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'Mock Context',modelUsed:'mock-model',hasErrors:false,build:{summary:'ok',explanation:'ok',files:[{path:'src/App.tsx',action:'modify',content:'export const ok=1'}]},usage:{inputTokens:1,outputTokens:1,billedCostUsd:0.001}} as any;
+  });
+  try {
+    await AgentEngine.execute({
+      prompt:'Implement the persisted requirements',mode:'build',projectId,
+      existingFiles:{'src/App.tsx':'export const old=1'},appliedSkills:[],conversationHistory:[],
+      userId,runId:run.runId,stepId:run.stepId,focusPaths:['src/App.tsx'],
+    },{forcedAgentKey:'FORGE',profile:'BASE_FREE'});
+    assert.equal(seen.length,1);
+    assert.ok(seen[0].contextBrief.includes('requirements=REQ-001, REQ-002'));
+    const telemetry=ContextCompiler.listTelemetry(projectId);
+    assert.deepEqual(telemetry[0].requirementIds,['REQ-001','REQ-002']);
+  } finally { cleanupRun(run.runId,projectId,userId); }
+});
+
+test('phase1 SENTINEL model invocation keeps ledger requirements and context telemetry', async (t) => {
+  const suffix=safeIdSuffix();
+  const userId=`phase1-sentinel-user-${suffix}`;
+  const projectId=`phase1-sentinel-project-${suffix}`;
+  const planId=`phase1-plan-${suffix}`;
+  const run=RunService.start(userId,projectId,'conv-phase1','review');
+  seedModel(userId);
+  RequirementLedgerService.syncPlan({
+    projectId,conversationId:'conv-phase1',planId,
+    requirements:[{id:'REQ-SENTINEL',title:'Diagnose failure',description:'sentinel requirement',priority:'critical',verification:['sentinel gets requirement']} as any],
+  });
+  RequirementLedgerService.attachRun(projectId,planId,run.runId);
+  const seen:any[]=[];
+  t.mock.method(LLMAdapterService,'getProviderConfig',()=>({key:'mock-context',type:'openai_compatible',apiKey:'x',baseUrl:'https://mock.invalid/v1',modelId:'mock-model',name:'Mock Context',isConfigured:true} as any));
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    seen.push(options);
+    return {replyText:'localized diagnosis',mode:'review',decisionType:'none',isDemonstrativeFallback:false,providerUsed:'Mock Context',modelUsed:'mock-model',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0.001}} as any;
+  });
+  try {
+    await AgentEngine.execute({
+      prompt:'Validator failed in src/broken.ts',mode:'review',projectId,
+      existingFiles:{'src/broken.ts':'export const broken ='},appliedSkills:[],conversationHistory:[],
+      userId,runId:run.runId,stepId:run.stepId,focusPaths:['src/broken.ts'],
+    },{forcedAgentKey:'SENTINEL',profile:'BASE_FREE'});
+    assert.equal(seen.length,1);
+    assert.ok(seen[0].contextBrief.includes('scope=MICRO'));
+    assert.ok(seen[0].contextBrief.includes('requirements=REQ-SENTINEL'));
+    const invocation=db.prepare('SELECT agent_key,context_pack_id,context_scope FROM model_invocations WHERE run_id=? ORDER BY created_at DESC LIMIT 1').get(run.runId) as any;
+    assert.equal(invocation.agent_key,'SENTINEL');
+    assert.ok(invocation.context_pack_id);
+    assert.equal(invocation.context_scope,'MICRO');
+    const commits=ContextCommitService.listByRun(run.runId);
+    assert.ok(commits.some(commit=>commit.agentKey==='SENTINEL'&&commit.requirementIds?.includes('REQ-SENTINEL')));
+  } finally { cleanupRun(run.runId,projectId,userId); }
+});
