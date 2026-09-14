@@ -204,7 +204,7 @@ function requireProjectOwner(req: Request, res: Response, next: NextFunction) {
 // Mount global session parser and CSRF check
 router.use(sessionAuthMiddleware);
 router.use(csrfProtection);
-router.use((req,res,next)=>{res.on('finish',()=>{if(req.user&&['POST','PUT','PATCH','DELETE'].includes(req.method)&&!req.path.startsWith('/sync/'))CloudSyncService.schedule(req.user.id);});next();});
+router.use((req,res,next)=>{res.on('finish',()=>{const projectDelete=req.method==='DELETE'&&/^\/projects\/[^/]+$/.test(req.path);if(req.user&&['POST','PUT','PATCH','DELETE'].includes(req.method)&&!req.path.startsWith('/sync/')&&!projectDelete)CloudSyncService.schedule(req.user.id);});next();});
 
 // ==========================================
 // 1. AUTHENTICATION ROUTES
