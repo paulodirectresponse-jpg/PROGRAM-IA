@@ -7,9 +7,35 @@ import { ProposalSandboxService } from './proposalSandboxService.js';
 import { SandboxManager } from './sandboxManager.js';
 import { ToolExecutionService } from './toolExecutionService.js';
 
+type CandidateChange={path:string;action:string;content?:string};
+
 function requirementIds(projectId:string,runId?:string|null,planId?:string|null){
   const rows=runId?RequirementLedgerService.listByRun(runId):(planId?RequirementLedgerService.listByPlan(projectId,planId):[]);
   return rows.map(row=>row.requirement_key).filter(Boolean);
+}
+
+function canonicalMergeChanges(sandboxId:string,changes:CandidateChange[]) {
+  const record=SandboxManager.get(sandboxId);
+  if(!record)throw Object.assign(new Error('Sandbox não encontrado.'),{code:'sandbox_not_found'});
+  const merged=new Map<string,CandidateChange>();
+  for(const change of changes){
+    const action=change.action==='delete'
+      ? 'delete'
+      : record.baseManifest[change.path]===undefined ? 'create' : 'modify';
+    merged.set(change.path,{...change,action});
+  }
+  return [...merged.values()];
+}
+
+function candidateMismatchResult(error:any,validation:any,sandboxId:string){
+  return {
+    success:false,
+    statusCode:409,
+    error:'O conteúdo candidato do sandbox divergiu da proposta/repair esperado; nada foi aplicado.',
+    validation,
+    sandboxId,
+    errorCode:String(error?.code||'sandbox_proposal_mismatch'),
+  };
 }
 
 export class SandboxProposalApplyService {
@@ -29,6 +55,9 @@ export class SandboxProposalApplyService {
       return {success:false,statusCode:409,error:'Proposta vazia ou inválida.'};
     }
 
+    const expectedByPath=new Map<string,CandidateChange>();
+    for(const file of proposal.files)expectedByPath.set(String(file.path),{path:String(file.path),action:String(file.action),content:file.content});
+
     let materializedValidation:any=null;
     if(!proposal.sandboxId){
       const materialized=await ProposalSandboxService.materialize({
@@ -45,10 +74,25 @@ export class SandboxProposalApplyService {
     const sandboxId=String(proposal.sandboxId);
     const reqIds=requirementIds(input.projectId,input.runId,input.planId);
     let repairSummary:any=null;
+
+    try{
+      SandboxManager.assertExpectedChanges(sandboxId,input.userId,input.projectId,[...expectedByPath.values()],{allowExtraPaths:true});
+    }catch(error:any){
+      return candidateMismatchResult(error,materializedValidation,sandboxId);
+    }
+
     let validation=materializedValidation || await ValidatorEngine.validate({
       projectId:input.projectId,runId:input.runId||undefined,signal:input.signal,
       sandboxId,userId:input.userId,
     });
+
+    // Validation/build/test processes may create artifacts, but they may not mutate the
+    // approved candidate files. Extra generated files are ignored by mergeAtomic.
+    try{
+      SandboxManager.assertExpectedChanges(sandboxId,input.userId,input.projectId,[...expectedByPath.values()],{allowExtraPaths:true});
+    }catch(error:any){
+      return candidateMismatchResult(error,validation,sandboxId);
+    }
 
     if(validation.status==='failed'&&input.runId){
       const failed=validation.results.find((item:any)=>item.status==='fail');
@@ -86,6 +130,7 @@ export class SandboxProposalApplyService {
         },{profile:'BASE_FREE',forcedAgentKey:'FORGE',allowExpertEscalation:true,repair:true});
         const repairFiles=repair.build?.files||repair.proposal?.files||[];
         if(!repairFiles.length)throw new Error('Repair não retornou arquivos aplicáveis.');
+
         for(const file of repairFiles){
           const execution=await ToolExecutionService.execute({
             userId:input.userId,projectId:input.projectId,runId:input.runId,stepId:repairStep,sandboxId,signal:input.signal,
@@ -95,11 +140,20 @@ export class SandboxProposalApplyService {
             idempotencyKey:`repair:${proposal.id}:${file.action}:${file.path}`,
           });
           if(execution.status!=='succeeded')throw new Error(execution.message||'Repair tool falhou.');
+          expectedByPath.set(String(file.path),{path:String(file.path),action:String(file.action),content:file.content});
         }
+
         validation=await ValidatorEngine.validate({
           projectId:input.projectId,runId:input.runId,stepId:repairStep,signal:input.signal,
           sandboxId,userId:input.userId,
         });
+
+        try{
+          SandboxManager.assertExpectedChanges(sandboxId,input.userId,input.projectId,[...expectedByPath.values()],{allowExtraPaths:true});
+        }catch(error:any){
+          throw Object.assign(new Error('Validator alterou o conteúdo candidato durante o repair.'),{code:error?.code||'sandbox_proposal_mismatch'});
+        }
+
         ContextEngineV2.recordCommit({
           projectId:input.projectId,runId:input.runId,taskId:repairStep,agentKey:'FORGE',scope:'LOCAL',
           task:'Repair bounded no sandbox',changedFiles:repairFiles.map((file:any)=>file.path),requirementIds:reqIds,
@@ -121,15 +175,26 @@ export class SandboxProposalApplyService {
       return {success:false,statusCode:422,error:'A proposta falhou na validação do sandbox; o workspace oficial não foi alterado.',validation,sandboxId};
     }
 
+    const allowedChanges=canonicalMergeChanges(sandboxId,[...expectedByPath.values()]);
+    try{
+      SandboxManager.assertExpectedChanges(sandboxId,input.userId,input.projectId,allowedChanges,{allowExtraPaths:true});
+    }catch(error:any){
+      return candidateMismatchResult(error,validation,sandboxId);
+    }
+
     let merge:any;
     try{
       merge=SandboxManager.mergeAtomic({
         sandboxId,userId:input.userId,projectId:input.projectId,title:input.summary,
         description:'Aplicação aprovada a partir do ambiente isolado.',
+        allowedChanges,
       });
     }catch(error:any){
       if(error?.code==='stale_base_revision'){
         return {success:false,statusCode:409,error:'A revisão-base mudou. Atualize a proposta antes de aplicar.',validation,sandboxId,errorCode:'stale_base_revision'};
+      }
+      if(error?.code==='sandbox_proposal_mismatch'){
+        return candidateMismatchResult(error,validation,sandboxId);
       }
       throw error;
     }
