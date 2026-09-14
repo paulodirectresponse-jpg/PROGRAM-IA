@@ -3,6 +3,14 @@ const SENSITIVE_PATTERNS = [
   /(^|\/)(?:credentials?|secrets?|service[-_]?account)(?:\.|\/|$)/i,
   /(^|\/)id_(?:rsa|dsa|ecdsa|ed25519)(?:\.|$)/i,
   /\.(?:pem|p12|pfx|key)$/i,
+  /(^|\/)\.npmrc$/i,
+  /(^|\/)\.yarnrc(?:\.yml)?$/i,
+  /(^|\/)\.pnpmrc$/i,
+  /(^|\/)\.netrc$/i,
+  /(^|\/)\.pypirc$/i,
+  /(^|\/)\.git-credentials$/i,
+  /(^|\/)\.docker\/config\.json$/i,
+  /(^|\/)(?:\.aws|\.ssh|\.kube|\.config\/gcloud)(?:\/|$)/i,
 ];
 
 export class ToolPolicy {
