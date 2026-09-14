@@ -20,6 +20,9 @@ import { CloudSyncService } from './services/cloudSyncService.js';
 import { RuntimeManager } from './services/runtimeManager.js';
 import { RequirementLedgerService } from './services/requirementLedgerService.js';
 import { ContextEngineV2, ContextCommitService, ContextCompiler } from './context-engine/contextEngine.js';
+import { ToolRegistry } from './tooling/toolRegistry.js';
+import { ToolExecutionService } from './tooling/toolExecutionService.js';
+import { ToolExecutionJournal } from './tooling/toolExecutionJournal.js';
 
 export const router = express.Router();
 const activeProjects = new Set<string>();
@@ -529,6 +532,35 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 // ==========================================
 // PHASE 1 — CONTEXT ENGINE V2 CORE API
 // ==========================================
+
+router.get('/projects/:projectId/tools', requireAuth, requireProjectOwner, (_req: Request, res: Response) => {
+  res.json({ success:true, tools:ToolRegistry.list() });
+});
+
+router.post('/projects/:projectId/tools/execute', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  try {
+    const result=await ToolExecutionService.execute({
+      userId:req.user!.id,
+      projectId:req.params.projectId,
+      runId:req.body?.runId ? String(req.body.runId) : null,
+      stepId:req.body?.stepId ? String(req.body.stepId) : null,
+      signal:req.signal,
+    },{
+      toolKey:String(req.body?.toolKey || ''),
+      input:req.body?.input && typeof req.body.input==='object' ? req.body.input : {},
+      idempotencyKey:req.body?.idempotencyKey ? String(req.body.idempotencyKey) : null,
+    });
+    const status=result.status==='blocked' ? 409 : result.status==='failed' ? 422 : result.status==='aborted' ? 499 : 200;
+    res.status(status).json({success:result.status==='succeeded',result});
+  } catch (err:any) {
+    res.status(500).json({error:String(err?.message || err)});
+  }
+});
+
+router.get('/projects/:projectId/tool-executions/:runId', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
+  const rows=ToolExecutionJournal.listByRun(String(req.params.runId || '')).filter(row=>!row.projectId || row.projectId===req.params.projectId);
+  res.json({success:true,executions:rows});
+});
 
 router.post('/projects/:projectId/context/sync', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   try {
