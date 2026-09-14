@@ -167,3 +167,20 @@ test('phase2 sandbox write stays isolated until merge', async () => {
     assert.ok(ProjectFileIndex.get(env.projectId,'src/a.ts'));
   } finally { cleanup(env); }
 });
+
+
+test('phase2 sensitive project files are not exposed to sandbox tools and survive merge', async () => {
+  const env=setupProject();
+  try {
+    WorkspaceManager.writeFile(env.projectId,'.env','PRIVATE_TOKEN=keep-me');
+    WorkspaceManager.writeFile(env.projectId,'src/a.ts','export const a=1');
+    const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-secret'});
+    assert.equal(SandboxManager.readFile(sandbox.id,env.userId,'.env',env.projectId),null);
+    await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-secret',sandboxId:sandbox.id},
+      {toolKey:'workspace.write_file',input:{path:'src/a.ts',content:'export const a=3'},idempotencyKey:'secret-safe-write'}
+    );
+    SandboxManager.mergeAtomic({sandboxId:sandbox.id,userId:env.userId,projectId:env.projectId,title:'secret preserving merge'});
+    assert.equal(WorkspaceManager.readFile(env.projectId,'.env'),'PRIVATE_TOKEN=keep-me');
+  } finally { cleanup(env); }
+});
