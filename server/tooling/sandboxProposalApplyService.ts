@@ -9,6 +9,20 @@ import { ToolExecutionService } from './toolExecutionService.js';
 
 type CandidateChange={path:string;action:string;content?:string};
 
+export interface SandboxProposalApplyResult {
+  success:boolean;
+  statusCode:number;
+  error?:string;
+  errorCode?:string;
+  validation?:any;
+  sandboxId?:string;
+  repair?:any;
+  checkpointId?:string;
+  changedFiles?:string[];
+  needsVerification?:boolean;
+  merge?:any;
+}
+
 function requirementIds(projectId:string,runId?:string|null,planId?:string|null){
   const rows=runId?RequirementLedgerService.listByRun(runId):(planId?RequirementLedgerService.listByPlan(projectId,planId):[]);
   return rows.map(row=>row.requirement_key).filter(Boolean);
@@ -49,7 +63,7 @@ export class SandboxProposalApplyService {
     originalRequest?:string;
     shipRequested?:boolean;
     signal?:AbortSignal;
-  }){
+  }):Promise<SandboxProposalApplyResult>{
     const proposal=input.proposal;
     if(!proposal?.id||!Array.isArray(proposal.files)||!proposal.files.length){
       return {success:false,statusCode:409,error:'Proposta vazia ou inválida.'};
