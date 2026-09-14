@@ -2433,6 +2433,11 @@ function publicBrowserQuality(result:any){
   };
 }
 
+router.get('/benchmarks/preflight',requireAuth,(req:Request,res:Response)=>{
+  const allowExpert=String(req.query.allowExpert||'false')==='true';
+  res.json(BenchmarkService.preflight(req.user!.id,allowExpert));
+});
+
 router.get('/benchmarks/catalog',requireAuth,(_req:Request,res:Response)=>{
   res.json(BenchmarkService.catalog());
 });
@@ -2445,6 +2450,12 @@ router.get('/benchmarks/:benchmarkRunId',requireAuth,(req:Request,res:Response)=
   const run=BenchmarkService.get(req.params.benchmarkRunId,req.user!.id);
   if(!run)return res.status(404).json({error:'Benchmark não encontrado.'});
   res.json({run});
+});
+
+router.get('/benchmarks/:benchmarkRunId/release-gate',requireAuth,(req:Request,res:Response)=>{
+  const gate=BenchmarkService.releaseGate(req.params.benchmarkRunId,req.user!.id);
+  if(!gate)return res.status(404).json({error:'Benchmark não encontrado.'});
+  res.json({gate});
 });
 
 router.post('/benchmarks',requireAuth,(req:Request,res:Response)=>{
