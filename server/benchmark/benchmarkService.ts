@@ -75,7 +75,8 @@ async function cleanupEphemeralProject(projectId:string,userId:string){
   for(const sandbox of sandboxes){try{SandboxManager.cleanup(sandbox.id,userId);}catch{}}
   const runIds=db.prepare('SELECT id FROM agent_runs WHERE project_id=?').all(projectId) as Array<{id:string}>;
   for(const run of runIds){
-    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(run.id);
+    // Model invocations are intentionally retained for truthful daily-cost accounting.
+    // Benchmark linkage/project nulling happens before project cleanup.
     db.prepare('DELETE FROM tool_executions WHERE run_id=?').run(run.id);
     db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(run.id);
   }
@@ -292,6 +293,12 @@ async function executeCase(runRow:any,caseRow:any,definition:BenchmarkCaseDefini
     if(aborted)throw error;
     return {budgetExhausted:false};
   }finally{
+    if(agentRunId){
+      try{
+        db.prepare('UPDATE model_invocations SET benchmark_run_id=?,benchmark_case_id=?,project_id=NULL WHERE run_id=?')
+          .run(benchmarkRunId,caseRow.id,agentRunId);
+      }catch{}
+    }
     if(projectId)await cleanupEphemeralProject(projectId,userId);
   }
 }
