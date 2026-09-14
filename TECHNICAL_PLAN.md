@@ -56,7 +56,7 @@ Papéis:
 - SENTINEL — interpretação de falha concreta;
 - SHIP — publicação solicitada.
 
-Estado atual: state machine determinística implementada com `forcedAgentKey`, Context Engine V2, Tool-First/Sandbox, vínculo ao ValidatorEngine, repair bounded/escalonamento local e merge atômico após aprovação. Próximos blocos independentes: Browser Agent da Fase 3, benchmark da Fase 4 e runtime/HMR de produto.
+Estado atual: state machine determinística implementada com `forcedAgentKey`, Context Engine V2, Tool-First/Sandbox, ValidatorEngine, Browser Quality Gate real, repair bounded/escalonamento local e merge atômico após aprovação. Próximos blocos independentes: benchmark da Fase 4 e runtime/HMR de produto.
 
 ## 5.1 Tool-First — Fase 2
 
