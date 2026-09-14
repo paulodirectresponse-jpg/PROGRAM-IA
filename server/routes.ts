@@ -205,7 +205,7 @@ function requireProjectOwner(req: Request, res: Response, next: NextFunction) {
 // Mount global session parser and CSRF check
 router.use(sessionAuthMiddleware);
 router.use(csrfProtection);
-router.use((req,res,next)=>{res.on('finish',()=>{if(req.user&&['POST','PUT','PATCH','DELETE'].includes(req.method)&&!req.path.startsWith('/sync/'))CloudSyncService.schedule(req.user.id);});next();});
+router.use((req,res,next)=>{res.on('finish',()=>{const projectDelete=req.method==='DELETE'&&/^\/projects\/[^/]+$/.test(req.path);if(req.user&&['POST','PUT','PATCH','DELETE'].includes(req.method)&&!req.path.startsWith('/sync/')&&!projectDelete)CloudSyncService.schedule(req.user.id);});next();});
 
 // ==========================================
 // 1. AUTHENTICATION ROUTES
@@ -771,7 +771,7 @@ router.delete('/projects/:id', requireAuth, requireProjectOwner, async (req: Req
     // 7. Delete project row from SQLite
     db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
 
-    res.json({ success: true, message: 'Projeto excluÃ­do com sucesso.' });
+    res.json({ success: true, message: 'Projeto excluído com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -783,7 +783,7 @@ router.post('/projects/:id/duplicate', requireAuth, requireProjectOwner, (req: R
     const source = db.prepare('SELECT * FROM projects WHERE id = ?').get(sourceId) as any;
     const newId = 'proj-' + Date.now();
     const now = new Date().toISOString();
-    const newName = `${source.name} (CÃ³pia)`;
+    const newName = `${source.name} (Cópia)`;
 
     const workspaceId = ensureUserWorkspace(req.user!.id);
 
@@ -832,7 +832,7 @@ router.post('/projects/:id/duplicate', requireAuth, requireProjectOwner, (req: R
       now
     );
 
-    WorkspaceManager.createCheckpoint(newId, 'DuplicaÃ§Ã£o do Projeto', `CÃ³pia criada a partir de ${source.name}`);
+    WorkspaceManager.createCheckpoint(newId, 'Duplicação do Projeto', `Cópia criada a partir de ${source.name}`);
     res.json({ success: true, projectId: newId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
