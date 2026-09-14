@@ -19,8 +19,18 @@ function tokens(text: string) {
   return Math.max(1, Math.ceil(text.length / 4));
 }
 
-function fileTokenEstimate(file: ProjectFileRecord) {
+function metadataTokenEstimate(file: ProjectFileRecord) {
   return tokens([file.path,file.language,file.summary,file.symbols.join(' '),file.imports.join(' '),file.exports.join(' '),file.moduleKey].join('\n'));
+}
+
+function contentTokenEstimate(file: ProjectFileRecord, fileContents?: Record<string,string>) {
+  const content = fileContents?.[file.path];
+  if (typeof content === 'string') return tokens(content);
+  return Math.max(1, Math.ceil(Math.max(0, file.sizeBytes) / 4));
+}
+
+function fileTokenEstimate(file: ProjectFileRecord, fileContents?: Record<string,string>) {
+  return metadataTokenEstimate(file) + contentTokenEstimate(file, fileContents);
 }
 
 function words(input: string) {
@@ -88,7 +98,7 @@ export class ContextCompiler {
       if (input.agentKey === 'SCOUT') {
         score += file.moduleKey === 'root' ? 20 : 8; reasons.push('scout_structure');
       }
-      return {file,score,reasons,estimatedTokens:fileTokenEstimate(file)};
+      return {file,score,reasons,estimatedTokens:fileTokenEstimate(file,input.fileContents)};
     }).sort((a,b) => b.score - a.score || a.file.path.localeCompare(b.file.path));
 
     const tokenBudget = Math.max(256, Math.floor(input.tokenBudget || DEFAULT_CONTEXT_TOKEN_BUDGETS[input.scope]));
