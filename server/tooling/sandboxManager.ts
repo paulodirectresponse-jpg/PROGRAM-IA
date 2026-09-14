@@ -295,11 +295,7 @@ export class SandboxManager {
     const changedFiles=normalizedChanges
       .filter(change=>record.baseManifest[change.path]!==undefined || change.action!=='delete')
       .map(change=>({path:change.path,action:change.action==='update'?'modify':change.action}));
-    const beforeCheckpointId=WorkspaceManager.createCheckpoint(
-      input.projectId,
-      `Antes: ${input.title.slice(0,60)}`,
-      'Checkpoint automático antes do merge atômico do sandbox.'
-    );
+    let beforeCheckpointId:string|null=null;
 
     const official=WorkspaceManager.getProjectDir(input.projectId);
     const parent=path.dirname(official);
@@ -336,6 +332,12 @@ export class SandboxManager {
         throw Object.assign(new Error('A revisão-base mudou durante a preparação do merge.'),{code:'stale_base_revision'});
       }
 
+      beforeCheckpointId=WorkspaceManager.createCheckpoint(
+        input.projectId,
+        `Antes: ${input.title.slice(0,60)}`,
+        'Checkpoint automático antes do merge atômico do sandbox.'
+      );
+
       fs.renameSync(official,backup);
       backupCreated=true;
       fs.renameSync(stage,official);
@@ -356,7 +358,7 @@ export class SandboxManager {
       try{if(fs.existsSync(backup))fs.rmSync(backup,{recursive:true,force:true});}catch{}
       backupCreated=false;
       replacementActive=false;
-      return {checkpointId,beforeCheckpointId,changedFiles,baseHash:record.baseHash,mergedHash};
+      return {checkpointId,beforeCheckpointId:beforeCheckpointId!,changedFiles,baseHash:record.baseHash,mergedHash};
     }catch(error){
       try{if(fs.existsSync(stage))fs.rmSync(stage,{recursive:true,force:true});}catch{}
 
@@ -374,10 +376,12 @@ export class SandboxManager {
         try{db.prepare('DELETE FROM file_changes WHERE checkpoint_id=?').run(checkpointId);}catch{}
         try{db.prepare('DELETE FROM checkpoints WHERE id=?').run(checkpointId);}catch{}
       }
-      try{
-        db.prepare("UPDATE sandboxes SET status='failed',merged_checkpoint_id=NULL,updated_at=? WHERE id=?")
-          .run(new Date().toISOString(),record.id);
-      }catch{}
+      if((error as any)?.code!=='stale_base_revision'){
+        try{
+          db.prepare("UPDATE sandboxes SET status='failed',merged_checkpoint_id=NULL,updated_at=? WHERE id=?")
+            .run(new Date().toISOString(),record.id);
+        }catch{}
+      }
       throw error;
     }
   }
