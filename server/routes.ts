@@ -23,6 +23,7 @@ import { ContextEngineV2, ContextCommitService, ContextCompiler } from './contex
 import { ToolRegistry } from './tooling/toolRegistry.js';
 import { ToolExecutionService } from './tooling/toolExecutionService.js';
 import { ToolExecutionJournal } from './tooling/toolExecutionJournal.js';
+import { SandboxManager } from './tooling/sandboxManager.js';
 
 export const router = express.Router();
 const activeProjects = new Set<string>();
