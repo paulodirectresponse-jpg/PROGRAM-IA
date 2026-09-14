@@ -1794,6 +1794,7 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
       sandboxId:sandboxApply.sandboxId,
       changedFiles:sandboxApply.changedFiles,
       needsVerification:sandboxApply.needsVerification,
+      repair:(sandboxApply as any).repair || undefined,
       message:sandboxApply.needsVerification
         ? 'Alterações validadas em sandbox e aplicadas por merge atômico, mas ainda existem gates não executáveis.'
         : 'Alterações validadas em sandbox e aplicadas por merge atômico com sucesso.',
