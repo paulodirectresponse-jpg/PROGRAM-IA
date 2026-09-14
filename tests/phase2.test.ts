@@ -6,6 +6,7 @@ import { WorkspaceManager } from '../server/services/workspaceManager.js';
 import { ToolRegistry } from '../server/tooling/toolRegistry.js';
 import { ToolExecutionService } from '../server/tooling/toolExecutionService.js';
 import { ToolExecutionJournal } from '../server/tooling/toolExecutionJournal.js';
+import { SandboxManager } from '../server/tooling/sandboxManager.js';
 
 initializeDatabase();
 
