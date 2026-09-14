@@ -98,6 +98,20 @@ Ainda faltam correção automática localizada com revalidação, escalonamento 
 - nenhum limite lógico de quantidade de arquivos foi introduzido;
 - suíte da Fase 1 cobre integração real, invalidação, requirements, stale context, retry e budget explícito.
 
+### Fase 2 — Tool-First + Sandbox + Resumability — INICIADA
+
+Fundação implementada nesta branch:
+- contratos tipados de ferramentas, risco, disponibilidade e política de resume;
+- Tool Registry backend com ferramentas read-only reais e ferramentas mutáveis/processuais explicitamente `requires_sandbox`;
+- política de leitura bloqueia paths sensíveis e traversal;
+- journal durável de `tool_executions` com project/run/step, versão, request hash, idempotency key, resume policy e lifecycle timestamps;
+- ferramentas `workspace.list_tree`, `workspace.read_file` e `workspace.search_text` executam contra workspace do proprietário;
+- `workspace.write_file`, `workspace.apply_patch` e `process.run` NÃO fingem execução: permanecem bloqueadas até worktree/sandbox real;
+- APIs autenticadas permitem introspecção do registry, execução read-only e auditoria do journal;
+- testes da Fase 2 cobrem ownership, sensitive files, ausência de fake success e estado recuperável.
+
+Ainda pertence ao Codex nesta fase: Git worktree real, sandbox isolado, process supervisor, handlers de mutation/process, tool loop dos agentes, durable restart/resume e merge atômico.
+
 ## Pendências que bloqueiam “release completa”
 
 Ver `CODEX_HANDOFF.md`: WebSocket/HMR, E2E externo real, Agent Engine com repair bounded, benchmark real e remoção destrutiva pós-reconciliação.
