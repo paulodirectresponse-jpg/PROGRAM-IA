@@ -243,12 +243,32 @@ CREATE TABLE IF NOT EXISTS tool_executions (
   request_hash TEXT,
   resume_policy TEXT NOT NULL DEFAULT 'inspect_only',
   started_at TEXT,
-  finished_at TEXT
+  finished_at TEXT,
+  sandbox_id TEXT
 );
 CREATE INDEX IF NOT EXISTS tool_executions_run_created ON tool_executions(run_id,created_at);
 CREATE INDEX IF NOT EXISTS tool_executions_step_created ON tool_executions(step_id,created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS tool_executions_run_idempotency ON tool_executions(run_id,idempotency_key)
   WHERE run_id IS NOT NULL AND idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS tool_executions_sandbox_created ON tool_executions(sandbox_id,created_at);
+
+CREATE TABLE IF NOT EXISTS sandboxes (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  run_id TEXT,
+  step_id TEXT,
+  status TEXT NOT NULL,
+  root_path TEXT NOT NULL,
+  base_hash TEXT NOT NULL,
+  base_manifest_json TEXT NOT NULL DEFAULT '{}',
+  validation_json TEXT NOT NULL DEFAULT 'null',
+  merged_checkpoint_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sandboxes_project_status ON sandboxes(project_id,status);
+CREATE INDEX IF NOT EXISTS sandboxes_run ON sandboxes(run_id,created_at);
 
 -- 12. skills
 CREATE TABLE IF NOT EXISTS skills (
