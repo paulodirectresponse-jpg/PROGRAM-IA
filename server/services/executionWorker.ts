@@ -1,11 +1,39 @@
-import {spawn} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SandboxProcessSupervisor } from '../tooling/sandboxProcessSupervisor.js';
+
 export type WorkerTool='typecheck'|'lint'|'build'|'test';
 export interface WorkerResult{tool:WorkerTool;status:'pass'|'fail'|'skipped';exitCode:number|null;durationMs:number;output:string}
-export class ExecutionWorker{
- static available(cwd:string){try{const p=JSON.parse(fs.readFileSync(path.join(cwd,'package.json'),'utf8'));return new Set(Object.keys(p.scripts||{}));}catch{return new Set<string>();}}
- static safeEnvironment(){const allowed=['PATH','Path','PATHEXT','SYSTEMROOT','SystemRoot','WINDIR','COMSPEC','TEMP','TMP','TMPDIR','HOME','USERPROFILE','APPDATA','LOCALAPPDATA'];const env:NodeJS.ProcessEnv={CI:'1',FORGE_SANDBOX:'1',NO_COLOR:'1'};for(const key of allowed)if(process.env[key])env[key]=process.env[key];return env;}
- static async run(cwd:string,tool:WorkerTool,signal?:AbortSignal):Promise<WorkerResult>{const scripts=this.available(cwd);let args:string[]|null=null;if(tool==='typecheck')args=scripts.has('typecheck')?['run','typecheck']:scripts.has('lint')?['run','lint']:null;else args=scripts.has(tool)?['run',tool]:null;if(!args)return{tool,status:'skipped',exitCode:null,durationMs:0,output:'Script não declarado no package.json.'};const started=Date.now();return await new Promise((resolve)=>{const npmCli=path.join(path.dirname(process.execPath),'node_modules','npm','bin','npm-cli.js');const command=fs.existsSync(npmCli)?process.execPath:(process.platform==='win32'?'npm.cmd':'npm');const commandArgs=fs.existsSync(npmCli)?[npmCli,...args!]:args!;const child=spawn(command,commandArgs,{cwd,shell:false,windowsHide:true,env:this.safeEnvironment()});let out='';const collect=(b:Buffer)=>{out=(out+b.toString()).slice(-20000)};child.stdout.on('data',collect);child.stderr.on('data',collect);const timer=setTimeout(()=>child.kill(),120000);const abort=()=>child.kill();signal?.addEventListener('abort',abort,{once:true});child.on('error',e=>{clearTimeout(timer);resolve({tool,status:'fail',exitCode:null,durationMs:Date.now()-started,output:e.message})});child.on('close',code=>{clearTimeout(timer);signal?.removeEventListener('abort',abort);resolve({tool,status:code===0?'pass':'fail',exitCode:code,durationMs:Date.now()-started,output:out})});});}
-}
 
+export class ExecutionWorker{
+  static available(cwd:string){
+    try{
+      const p=JSON.parse(fs.readFileSync(path.join(cwd,'package.json'),'utf8'));
+      return new Set(Object.keys(p.scripts||{}));
+    }catch{return new Set<string>();}
+  }
+
+  static safeEnvironment(){
+    return SandboxProcessSupervisor.safeEnvironment();
+  }
+
+  static async run(cwd:string,tool:WorkerTool,signal?:AbortSignal):Promise<WorkerResult>{
+    const scripts=this.available(cwd);
+    let script:WorkerTool|null=null;
+    if(tool==='typecheck')script=scripts.has('typecheck')?'typecheck':scripts.has('lint')?'lint':null;
+    else script=scripts.has(tool)?tool:null;
+    if(!script)return{tool,status:'skipped',exitCode:null,durationMs:0,output:'Script não declarado no package.json.'};
+    const result=await SandboxProcessSupervisor.runNpmScript({cwd,script,signal});
+    return {
+      tool,
+      status:result.status==='pass'?'pass':'fail',
+      exitCode:result.exitCode,
+      durationMs:result.durationMs,
+      output:result.output || (result.status==='timeout'?'Processo excedeu timeout.':result.status==='aborted'?'Processo cancelado.':''),
+    };
+  }
+
+  static async runScript(cwd:string,script:string,signal?:AbortSignal,timeoutMs?:number){
+    return SandboxProcessSupervisor.runNpmScript({cwd,script,signal,timeoutMs});
+  }
+}
