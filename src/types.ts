@@ -134,6 +134,7 @@ export interface Message {
     providerUsed?: string;
     modelUsed?: string;
     planId?: string;
+    plan?: Record<string, unknown>;
     checkpointId?: string;
     filesAffected?: string[];
     isWelcome?: boolean;
