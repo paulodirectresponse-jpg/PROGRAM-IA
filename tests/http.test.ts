@@ -202,6 +202,18 @@ test('unexpected validation exception restores workspace and makes proposal retr
   }
 });
 
+test('any owned skill can be deleted, including a non-custom skill',async()=>{
+  const created=await fetch(`${base}/skills`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({name:'Temp Builtin-like',slug:`temp-builtin-${Date.now()}`,description:'temp',system_instructions:'temp',scope:'project'})});
+  assert.equal(created.status,200);
+  const body=await created.json();
+  const skillId=body.skill?.id || body.id;
+  assert.ok(skillId);
+  db.prepare('UPDATE skills SET is_custom=0 WHERE id=? AND user_id=?').run(skillId,userA);
+  const deleted=await fetch(`${base}/skills/${skillId}`,{method:'DELETE',headers:{Authorization:`Bearer ${tokenA}`}});
+  assert.equal(deleted.status,200);
+  assert.equal(db.prepare('SELECT id FROM skills WHERE id=?').get(skillId),undefined);
+});
+
 test('changing model configuration does not mutate another user',async()=>{
   const r=await fetch(`${base}/providers/update`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({providerKey:'useoneai',modelId:'my-model'})});
   assert.equal(r.status,200);
@@ -580,6 +592,33 @@ test('direct LLM build validates and applies the sandbox result automatically',a
     assert.equal(WorkspaceManager.readFile(projectId,'index.html'),'<html><body>NEW</body></html>');
     assert.equal(body.agentMessage.metadata.autoApplied,true);
   }finally{WorkspaceManager.deleteProject(projectId);db.prepare('DELETE FROM projects WHERE id=?').run(projectId);}
+});
+
+test('automatic mode answers conversational requests without creating code or agent runs',async(t)=>{
+  const previousFlag=process.env.AGENT_ENGINE_ENABLED;
+  process.env.AGENT_ENGINE_ENABLED='true';
+  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    assert.equal(options.mode,'auto');
+    assert.match(String(options.prompt),/MODO CONVERSA/);
+    return {replyText:'Posso explicar, detalhar ideias e ajudar a decidir o próximo passo sem alterar o projeto.',mode:'auto',decisionType:'explanation',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any;
+  });
+  const projectId=createLifecycleProject('conversation-only');
+  WorkspaceManager.writeFile(projectId,'index.html','<html><body>UNCHANGED</body></html>');
+  const beforeRuns=(db.prepare('SELECT COUNT(*) c FROM agent_runs WHERE project_id=?').get(projectId) as any).c;
+  try{
+    const r=await fetch(`${base}/conversations/${projectId}/messages`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({content:'O que você pode fazer por mim?',mode:'auto'})});
+    assert.equal(r.status,200);
+    const body=await r.json();
+    assert.match(body.agentMessage.content,/explicar, detalhar ideias/i);
+    assert.equal(body.proposal,undefined);
+    assert.equal(body.plan,undefined);
+    assert.equal((db.prepare('SELECT COUNT(*) c FROM agent_runs WHERE project_id=?').get(projectId) as any).c,beforeRuns);
+    assert.equal(WorkspaceManager.readFile(projectId,'index.html'),'<html><body>UNCHANGED</body></html>');
+  }finally{
+    if(previousFlag===undefined)delete process.env.AGENT_ENGINE_ENABLED;else process.env.AGENT_ENGINE_ENABLED=previousFlag;
+    WorkspaceManager.deleteProject(projectId);db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
+  }
 });
 
 test('agent automatic lifecycle returns 202 then completes review and apply without user approval',async(t)=>{

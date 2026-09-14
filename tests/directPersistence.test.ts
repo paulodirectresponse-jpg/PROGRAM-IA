@@ -55,6 +55,39 @@ test('restores normalized entities and hash-verified Storage files', async (t) =
   } finally { restore('SUPABASE_URL', oldUrl); restore('SUPABASE_SECRET_KEY', oldKey); }
 });
 
+test('canonical pull does not overwrite a newer local project after a background build', async (t) => {
+  const user=AuthService.firebaseLogin(`local-newer-${Date.now()}@example.test`,'Local Newer',`fb-local-newer-${Date.now()}`).user;
+  const workspace=(db.prepare('SELECT id FROM workspaces WHERE user_id=? LIMIT 1').get(user.id) as any).id;
+  const oldStamp='2026-09-12T00:00:00.000Z';
+  const newStamp='2026-09-14T12:00:00.000Z';
+  const projectId=`local-newer-project-${Date.now()}`;
+  db.prepare("INSERT INTO projects(id,user_id,workspace_id,name,origin,created_at,updated_at) VALUES(?,?,?,'LOCAL_FINAL','novo',?,?)")
+    .run(projectId,user.id,workspace,oldStamp,newStamp);
+
+  const remoteSnapshot:any={
+    schemaVersion:1,userId:user.id,deviceId:'supabase-canonical',createdAt:oldStamp,
+    tables:{
+      users:[],
+      projects:[{id:projectId,user_id:user.id,workspace_id:workspace,name:'REMOTE_OLD',origin:'novo',created_at:oldStamp,updated_at:oldStamp}],
+      providers:[],user_secrets:[],integrations:[],skills:[],conversations:[],messages:[],checkpoints:[],repositories:[],branches:[],model_profiles:[],model_candidates:[],model_invocations:[]
+    },
+    files:{},
+  };
+  let pushed=false;
+  t.mock.method(SupabasePersistenceService,'pullCanonical',async()=>({status:'synced',snapshot:remoteSnapshot}) as any);
+  t.mock.method(CloudSyncService,'pushDirect',async()=>{pushed=true;return{status:'synced',records:1,files:0} as any;});
+
+  try{
+    const result=await CloudSyncService.pullDirect(user.id) as any;
+    assert.equal(result.status,'synced');
+    assert.equal(result.source,'local-newer');
+    assert.equal(pushed,true);
+    assert.equal((db.prepare('SELECT name FROM projects WHERE id=?').get(projectId) as any).name,'LOCAL_FINAL');
+  }finally{
+    db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
+  }
+});
+
 test('migration upserts account, entities and binary files without putting server key in payloads', async (t) => {
   const oldUrl = process.env.SUPABASE_URL, oldKey = process.env.SUPABASE_SECRET_KEY;
   process.env.SUPABASE_URL = 'https://direct.example.test'; process.env.SUPABASE_SECRET_KEY = 'server-secret-value';

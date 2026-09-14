@@ -142,11 +142,12 @@ export class LLMAdapterService {
   }
 
   static resolveRequestedMode(prompt: string, selectedMode: AgentMode): AgentMode {
-    // Manual advanced modes are explicit user overrides. Only "auto" may
-    // reclassify intent from the prompt text.
+    // Manual advanced modes are explicit user overrides. In Automático we only
+    // enter an execution workflow when the wording actually asks to mutate software.
+    // Otherwise "auto" remains conversational and the assistant answers in chat.
     if (selectedMode !== 'auto') return selectedMode;
 
-    const text = String(prompt || '').toLowerCase();
+    const text = String(prompt || '').toLowerCase().trim();
 
     const explicitPublish = /\b(publicar|publique|deploy|commit|push|enviar\s+para\s+(?:o\s+)?github|sincronizar\s+com\s+(?:o\s+)?github)\b/i.test(text);
     if (explicitPublish) return 'publish';
@@ -154,19 +155,21 @@ export class LLMAdapterService {
     const explicitReview = /\b(revisar|revise|auditar|auditoria|encontrar\s+(?:bugs|erros)|corrigir\s+bugs|analisar\s+(?:o\s+)?c[oó]digo)\b/i.test(text);
     if (explicitReview) return 'review';
 
-    // No Automático, planejamento é uma etapa interna. Só paramos em PLAN quando
-    // o usuário pede explicitamente apenas o plano/arquitetura ou proíbe implementação.
     const explicitPlanOnly =
       /\b(?:s[oó]|somente|apenas)\b[\s\S]{0,40}\b(?:plano|planejamento|arquitetura|roadmap|especifica[cç][aã]o)\b/i.test(text) ||
       /\b(?:n[aã]o|nao)\s+(?:implemente|construa|crie|altere|edite|fa[cç]a)\b/i.test(text) ||
       /\b(?:plano|planejamento|arquitetura|roadmap)\b[\s\S]{0,40}\bsem\s+implementar\b/i.test(text);
     if (explicitPlanOnly) return 'plan';
 
-    const explicitBuild = /\b(construir|construa|implementar|implemente|criar|crie|fa[cç]a|alterar|altere|corrigir|corrija|planejar|planeje|planeja)\b/i.test(text);
+    const conversationalObject = /\b(ideia|conceito|texto|frase|copy|roteiro|mensagem|descri[cç][aã]o|explica[cç][aã]o|estrat[eé]gia|brainstorm|opini[aã]o)\b/i.test(text);
+    const softwareObject = /\b(site|sistema|app|aplicativo|p[aá]gina|tela|layout|interface|c[oó]digo|arquivo|componente|bot[aã]o|endpoint|api|backend|frontend|banco\s+de\s+dados|fun[cç][aã]o|feature|funcionalidade|bug|erro|css|html|react|typescript|javascript)\b/i.test(text);
+    const strongBuildVerb = /\b(implementar|implemente|construir|construa|programar|programe|codificar|codifique|refatorar|refatore)\b/i.test(text);
+    const mutationVerb = /\b(criar|crie|fa[cç]a|gerar|gere|alterar|altere|mudar|mude|editar|edite|corrigir|corrija|adicionar|adicione|remover|remova|excluir|exclua)\b/i.test(text);
+    const explicitBuild = strongBuildVerb || (mutationVerb && softwareObject) || (mutationVerb && !conversationalObject && /\b(isso|isto|aqui|projeto)\b/i.test(text));
     if (explicitBuild) return 'build';
 
-    // O comportamento padrão do modo Automático é entregar o resultado, não uma proposta.
-    return 'build';
+    // Perguntas, ideação, refinamento de requisitos e ajuda textual ficam no chat.
+    return 'auto';
   }
 
   /**
