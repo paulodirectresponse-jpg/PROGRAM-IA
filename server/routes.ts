@@ -545,6 +545,7 @@ router.post('/projects/:projectId/tools/execute', requireAuth, requireProjectOwn
       projectId:req.params.projectId,
       runId:req.body?.runId ? String(req.body.runId) : null,
       stepId:req.body?.stepId ? String(req.body.stepId) : null,
+      sandboxId:req.body?.sandboxId ? String(req.body.sandboxId) : null,
     },{
       toolKey:String(req.body?.toolKey || ''),
       input:req.body?.input && typeof req.body.input==='object' ? req.body.input : {},
