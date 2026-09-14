@@ -120,7 +120,7 @@ async function runTool(cwd: string, packageManager: string, args: string[], time
   const { command, prefix } = toolCommand(packageManager);
   const started = Date.now();
   return await new Promise<{ ok: boolean; output: string; durationMs: number; timedOut: boolean }>((resolve) => {
-    const child = spawn(command, [...prefix, ...args], { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32', env: ExecutionWorker.safeEnvironment() });
+    const child = spawn(command, [...prefix, ...args], { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32', env: envOverride || ExecutionWorker.safeEnvironment() });
     let output = '';
     let settled = false;
     const finish = (value: { ok: boolean; output: string; durationMs: number; timedOut: boolean }) => {
