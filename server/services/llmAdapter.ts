@@ -170,7 +170,7 @@ export class LLMAdapterService {
     const recentSoftware=softwarePattern.test(recent)||existingFiles.some(path=>/\.(?:tsx?|jsx?|html?|css|vue|svelte)$/i.test(path));
 
     const ideation=/\b(me\s+ajude|ajude|detalhe|detalhar|explique|explicar|o\s+que|como\s+(?:voce|eu|isso)|qual|quais|pense|pensar|sugira|sugerir|avalie|avaliar|opine|opinar|brainstorm|ideia|conceito|estrategia|roteiro|copy|texto|mensagem)\b/;
-    const executionAction=/\b(criar|crie|faca|fazer|monte|montar|implemente|implementar|construa|construir|programe|programar|codifique|codificar|gere|gerar|adicione|adicionar|inclua|incluir|altere|alterar|mude|mudar|edite|editar|substitua|substituir|remova|remover|exclua|excluir|corrija|corrigir|refatore|refatorar|melhore|melhorar)\b/;
+    const executionAction=/\b(criar|crie|faca|monte|montar|implemente|implementar|construa|construir|programe|programar|codifique|codificar|gere|gerar|adicione|adicionar|inclua|incluir|altere|alterar|mude|mudar|edite|editar|substitua|substituir|remova|remover|exclua|excluir|corrija|corrigir|refatore|refatorar|melhore|melhorar)\b/;
     const referential=/\b(isso|isto|essa|esse|essas|esses|aquilo|aqui|projeto|pagina|landing|layout|tela|site|sistema)\b/;
     const desire=/\b(quero|preciso|gostaria|vamos|pode)\b/;
     const explanation=/\b(entender|explicar|explique|duvida|pergunta|como\s+funciona|o\s+que\s+e|me\s+ajude)\b/;
