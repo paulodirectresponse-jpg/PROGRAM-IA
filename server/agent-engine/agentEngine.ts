@@ -184,6 +184,72 @@ function withCompiledContext(x: Input, agentKey: string, options: ExecuteOptions
   };
 }
 
+type ReadToolCall = { tool:string; input:Record<string,unknown> };
+
+function parseReadToolRequest(text:string): ReadToolCall[] | null {
+  const raw=String(text||'').trim();
+  const candidates=[raw,...[...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map(match=>String(match[1]||'').trim())];
+  for(const candidate of candidates){
+    try{
+      const parsed=JSON.parse(candidate);
+      if(parsed?.type!=='tool_request'||!Array.isArray(parsed.calls))continue;
+      const calls=parsed.calls
+        .filter((call:any)=>call&&typeof call.tool==='string'&&call.input&&typeof call.input==='object')
+        .map((call:any)=>({tool:String(call.tool),input:{...call.input}}));
+      return calls.length?calls:[];
+    }catch{}
+  }
+  return null;
+}
+
+function toolLoopInstruction() {
+  return [
+    'TOOL-FIRST INSPECTION:',
+    'Se o ContextPack não for suficiente para responder com segurança, você pode pedir ferramentas READ-ONLY antes da resposta final.',
+    'Ferramentas permitidas: workspace.list_tree, workspace.read_file, workspace.search_text.',
+    'Para pedir ferramentas, responda SOMENTE JSON: {"type":"tool_request","calls":[{"tool":"workspace.read_file","input":{"path":"src/a.ts","start":0,"end":8000}}]}',
+    'Não peça write/patch/process neste estágio. Alterações serão executadas pela camada de ferramentas no sandbox depois da proposta.',
+    'Depois de receber TOOL RESULTS, produza a resposta final no schema normal do modo atual.',
+  ].join('\n');
+}
+
+function boundedToolInput(call:ReadToolCall,remainingChars:number) {
+  const input={...(call.input||{})};
+  if(call.tool==='workspace.read_file'){
+    const start=Number.isInteger(input.start)?Math.max(0,Number(input.start)):0;
+    const requestedEnd=Number.isInteger(input.end)?Math.max(start,Number(input.end)):start+Math.max(1000,Math.min(16000,remainingChars));
+    input.start=start;
+    input.end=Math.min(requestedEnd,start+Math.max(1000,Math.min(16000,remainingChars)));
+  }
+  if(call.tool==='workspace.search_text'&&input.maxMatches===undefined){
+    input.maxMatches=Math.max(1,Math.min(50,Math.floor(Math.max(1000,remainingChars)/500)));
+  }
+  return input;
+}
+
+function compactToolEvidence(tool:string,result:any,remainingChars:number) {
+  const payload={tool,status:result.status,output:result.output,errorCode:result.errorCode,message:result.message};
+  const serialized=JSON.stringify(payload);
+  if(serialized.length<=remainingChars)return {text:serialized,used:serialized.length};
+  const output=result?.output;
+  if(tool==='workspace.list_tree'&&Array.isArray(output?.files)){
+    const base={tool,status:result.status,output:{files:[] as any[],partial:true,totalFiles:output.files.length,omittedFiles:output.files.length}};
+    for(const file of output.files){
+      const next={...base,output:{...base.output,files:[...base.output.files,file],omittedFiles:output.files.length-base.output.files.length-1}};
+      const encoded=JSON.stringify(next);
+      if(encoded.length>remainingChars)break;
+      base.output.files.push(file);
+      base.output.omittedFiles=output.files.length-base.output.files.length;
+    }
+    const encoded=JSON.stringify(base);
+    return {text:encoded,used:encoded.length};
+  }
+  return {
+    text:JSON.stringify({tool,status:result.status,partial:true,reason:'tool_evidence_budget',availableChars:serialized.length}),
+    used:Math.min(remainingChars,200),
+  };
+}
+
 function recordContextCommitFromStep(x: Input, agentKey: string, scope: ContextScope, task: string, details: { decisions?: string[]; changedFiles?: string[]; validation?: unknown; blockers?: string[]; nextState?: unknown } = {}) {
   ContextEngineV2.recordCommit({
     projectId: x.projectId,
