@@ -51,13 +51,42 @@ export class CloudSyncService{
   static import(userId:string,s:Snapshot){if(!s?.userId)throw Error('Snapshot remoto inválido.');const sourceUserId=s.userId;const order=['workspaces','providers','skills','integrations','user_secrets','model_profiles','model_candidates','projects','project_sources','branches','conversations','messages','checkpoints','verifications','attachments','plans','tasks','requirements','agent_runs','agent_steps','tool_executions','model_invocations'];db.exec('BEGIN IMMEDIATE');try{for(const name of order){const valid=new Set((db.prepare(`PRAGMA table_info(${name})`).all() as any[]).map(c=>c.name));for(const original of s.tables?.[name]||[]){const row={...original};if(row.user_id===sourceUserId)row.user_id=userId;if(name==='messages'&&row.metadata_json){try{const metadata=JSON.parse(row.metadata_json);row.metadata_json=JSON.stringify(metadata&&typeof metadata==='object'?metadata:{});}catch{row.metadata_json='{}';}}const cols=Object.keys(row).filter(c=>valid.has(c));if(!cols.length)continue;db.prepare(`INSERT OR REPLACE INTO ${name} (${cols.join(',')}) VALUES (${cols.map(()=>'?').join(',')})`).run(...cols.map(c=>row[c]));}}db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}for(const [projectId,items] of Object.entries(s.files||{})){if(!WorkspaceManager.verifyProjectOwnership(projectId,userId))continue;for(const [name,b64] of Object.entries(items)){WorkspaceManager.writeBinaryFile(projectId,name,Buffer.from(b64,'base64'));}}}
   private static firebaseUid(userId:string){return (db.prepare('SELECT firebase_uid FROM users WHERE id=?').get(userId) as any)?.firebase_uid||'';}
   static async pushDirect(userId:string){return this.enqueue(userId,()=>SupabasePersistenceService.pushCanonical(userId,this.firebaseUid(userId),this.export(userId)));}
+  static async deleteSkill(userId:string,skillId:string){
+    const pending=this.timer.get(userId);
+    if(pending){clearTimeout(pending);this.timer.delete(userId);}
+    if(!this.configured())return{status:'not_configured' as const,deleted:false};
+    return this.enqueue(userId,()=>SupabasePersistenceService.deleteCanonicalSkill(this.firebaseUid(userId),skillId));
+  }
   static async deleteProject(userId:string,projectId:string){
     const pending=this.timer.get(userId);
     if(pending){clearTimeout(pending);this.timer.delete(userId);}
     if(!this.configured())return{status:'not_configured' as const,deleted:false};
     return this.enqueue(userId,()=>SupabasePersistenceService.deleteCanonicalProject(this.firebaseUid(userId),projectId));
   }
-  static async pullDirect(userId:string){const direct=await SupabasePersistenceService.pullCanonical(userId,this.firebaseUid(userId));if(direct.status==='synced'&&direct.snapshot){this.assertSecretsReadable(direct.snapshot);this.import(userId,direct.snapshot as Snapshot);return{status:'synced',restored:true,source:'canonical'};}return direct;}
+  private static latestProjectTimestamp(rows:any[]=[]){
+    return rows.reduce((latest,row)=>{
+      const stamp=Date.parse(String(row?.updated_at||row?.created_at||''));
+      return Number.isFinite(stamp)?Math.max(latest,stamp):latest;
+    },0);
+  }
+  static async pullDirect(userId:string){
+    const direct=await SupabasePersistenceService.pullCanonical(userId,this.firebaseUid(userId));
+    if(direct.status==='synced'&&direct.snapshot){
+      this.assertSecretsReadable(direct.snapshot);
+      const remoteUpdated=this.latestProjectTimestamp(direct.snapshot.tables?.projects||[]);
+      const localRows=db.prepare('SELECT updated_at,created_at FROM projects WHERE user_id=?').all(userId) as any[];
+      const localUpdated=this.latestProjectTimestamp(localRows);
+      if(localUpdated>remoteUpdated){
+        // Never let an older canonical snapshot erase a build that just finished locally.
+        // This is especially important after HTTP 202 background executions.
+        const pushed=await this.pushDirect(userId);
+        return{...pushed,restored:false,source:'local-newer'};
+      }
+      this.import(userId,direct.snapshot as Snapshot);
+      return{status:'synced',restored:true,source:'canonical'};
+    }
+    return direct;
+  }
   // Canonical writes target normalized Postgres tables and Storage only. Snapshot writes are migration-only.
   static async syncAll(userId:string){return this.pushDirect(userId);}
   static schedule(userId:string){if(!this.configured())return;clearTimeout(this.timer.get(userId));this.timer.set(userId,setTimeout(()=>{this.syncAll(userId).catch(e=>console.error('Cloud sync:',e.message)).finally(()=>this.timer.delete(userId));},1200));}
