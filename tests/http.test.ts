@@ -13,6 +13,7 @@ import {ValidatorEngine} from '../server/services/validatorEngine.js';
 import {RunService} from '../server/services/runService.js';
 import {RequirementLedgerService} from '../server/services/requirementLedgerService.js';
 import {AgentEngine} from '../server/agent-engine/agentEngine.js';
+import {SandboxManager} from '../server/tooling/sandboxManager.js';
 import type {Server} from 'node:http';
 
 let server:Server, base:string, tokenA:string, tokenB:string, userA:string, userB:string;
