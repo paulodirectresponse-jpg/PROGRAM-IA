@@ -116,7 +116,7 @@ export async function killProcessTree(child: ChildProcessWithoutNullStreams) {
   try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch {} }
 }
 
-async function runTool(cwd: string, packageManager: string, args: string[], timeoutMs: number, signal?: AbortSignal) {
+async function runTool(cwd: string, packageManager: string, args: string[], timeoutMs: number, signal?: AbortSignal, envOverride?: NodeJS.ProcessEnv) {
   const { command, prefix } = toolCommand(packageManager);
   const started = Date.now();
   return await new Promise<{ ok: boolean; output: string; durationMs: number; timedOut: boolean }>((resolve) => {
