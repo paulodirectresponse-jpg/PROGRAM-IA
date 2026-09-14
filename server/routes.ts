@@ -1646,6 +1646,8 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
       stepId: forge,
       signal: controller.signal,
       requirementIds: continuedRequirementIds,
+      toolSandboxId: recoverySandboxId || undefined,
+      skipContextSync:Boolean(recoverySandboxId),
     }, { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true });
 
     RunService.finishStep(forge, result.hasErrors ? 'failed' : 'completed', {
