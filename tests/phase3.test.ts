@@ -196,7 +196,7 @@ test('phase3 failed browser gate invokes SENTINEL then one bounded FORGE repair 
     assert.equal((db.prepare("SELECT COUNT(*) c FROM agent_steps WHERE run_id=? AND title='Diagnosticar falha do Browser Quality Gate'").get(run.runId) as any).c,1);
     assert.equal((db.prepare("SELECT COUNT(*) c FROM agent_steps WHERE run_id=? AND title='Corrigir falha do Browser Quality Gate'").get(run.runId) as any).c,1);
     assert.equal(BrowserQualityService.listByRun(run.runId).length,2);
-    assert.equal(calls,2);
+    assert.equal(calls,3);
   }finally{
     db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(run.runId);
     db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(run.runId);

@@ -364,8 +364,8 @@ test('phase2 proposal apply validates sandbox then atomically updates official w
       userId:env.userId,projectId:env.projectId,proposal,summary:'apply sandbox proposal',
     });
     assert.equal(result.success,true);
-    assert.equal(result.validation?.status,'unverified');
-    assert.equal(result.needsVerification,true);
+    assert.equal(result.validation?.status,'passed');
+    assert.equal(result.needsVerification,false);
     assert.equal(WorkspaceManager.readFile(env.projectId,'index.html'),'<html><body>new</body></html>');
     assert.ok(result.checkpointId);
     assert.ok(result.sandboxId);
@@ -398,7 +398,7 @@ test('phase2 workflow materializes FORGE proposal in sandbox while official work
       prompt:'Update the page',mode:'build',projectId:env.projectId,existingFiles:WorkspaceManager.getAllFilesContent(env.projectId),
       appliedSkills:[],conversationHistory:[],userId:env.userId,runId:run.runId,stepId:run.stepId,focusPaths:['index.html'],
     });
-    assert.equal(result.workflow.status,'waiting_approval');
+    assert.equal(result.workflow.status,'validating');
     assert.equal(WorkspaceManager.readFile(env.projectId,'index.html'),'<html><body>old</body></html>');
     assert.ok(result.proposal?.sandboxId);
     assert.equal(SandboxManager.readFile(result.proposal!.sandboxId!,env.userId,'index.html',env.projectId),'<html><body>new</body></html>');

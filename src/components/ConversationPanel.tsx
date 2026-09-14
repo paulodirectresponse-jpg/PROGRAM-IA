@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Message, AgentMode, Skill, Plan, ChangeProposal, FileChangeProposal } from '../types';
 import { PlanResponseCard, parsePlanForDisplay } from './PlanResponseCard';
+import { ChatMarkdown } from './ChatMarkdown';
 
 interface ConversationPanelProps {
   messages: Message[];
@@ -36,6 +37,7 @@ interface ConversationPanelProps {
   onAbort: () => void;
   availableSkills: Skill[];
   canSend: boolean;
+  sidebarCollapsed?: boolean;
 }
 
 export const ConversationPanel: React.FC<ConversationPanelProps> = ({
@@ -55,6 +57,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onAbort,
   availableSkills,
   canSend,
+  sidebarCollapsed = false,
 }) => {
   const [inputText, setInputText] = useState('');
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
@@ -139,7 +142,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   return (
     <div
       id="conversation-panel"
-      className="w-96 min-w-[340px] max-w-[420px] bg-slate-950 border-r border-slate-800/80 flex flex-col h-full shrink-0 select-text"
+      className={`${sidebarCollapsed ? 'w-[540px] min-w-[440px] max-w-[620px]' : 'w-[460px] min-w-[400px] max-w-[520px]'} bg-slate-950 border-r border-slate-800/80 flex flex-col h-full shrink-0 select-text transition-[width,min-width,max-width] duration-200`}
     >
       {/* Top Mode Bar */}
       <div className="p-3 border-b border-slate-800/80 bg-slate-900/40 space-y-2">
@@ -234,52 +237,32 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
               id={`message-${msg.id}`}
               className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
             >
-              <div className="flex items-center gap-1.5 mb-1 text-[10px] text-slate-500 font-mono">
-                <span>{isUser ? 'Você' : 'Forge Agent'}</span>
-                {typeof meta.mode === 'string' && (
-                  <span className="text-slate-600">• [{meta.mode.toUpperCase()}]</span>
-                )}
-                {meta.decisionType && (
-                  <span className="text-slate-600">• {meta.decisionType}</span>
-                )}
-                {meta.providerUsed && (
-                  <span className="text-slate-600">• {meta.providerUsed}</span>
-                )}
-                {meta.agentKey && <span className="text-cyan-500">• {meta.agentKey}</span>}
+              <div className="mb-1 text-[10px] font-medium text-slate-500">
+                {isUser ? 'Você' : 'Forge Agent'}
               </div>
 
               {!isUser && Array.isArray(meta.workflow?.trace) && meta.workflow.trace.length > 0 && (
-                <div className="mb-1.5 flex flex-wrap gap-1">
-                  {meta.workflow.trace.map((step:any) => (
-                    <span
-                      key={step.id}
-                      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9px] font-mono ${
-                        step.status === 'completed'
-                          ? 'border-emerald-900/70 bg-emerald-950/30 text-emerald-300'
-                          : step.status === 'failed'
-                            ? 'border-rose-900/70 bg-rose-950/30 text-rose-300'
-                            : 'border-slate-800 bg-slate-900 text-slate-400'
-                      }`}
-                      title={step.title}
-                    >
-                      <span>{step.agent_key}</span>
-                      <span className="opacity-60">·</span>
-                      <span>{step.status}</span>
-                      {Array.isArray(step.invocations) && step.invocations.length > 0 && (
-                        <span className="text-slate-500">
-                          · {step.invocations.map((inv:any) => `${inv.profile_key}/${inv.provider_key}`).join(' → ')}
+                <details className="mb-1.5 text-[10px] text-slate-500">
+                  <summary className="cursor-pointer select-none hover:text-slate-300">Detalhes da execução</summary>
+                  <div className="mt-1.5 space-y-1 pl-1">
+                    {meta.workflow.trace.map((step:any) => (
+                      <div key={step.id} className="flex items-center gap-2 font-mono">
+                        <span className={step.status==='completed'?'text-emerald-400':step.status==='failed'?'text-rose-400':'text-slate-500'}>
+                          {step.status==='completed'?'✓':step.status==='failed'?'!':'·'}
                         </span>
-                      )}
-                    </span>
-                  ))}
-                </div>
+                        <span>{step.agent_key}</span>
+                        <span className="truncate text-slate-600">{step.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
               )}
 
               <div
-                className={`max-w-[95%] rounded-xl p-3 leading-relaxed whitespace-pre-wrap ${
+                className={`leading-relaxed ${
                   isUser
-                    ? 'bg-cyan-950/70 border border-cyan-800/60 text-slate-100 rounded-br-xs'
-                    : 'bg-slate-900/90 border border-slate-800 text-slate-200 rounded-bl-xs shadow-sm'
+                    ? 'max-w-[92%] rounded-2xl rounded-br-md bg-cyan-950/70 border border-cyan-800/60 px-3.5 py-2.5 text-slate-100'
+                    : 'w-full max-w-[98%] px-1 py-1 text-slate-200'
                 }`}
               >
                 {/* Fallback Notice Badge */}
@@ -306,104 +289,82 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                   </div>
                 )}
 
-                {shouldRenderPlanCard ? <PlanResponseCard content={msg.content} /> : <div>{msg.content}</div>}
+                {shouldRenderPlanCard ? <PlanResponseCard content={msg.content} /> : <ChatMarkdown content={msg.content} />}
 
-                {meta.validation && (
-                  <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/70 p-2 space-y-1">
-                    <div className={`text-[10px] font-semibold ${meta.validation.status==='passed'?'text-emerald-400':meta.validation.status==='failed'?'text-rose-400':'text-amber-400'}`}>{meta.validation.status==='passed'?'Quality gates aprovados':meta.validation.status==='failed'?'Quality gates falharam; alteração restaurada':'Verificações automáticas não disponíveis'}</div>
-                    {Array.isArray(meta.validation.results) && meta.validation.results.map((item:any)=><div key={item.tool} className="flex justify-between text-[10px] text-slate-400"><span>{item.tool}</span><span>{item.status}</span></div>)}
+                {meta.validation?.status === 'failed' && (
+                  <div className="mt-2 flex items-start gap-2 rounded-lg border border-rose-900/60 bg-rose-950/25 px-2.5 py-2 text-[10px] text-rose-300">
+                    <AlertTriangle size={12} className="mt-0.5 shrink-0"/>
+                    <span>A revisão automática encontrou um problema e bloqueou a alteração.</span>
                   </div>
                 )}
+                {meta.validation && meta.validation.status !== 'failed' && (
+                  <details className="mt-2 text-[10px] text-slate-600">
+                    <summary className="cursor-pointer select-none hover:text-slate-400">Verificações técnicas</summary>
+                    <div className="mt-1.5 space-y-1 border-l border-slate-800 pl-2">
+                      <div className={meta.validation.status==='passed'?'text-emerald-500':'text-amber-500'}>
+                        {meta.validation.status==='passed'?'Validação concluída':'Validação parcial'}
+                      </div>
+                      {Array.isArray(meta.validation.results) && meta.validation.results.map((item:any)=><div key={item.tool} className="flex max-w-xs justify-between gap-4"><span>{item.tool}</span><span>{item.status}</span></div>)}
+                    </div>
+                  </details>
+                )}
 
-                {/* Change Proposal Interactive Card */}
-                {hasProposal && proposal && (
+                {/* Legacy manual proposal controls; completed proposals stay in technical details only. */}
+                {hasProposal && proposal && proposal.status === 'pending' && (
                   <div
                     id={`proposal-card-${proposal.id}`}
-                    className="mt-3 p-3 rounded-lg bg-slate-950 border border-cyan-800/50 space-y-2.5"
+                    className="mt-3 rounded-xl border border-cyan-900/60 bg-slate-950/60 p-3 space-y-2.5"
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-300">
-                        <Code2 size={13} className="text-cyan-400" />
-                        <span>Proposta de Alterações</span>
+                        <Code2 size={13}/>
+                        <span>Alterações prontas para aplicar</span>
                       </div>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 font-mono border border-cyan-800/60">
-                        {proposal.files.length} arquivo(s)
-                      </span>
+                      <span className="text-[10px] text-slate-500">{proposal.files.length} arquivo(s)</span>
                     </div>
-
-                    <div className="text-xs text-slate-300 font-medium">
-                      {proposal.summary}
-                    </div>
-
-                    {/* Diffs Toggle */}
-                    <div className="pt-1">
-                      <button
-                        type="button"
-                        onClick={() => toggleDiff(msg.id)}
-                        className="text-[11px] text-slate-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer transition font-mono"
-                      >
-                        {isDiffOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-                        <span>{isDiffOpen ? 'Ocultar Diffs' : 'Inspecionar Diffs'}</span>
-                      </button>
-
-                      {isDiffOpen && (
-                        <div className="mt-2 space-y-2 max-h-48 overflow-y-auto custom-scrollbar p-2 bg-slate-900/90 rounded border border-slate-800 font-mono text-[10px]">
-                          {proposal.files.map((file: FileChangeProposal) => (
-                            <div key={file.path} className="border-b border-slate-800/60 pb-1.5 last:border-b-0">
-                              <div className="text-cyan-400 font-bold flex items-center gap-1">
-                                <span className={file.action === 'delete' ? 'text-rose-400' : 'text-emerald-400'}>
-                                  [{file.action.toUpperCase()}]
-                                </span>{' '}
-                                {file.path}
-                              </div>
-                              <pre className="text-slate-300 whitespace-pre-wrap mt-1 leading-snug">
-                                {file.diff || `${file.content.slice(0, 150)}...`}
-                              </pre>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Apply Button */}
-                    {proposal.status === 'pending' && onApplyProposal && (
-                      <div className="pt-2 flex gap-2">
-                        <button
-                          type="button"
-                          id={`btn-apply-proposal-${proposal.id}`}
-                          onClick={() => onApplyProposal(proposal)}
-                          disabled={executionBusy}
-                          className="flex-1 py-1.5 px-3 rounded-md bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
-                        >
-                          <Check size={14} />
-                          Aplicar Alterações Propostas
+                    <div className="text-[11px] text-slate-400">{proposal.summary}</div>
+                    <button
+                      type="button"
+                      onClick={() => toggleDiff(msg.id)}
+                      className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-cyan-300"
+                    >
+                      {isDiffOpen ? <ChevronUp size={12}/> : <ChevronDown size={12}/>}
+                      {isDiffOpen ? 'Ocultar detalhes' : 'Ver detalhes técnicos'}
+                    </button>
+                    {isDiffOpen && (
+                      <div className="max-h-48 space-y-2 overflow-y-auto rounded-lg border border-slate-800 bg-slate-900/70 p-2 font-mono text-[10px]">
+                        {proposal.files.map((file:FileChangeProposal)=><div key={file.path}>
+                          <div className="text-cyan-400">[{file.action.toUpperCase()}] {file.path}</div>
+                          <pre className="mt-1 whitespace-pre-wrap text-slate-500">{file.diff || `${String(file.content||'').slice(0,150)}...`}</pre>
+                        </div>)}
+                      </div>
+                    )}
+                    {onApplyProposal && (
+                      <div className="flex gap-2 pt-1">
+                        <button type="button" id={`btn-apply-proposal-${proposal.id}`} onClick={() => onApplyProposal(proposal)} disabled={executionBusy} className="flex-1 rounded-lg bg-cyan-600 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-500 disabled:opacity-50">
+                          Aplicar alterações
                         </button>
-                        {onRejectProposal && <button
-                          type="button"
-                          onClick={() => onRejectProposal(proposal)}
-                          disabled={executionBusy}
-                          className="py-1.5 px-3 rounded-md border border-slate-700 hover:border-rose-500 text-slate-300 hover:text-rose-300 font-semibold text-xs transition"
-                        >
-                          <X size={14} /> Rejeitar
-                        </button>}
+                        {onRejectProposal&&<button type="button" onClick={()=>onRejectProposal(proposal)} disabled={executionBusy} className="rounded-lg border border-slate-800 px-3 py-2 text-xs text-slate-400 hover:border-rose-800 hover:text-rose-300">Rejeitar</button>}
                       </div>
                     )}
                   </div>
                 )}
+                {hasProposal && proposal && proposal.status !== 'pending' && (
+                  <details className="mt-2 text-[10px] text-slate-600">
+                    <summary className="cursor-pointer select-none hover:text-slate-400">Arquivos e alterações</summary>
+                    <div className="mt-1.5 space-y-1 border-l border-slate-800 pl-2 font-mono">
+                      {proposal.files.map((file:FileChangeProposal)=><div key={file.path} className="truncate">{file.action} · {file.path}</div>)}
+                    </div>
+                  </details>
+                )}
 
-                {/* Chips of affected files */}
                 {filesAffected.length > 0 && !hasProposal && (
-                  <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex flex-wrap gap-1">
-                    {filesAffected.map((f: string) => (
-                      <span
-                        key={f}
-                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-[10px] text-cyan-400 font-mono"
-                      >
-                        <FileCode2 size={11} />
-                        {f}
-                      </span>
-                    ))}
-                  </div>
+                  <details className="mt-2 text-[10px] text-slate-600">
+                    <summary className="cursor-pointer select-none hover:text-slate-400">Arquivos alterados ({filesAffected.length})</summary>
+                    <div className="mt-1.5 space-y-1 border-l border-slate-800 pl-2 font-mono">
+                      {filesAffected.map((file:string)=><div key={file} className="truncate">{file}</div>)}
+                    </div>
+                  </details>
                 )}
               </div>
             </div>
@@ -411,7 +372,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
         })}
 
         {/* Active Plan Approval Box if in plan mode */}
-        {activePlan && activePlan.status === 'draft' && (
+        {activeMode === 'plan' && activePlan && activePlan.status === 'draft' && (
           <div
             id="plan-approval-box"
             className="p-3.5 rounded-xl bg-slate-900/90 border border-amber-800/60 space-y-2.5 shadow-sm"
@@ -446,100 +407,62 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
           </div>
         )}
 
-        {/* Persistent Agent Timeline */}
+        {/* Conversational agent activity */}
         {(isLoading || activeAgentRunStatus === 'running' || ((activeAgentRunStatus === 'failed' || activeAgentRunStatus === 'aborted') && activeAgentTrace.length > 0)) && (
-          <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 text-xs text-cyan-300 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
-                <div>
-                  <div>{
-                    activeAgentRunStatus === 'running' && !isLoading
-                      ? 'Execução continua ativa no servidor...'
-                      : activeAgentRunStatus === 'failed'
-                        ? 'A execução parou com erro. O progresso concluído foi preservado.'
-                        : activeAgentRunStatus === 'aborted'
-                          ? 'A execução foi interrompida. O progresso concluído foi preservado.'
-                          : `Processando no modo ${currentModeInfo.label}...`
-                  }</div>
-                  {activeAgentRun?.created_at&&<div className="mt-0.5 font-mono text-[9px] text-slate-500">
-                    total {elapsed(activeAgentRun.created_at,activeAgentRun.status==='running'?null:activeAgentRun.finished_at)}
-                    {activeAgentRun?.id&&<> · {String(activeAgentRun.id).slice(-8)}</>}
-                  </div>}
+          <div className="px-1 py-2 text-[11px] text-slate-400">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <div className="flex items-center gap-2 text-slate-300">
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${activeAgentRunStatus==='failed'?'bg-rose-400':activeAgentRunStatus==='aborted'?'bg-slate-500':'bg-cyan-400 animate-pulse'}`}/>
+                  <span>{
+                    activeAgentRunStatus === 'failed'
+                      ? 'A execução encontrou um problema. O progresso concluído foi preservado.'
+                      : activeAgentRunStatus === 'aborted'
+                        ? 'A execução foi interrompida. O progresso concluído foi preservado.'
+                        : 'Trabalhando no seu pedido…'
+                  }</span>
+                  {activeAgentRun?.created_at&&<span className="font-mono text-[9px] text-slate-600">{elapsed(activeAgentRun.created_at,activeAgentRun.status==='running'?null:activeAgentRun.finished_at)}</span>}
                 </div>
+                {Array.isArray(activeAgentTrace) && activeAgentTrace.length > 0 && (
+                  <div className="space-y-1 pl-3.5">
+                    {activeAgentTrace.map((step:any) => {
+                      const labels:Record<string,string>={
+                        SCOUT:'Analisando projeto e requisitos',
+                        STUDIO:'Definindo direção visual e experiência',
+                        FORGE:'Construindo e corrigindo a implementação',
+                        SENTINEL:'Revisando qualidade e possíveis falhas',
+                        SHIP:'Preparando publicação',
+                      };
+                      const tone=step.status==='completed'?'text-emerald-400':step.status==='failed'?'text-rose-400':step.status==='aborted'?'text-slate-600':'text-cyan-300';
+                      const symbol=step.status==='completed'?'✓':step.status==='failed'?'!':step.status==='aborted'?'–':'•';
+                      return <div key={step.id} className="flex items-center gap-2">
+                        <span className={`w-3 text-center ${tone}`}>{symbol}</span>
+                        <span className={step.status==='running'?'text-slate-300':'text-slate-500'}>{labels[step.agent_key]||step.title||step.agent_key}</span>
+                      </div>;
+                    })}
+                  </div>
+                )}
               </div>
               {activeAgentRunStatus === 'running' || isLoading ? (
                 <button
                   type="button"
                   id="btn-abort-request"
                   onClick={onAbort}
-                  className="p-1 text-slate-400 hover:text-rose-400 rounded transition cursor-pointer"
-                  title="Interromper geração"
+                  className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-900 hover:text-rose-400 transition cursor-pointer"
+                  title="Interromper execução"
                 >
-                  <Square size={13} fill="currentColor" />
+                  <Square size={14} fill="currentColor" />
                 </button>
               ) : (activeAgentRunStatus === 'failed' || activeAgentRunStatus === 'aborted') && onContinueRun ? (
                 <button
                   type="button"
                   onClick={onContinueRun}
-                  className="rounded-md border border-cyan-800 bg-cyan-950/40 px-2 py-1 text-[10px] font-semibold text-cyan-300 hover:bg-cyan-950/70"
-                  title="Continuar a partir das etapas já concluídas"
+                  className="shrink-0 rounded-lg border border-slate-800 px-2.5 py-1.5 text-[10px] font-medium text-slate-300 hover:border-cyan-800 hover:text-cyan-300"
                 >
                   Continuar
                 </button>
               ) : null}
             </div>
-            {Array.isArray(activeAgentTrace) && activeAgentTrace.length > 0 && (
-              <div className="space-y-1.5">
-                {activeAgentTrace.map((step:any,index:number) => {
-                  const files=Array.isArray(step.context?.files)?step.context.files:[];
-                  const events=Array.isArray(step.context?.events)?step.context.events:[];
-                  const running=step.status==='running';
-                  return <div key={step.id} className={`rounded-lg border px-2 py-1.5 ${
-                    step.status === 'completed'
-                      ? 'border-emerald-900/60 bg-emerald-950/20'
-                      : step.status === 'failed'
-                        ? 'border-rose-900/60 bg-rose-950/20'
-                        : step.status === 'aborted'
-                          ? 'border-slate-800 bg-slate-950/50'
-                          : 'border-cyan-900/60 bg-cyan-950/20'
-                  }`}>
-                    <div className="flex items-center justify-between gap-2 text-[9px] font-mono">
-                      <span className={step.status==='completed'?'text-emerald-300':step.status==='failed'?'text-rose-300':step.status==='aborted'?'text-slate-500':'text-cyan-300'}>
-                        {String(index+1).padStart(2,'0')} · {step.agent_key} · {step.status}
-                      </span>
-                      <span className="text-slate-500">
-                        {elapsed(step.created_at,running?null:step.finished_at)}
-                        {step.attempt_count>0?` · ${step.attempt_count} tent.`:''}
-                      </span>
-                    </div>
-                    <div className="mt-0.5 text-[9px] text-slate-500">{step.title}</div>
-                    {Array.isArray(step.invocations)&&step.invocations.length>0&&<div className="mt-1 space-y-0.5">
-                      {step.invocations.map((inv:any)=><div key={inv.id} className="text-[9px] font-mono text-slate-500">
-                        <span className={inv.status==='success'?'text-emerald-400':inv.status==='failed'?'text-rose-400':'text-slate-500'}>{inv.status}</span>
-                        {' · '}{inv.profile_key}/{inv.provider_key}/{inv.model_id}
-                        {Number.isFinite(Number(inv.latency_ms))?` · ${Math.round(Number(inv.latency_ms)/1000)}s`:''}
-                        {inv.error_code?` · ${inv.error_code}`:''}
-                      </div>)}
-                    </div>}
-                    {events.length>0&&<div className="mt-1.5 space-y-0.5 border-t border-slate-800/70 pt-1">
-                      {events.slice(-12).map((event:any,eventIndex:number)=>{
-                        const symbol=event.type==='file_completed'?'+':event.type==='file_failed'?'!':event.type==='file_retry'?'↻':'…';
-                        const tone=event.type==='file_completed'?'text-emerald-400':event.type==='file_failed'?'text-rose-400':event.type==='file_retry'?'text-amber-400':'text-cyan-400';
-                        return <div key={`${event.type}-${event.path}-${eventIndex}`} className="flex items-center gap-1.5 text-[9px] font-mono">
-                          <span className={tone}>{symbol}</span>
-                          <span className="truncate text-slate-400">{event.path}</span>
-                          {event.total>0&&<span className="ml-auto shrink-0 text-slate-600">{event.index}/{event.total}</span>}
-                        </div>;
-                      })}
-                    </div>}
-                    {files.length>0&&<div className="mt-1 flex flex-wrap gap-1">
-                      {files.map((file:string)=><span key={file} className="inline-flex items-center gap-1 rounded border border-slate-800 bg-slate-950 px-1 py-0.5 text-[9px] font-mono text-cyan-400"><FileCode2 size={9}/>{file}</span>)}
-                    </div>}
-                  </div>;
-                })}
-              </div>
-            )}
           </div>
         )}
 

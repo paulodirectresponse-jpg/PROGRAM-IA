@@ -90,46 +90,49 @@ const FilePill=({file,kind}:{file:string;kind:'existing'|'new'|'delete'})=>{
 export const PlanResponseCard:React.FC<{content:string}>=({content})=>{
   const plan=parsePlanForDisplay(content);
   if(!plan)return <div>{content}</div>;
-  return <div className="space-y-3">
-    <div className="rounded-lg border border-amber-800/50 bg-amber-950/20 p-3">
-      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-amber-400"><Sparkles size={12}/>Plano técnico</div>
+  const visibleScope=plan.scopeIn.slice(0,4);
+  const extraScope=Math.max(0,plan.scopeIn.length-visibleScope.length);
+  return <div className="space-y-2">
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-amber-400"><Sparkles size={12}/>Plano preparado</div>
       {plan.objective&&<div className="text-[13px] font-semibold leading-relaxed text-slate-100">{plan.objective}</div>}
+      {visibleScope.length>0&&<div className="space-y-1 pt-1">{visibleScope.map((item,index)=><div key={item+'-'+index} className="flex items-start gap-2 text-[11px] leading-relaxed text-slate-300"><CheckCircle2 size={12} className="mt-0.5 shrink-0 text-emerald-400"/><span>{item}</span></div>)}{extraScope>0&&<div className="pl-5 text-[10px] text-slate-500">+ {extraScope} item(ns) no detalhamento técnico</div>}</div>}
     </div>
 
-    {plan.architecture&&<div className="rounded-lg border border-cyan-900/50 bg-cyan-950/15 p-2.5">
-      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-cyan-400"><Boxes size={11}/>Arquitetura recomendada</div>
-      <div className="text-[11px] leading-relaxed text-slate-300">{plan.architecture}</div>
-    </div>}
+    <details className="rounded-xl border border-slate-800/80 bg-slate-950/40 p-2.5">
+      <summary className="cursor-pointer select-none text-[10px] font-medium text-slate-500 hover:text-slate-300">Ver detalhes técnicos</summary>
+      <div className="mt-3 space-y-3">
+        {plan.architecture&&<div>
+          <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-cyan-400"><Boxes size={11}/>Arquitetura</div>
+          <div className="text-[11px] leading-relaxed text-slate-400">{plan.architecture}</div>
+        </div>}
 
-    {plan.scopeIn.length>0&&<div><div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">O que será construído</div><div className="space-y-1.5">{plan.scopeIn.map((item,index)=><div key={item+'-'+index} className="flex items-start gap-2 text-[11px] leading-relaxed text-slate-300"><CheckCircle2 size={12} className="mt-0.5 shrink-0 text-emerald-400"/><span>{item}</span></div>)}</div></div>}
+        {(plan.existingFiles.length>0||plan.newFiles.length>0||plan.deleteFiles.length>0||plan.files.length>0)&&<div className="space-y-2">
+          {plan.existingFiles.length>0&&<div><div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">Modificar</div><div className="flex flex-wrap gap-1">{plan.existingFiles.map(file=><FilePill key={'m-'+file} file={file} kind="existing"/>)}</div></div>}
+          {plan.newFiles.length>0&&<div><div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">Criar</div><div className="flex flex-wrap gap-1">{plan.newFiles.map(file=><FilePill key={'n-'+file} file={file} kind="new"/>)}</div></div>}
+          {plan.deleteFiles.length>0&&<div><div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">Remover</div><div className="flex flex-wrap gap-1">{plan.deleteFiles.map(file=><FilePill key={'d-'+file} file={file} kind="delete"/>)}</div></div>}
+          {plan.existingFiles.length===0&&plan.newFiles.length===0&&plan.deleteFiles.length===0&&plan.files.length>0&&<div><div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">Arquivos previstos</div><div className="flex flex-wrap gap-1">{plan.files.map(file=><FilePill key={file} file={file} kind="existing"/>)}</div></div>}
+        </div>}
 
-    {(plan.existingFiles.length>0||plan.newFiles.length>0||plan.deleteFiles.length>0||plan.files.length>0)&&<div className="space-y-2">
-      {plan.existingFiles.length>0&&<div><div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Modificar</div><div className="flex flex-wrap gap-1">{plan.existingFiles.map(file=><FilePill key={'m-'+file} file={file} kind="existing"/>)}</div></div>}
-      {plan.newFiles.length>0&&<div><div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Criar</div><div className="flex flex-wrap gap-1">{plan.newFiles.map(file=><FilePill key={'n-'+file} file={file} kind="new"/>)}</div></div>}
-      {plan.deleteFiles.length>0&&<div><div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Remover</div><div className="flex flex-wrap gap-1">{plan.deleteFiles.map(file=><FilePill key={'d-'+file} file={file} kind="delete"/>)}</div></div>}
-      {plan.existingFiles.length===0&&plan.newFiles.length===0&&plan.deleteFiles.length===0&&plan.files.length>0&&<div><div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Arquivos previstos</div><div className="flex flex-wrap gap-1">{plan.files.map(file=><FilePill key={file} file={file} kind="existing"/>)}</div></div>}
-    </div>}
+        {plan.requirements.length>0&&<div>
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">Requisitos verificáveis</div>
+          <div className="space-y-1.5">{plan.requirements.map(req=><div key={req.id} className="rounded-md border border-slate-800 bg-slate-950/60 px-2 py-1.5">
+            <div className="flex items-center justify-between gap-2"><span className="font-mono text-[9px] text-cyan-400">{req.id}</span>{req.priority&&<span className="text-[9px] uppercase text-slate-600">{req.priority}</span>}</div>
+            <div className="mt-0.5 text-[11px] font-medium text-slate-300">{req.title}</div>
+            {req.verification.length>0&&<div className="mt-1 text-[9px] text-slate-600">Prova: {req.verification.join(' · ')}</div>}
+          </div>)}</div>
+        </div>}
 
-    {plan.requirements.length>0&&<div>
-      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Requisitos verificáveis</div>
-      <div className="space-y-1.5">{plan.requirements.map(req=><div key={req.id} className="rounded-md border border-slate-800 bg-slate-950/60 px-2 py-1.5">
-        <div className="flex items-center justify-between gap-2"><span className="font-mono text-[9px] text-cyan-400">{req.id}</span>{req.priority&&<span className="text-[9px] uppercase text-slate-500">{req.priority}</span>}</div>
-        <div className="mt-0.5 text-[11px] font-medium text-slate-200">{req.title}</div>
-        {req.verification.length>0&&<div className="mt-1 text-[9px] text-slate-500">Prova: {req.verification.join(' · ')}</div>}
-      </div>)}</div>
-    </div>}
+        {plan.tasks.length>0&&<div>
+          <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600"><GitBranch size={11}/>Grafo de tarefas</div>
+          <div className="space-y-1">{plan.tasks.map(task=><div key={task.id} className="text-[10px] text-slate-500"><span className="font-mono text-cyan-500">{task.id}</span> · {task.title}{task.dependsOn.length>0&&<span className="text-slate-700"> · depende de {task.dependsOn.join(', ')}</span>}</div>)}</div>
+        </div>}
 
-    {plan.tasks.length>0&&<details className="rounded-lg border border-slate-800 bg-slate-950/50 p-2">
-      <summary className="cursor-pointer text-[10px] font-semibold text-slate-400 flex items-center gap-1.5"><GitBranch size={11}/>Grafo de tarefas ({plan.tasks.length})</summary>
-      <div className="mt-2 space-y-1.5">{plan.tasks.map(task=><div key={task.id} className="text-[10px] text-slate-400"><span className="font-mono text-cyan-400">{task.id}</span> · {task.title}{task.dependsOn.length>0&&<span className="text-slate-600"> · depende de {task.dependsOn.join(', ')}</span>}</div>)}</div>
-    </details>}
-
-    {plan.integrations.length>0&&<div><div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Integrações</div><div className="flex flex-wrap gap-1">{plan.integrations.map(item=><span key={item} className="rounded-md border border-blue-900/70 bg-blue-950/40 px-2 py-1 text-[10px] text-blue-300">{item}</span>)}</div></div>}
-
-    {plan.acceptance.length>0&&<div><div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Critérios de aceite</div><div className="space-y-1">{plan.acceptance.map((item,index)=><div key={item+'-'+index} className="flex items-start gap-2 text-[11px] leading-relaxed text-slate-300"><Check size={11} className="mt-0.5 shrink-0 text-cyan-400"/><span>{item}</span></div>)}</div></div>}
-
-    {plan.risks.length>0&&<div className="rounded-lg border border-amber-900/50 bg-amber-950/20 p-2.5"><div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-amber-400"><AlertTriangle size={11}/>Pontos de atenção</div><div className="space-y-1">{plan.risks.map((item,index)=><div key={item+'-'+index} className="text-[10px] leading-relaxed text-amber-200/80">• {item}</div>)}</div></div>}
-
-    {plan.scopeOut.length>0&&<details className="rounded-lg border border-slate-800 bg-slate-950/50 p-2"><summary className="cursor-pointer text-[10px] font-semibold text-slate-500">Fora do escopo</summary><div className="mt-2 space-y-1">{plan.scopeOut.map((item,index)=><div key={item+'-'+index} className="text-[10px] leading-relaxed text-slate-500">• {item}</div>)}</div></details>}
+        {plan.integrations.length>0&&<div><div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">Integrações</div><div className="flex flex-wrap gap-1">{plan.integrations.map(item=><span key={item} className="rounded-md border border-blue-900/50 bg-blue-950/20 px-2 py-1 text-[10px] text-blue-300">{item}</span>)}</div></div>}
+        {plan.acceptance.length>0&&<div><div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">Critérios de aceite</div><div className="space-y-1">{plan.acceptance.map((item,index)=><div key={item+'-'+index} className="flex items-start gap-2 text-[11px] leading-relaxed text-slate-400"><Check size={11} className="mt-0.5 shrink-0 text-cyan-500"/><span>{item}</span></div>)}</div></div>}
+        {plan.risks.length>0&&<div><div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-amber-500"><AlertTriangle size={11}/>Pontos de atenção</div><div className="space-y-1">{plan.risks.map((item,index)=><div key={item+'-'+index} className="text-[10px] leading-relaxed text-amber-200/70">• {item}</div>)}</div></div>}
+        {plan.scopeOut.length>0&&<div><div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">Fora do escopo</div><div className="space-y-1">{plan.scopeOut.map((item,index)=><div key={item+'-'+index} className="text-[10px] leading-relaxed text-slate-500">• {item}</div>)}</div></div>}
+      </div>
+    </details>
   </div>;
 };

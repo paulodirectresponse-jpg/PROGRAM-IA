@@ -39,6 +39,7 @@ interface SidebarProps {
   onExportZip?: (id: string) => void;
   activeProvider: Provider | null;
   githubStatus: GitHubStatus | null;
+  onCollapsedChange?: (collapsed: boolean) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -56,19 +57,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteProject,
   onExportZip,
   activeProvider,
+  onCollapsedChange,
 }) => {
   const [collapsed,setCollapsed]=useState(()=>{try{return localStorage.getItem('forge.sidebar.collapsed')==='1'}catch{return false}});
-  useEffect(()=>{try{localStorage.setItem('forge.sidebar.collapsed',collapsed?'1':'0')}catch{}},[collapsed]);
+  useEffect(()=>{
+    try{localStorage.setItem('forge.sidebar.collapsed',collapsed?'1':'0')}catch{}
+    onCollapsedChange?.(collapsed);
+  },[collapsed,onCollapsedChange]);
   return (
     <aside
       id="forge-sidebar"
-      className={`${collapsed?'w-16':'w-64'} bg-slate-950 border-r border-slate-800/80 flex flex-col justify-between select-none shrink-0 h-full transition-[width] duration-200`}
+      className={`${collapsed?'w-[72px]':'w-64'} bg-slate-950 border-r border-slate-800/80 flex flex-col justify-between select-none shrink-0 h-full transition-[width] duration-200`}
     >
       {/* Top Header & Brand */}
       <div className={`${collapsed?'p-2':'p-4'} space-y-4`}>
         <div className={`flex items-center ${collapsed?'flex-col gap-2':'justify-between'}`}>
           <div className="flex items-center gap-2.5 min-w-0">
-            <button type="button" onClick={()=>setCollapsed(v=>!v)} title={collapsed?'Expandir barra lateral':'Recolher barra lateral'} className="w-8 h-8 rounded-lg bg-cyan-500 flex items-center justify-center font-black text-slate-950 text-sm shadow-sm shrink-0">
+            <button type="button" onClick={()=>setCollapsed(v=>!v)} title={collapsed?'Expandir barra lateral':'Recolher barra lateral'} className="w-9 h-9 rounded-xl bg-cyan-500 flex items-center justify-center font-black text-slate-950 text-base shadow-sm shrink-0">
               ⚡
             </button>
             {!collapsed&&<div className="min-w-0">
@@ -79,8 +84,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <p className="text-[11px] text-slate-400">Software Workspace</p>
             </div>}
           </div>
-          {!collapsed&&<button type="button" onClick={()=>setCollapsed(true)} title="Recolher barra lateral" className="p-1.5 rounded text-slate-500 hover:text-slate-200 hover:bg-slate-900"><PanelLeftClose size={14}/></button>}
-          {collapsed&&<button type="button" onClick={()=>setCollapsed(false)} title="Expandir barra lateral" className="p-1 rounded text-slate-500 hover:text-cyan-300"><PanelLeftOpen size={14}/></button>}
+          {!collapsed&&<button type="button" onClick={()=>setCollapsed(true)} title="Recolher barra lateral" className="h-9 w-9 inline-flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-900"><PanelLeftClose size={18}/></button>}
+          {collapsed&&<button type="button" onClick={()=>setCollapsed(false)} title="Expandir barra lateral" className="h-9 w-9 inline-flex items-center justify-center rounded-lg text-slate-500 hover:text-cyan-300 hover:bg-slate-900"><PanelLeftOpen size={18}/></button>}
         </div>
 
         {/* New Project Button */}
@@ -90,7 +95,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           title={collapsed?'Novo Projeto':undefined}
           className={`w-full py-2 ${collapsed?'px-2':'px-3'} rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-semibold text-xs flex items-center justify-center gap-1.5 shadow-sm transition cursor-pointer`}
         >
-          <Plus size={15} />
+          <Plus size={18} />
           {!collapsed&&'Novo Projeto'}
         </button>
 

@@ -82,6 +82,8 @@ export default function App() {
   const [activeAgentTrace,setActiveAgentTrace]=useState<any[]>([]);
   const [activeAgentRunStatus,setActiveAgentRunStatus]=useState<string|null>(null);
   const [activeAgentRun,setActiveAgentRun]=useState<any|null>(null);
+  const [sidebarCollapsed,setSidebarCollapsed]=useState(()=>{try{return localStorage.getItem('forge.sidebar.collapsed')==='1'}catch{return false}});
+  const lastPolledRunStatusRef=useRef<string|null>(null);
 
   // Abort controller ref
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -235,13 +237,38 @@ export default function App() {
     let cancelled = false;
     const poll = async () => {
       try {
-        const res = await fetch(`/api/agent-runs?projectId=${encodeURIComponent(activeProject.id)}`);
-        const data = await res.json();
-        if (!cancelled && res.ok) {
+        const [runsRes,convRes]=await Promise.all([
+          fetch(`/api/agent-runs?projectId=${encodeURIComponent(activeProject.id)}`,{cache:'no-store'}),
+          fetch(`/api/conversations/${activeProject.id}`,{cache:'no-store'}),
+        ]);
+        const [data,convData]=await Promise.all([runsRes.json(),convRes.json()]);
+        if (!cancelled && runsRes.ok) {
           const latest = data.runs?.[0];
+          const nextStatus=latest?.status || null;
           setActiveAgentTrace(Array.isArray(latest?.trace) ? latest.trace : []);
-          setActiveAgentRunStatus(latest?.status || null);
+          setActiveAgentRunStatus(nextStatus);
           setActiveAgentRun(latest || null);
+          const previous=lastPolledRunStatusRef.current;
+          lastPolledRunStatusRef.current=nextStatus;
+          if(previous==='running'&&nextStatus&&nextStatus!=='running'){
+            try{
+              const [filesRes,projRes]=await Promise.all([
+                fetch(`/api/projects/${activeProject.id}/files`,{cache:'no-store'}),
+                fetch(`/api/projects/${activeProject.id}`,{cache:'no-store'}),
+              ]);
+              const [filesData,projData]=await Promise.all([filesRes.json(),projRes.json()]);
+              if(!cancelled&&filesRes.ok)setFiles(Array.isArray(filesData.files)?filesData.files:[]);
+              if(!cancelled&&projRes.ok){
+                setCheckpoints(Array.isArray(projData.checkpoints)?projData.checkpoints:[]);
+                setVerifications(Array.isArray(projData.verifications)?projData.verifications:[]);
+              }
+              if(!cancelled)setPreviewNonce(Date.now());
+            }catch{}
+          }
+        }
+        if(!cancelled&&convRes.ok){
+          setMessages(Array.isArray(convData.messages)?convData.messages:[]);
+          setActivePlan(convData.activePlan || null);
         }
       } catch {}
     };
@@ -378,12 +405,17 @@ export default function App() {
         throw new Error(data.error || 'Não foi possível aprovar e construir o plano.');
       }
 
-      setActiveMode('build');
       setActivePlan(null);
+      if(data.accepted){
+        setActiveAgentRunStatus('running');
+        setToastMessage({ text: 'Plano aprovado. A construção continua em segundo plano.', type: 'success' });
+        return;
+      }
+      setActiveMode('build');
       if (data.agentMessage) {
         setMessages((prev) => [...prev, data.agentMessage]);
       }
-      setToastMessage({ text: 'Plano aprovado. A proposta de construção foi gerada para sua revisão.', type: 'success' });
+      setToastMessage({ text: 'Plano aprovado e construção concluída.', type: 'success' });
       await loadProjectDetails(activeProject.id);
       setPreviewNonce(Date.now());
     } catch (err: any) {
@@ -414,6 +446,11 @@ export default function App() {
       });
       const data = await readApiPayload(res);
       if (!res.ok) throw new Error(data.error || 'A proposta não pôde ser aplicada.');
+      if(data.accepted){
+        setActiveAgentRunStatus('running');
+        setToastMessage({ text: 'Aplicando e revisando as alterações em segundo plano.', type: 'success' });
+        return;
+      }
       if (data.success) {
         await loadProjectDetails(activeProject.id);
         setPreviewNonce(Date.now());
@@ -633,6 +670,7 @@ export default function App() {
         onExportZip={handleExportZip}
         activeProvider={activeProvider}
         githubStatus={githubStatus}
+        onCollapsedChange={setSidebarCollapsed}
       />
 
       {/* 2. Conversation Panel */}
@@ -653,6 +691,7 @@ export default function App() {
         onAbort={handleAbort}
         availableSkills={skills}
         canSend={Boolean(activeProject) && !projectLoadError}
+        sidebarCollapsed={sidebarCollapsed}
       />
 
       {/* 3. Main Workspace Area */}

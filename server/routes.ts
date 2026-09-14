@@ -31,6 +31,38 @@ export const router = express.Router();
 const activeProjects = new Set<string>();
 const activeProjectControllers = new Map<string, AbortController>();
 
+router.use((_req:Request,res:Response,next:NextFunction)=>{
+  res.setHeader('Cache-Control','no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma','no-cache');
+  res.setHeader('Expires','0');
+  next();
+});
+
+const LEGACY_TEXT_REPLACEMENTS:Array<[RegExp,string]> = [
+  [/\u00c3\u00a1/g,'á'],[/\u00c3\u00a0/g,'à'],[/\u00c3\u00a2/g,'â'],[/\u00c3\u00a3/g,'ã'],[/\u00c3\u00a9/g,'é'],[/\u00c3\u00aa/g,'ê'],
+  [/\u00c3\u00ad/g,'í'],[/\u00c3\u00b3/g,'ó'],[/\u00c3\u00b4/g,'ô'],[/\u00c3\u00b5/g,'õ'],[/\u00c3\u00ba/g,'ú'],[/\u00c3\u00a7/g,'ç'],
+  [/\u00e2\u0080\u0094/g,'—'],[/\u00e2\u0080\u0093/g,'–'],[/\u00e2\u0080\u00a2/g,'•'],[/\u00e2\u009c\u0093/g,'✓'],[/\u00c2\u00b7/g,'·'],
+];
+function repairLegacyGeneratedText(value:string){
+  let next=String(value||'');
+  for(const [pattern,replacement] of LEGACY_TEXT_REPLACEMENTS)next=next.replace(pattern,replacement);
+  return next;
+}
+function repairLegacyProjectText(projectId:string){
+  const html=WorkspaceManager.readFile(projectId,'index.html');
+  if(html&&html.includes('forge-placeholder: preview-only')){
+    const fixed=repairLegacyGeneratedText(html);
+    if(fixed!==html)WorkspaceManager.writeFile(projectId,'index.html',fixed);
+  }
+  const conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+  if(!conversation)return;
+  const rows=db.prepare("SELECT id,content FROM messages WHERE conversation_id=? AND sender IN ('agent','system')").all(conversation.id) as any[];
+  for(const row of rows){
+    const fixed=repairLegacyGeneratedText(String(row.content||''));
+    if(fixed!==row.content)db.prepare('UPDATE messages SET content=? WHERE id=?').run(fixed,row.id);
+  }
+}
+
 function ensureUserWorkspace(userId: string) {
   const id = `ws-${userId}`;
   const existing = db.prepare('SELECT id FROM workspaces WHERE id = ?').get(id) as { id: string } | undefined;
@@ -154,7 +186,7 @@ function sessionAuthMiddleware(req: Request, res: Response, next: NextFunction) 
  */
 function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!req.user) {
-    return res.status(401).json({ error: 'NÃ£o autenticado. FaÃ§a login para acessar este recurso.' });
+    return res.status(401).json({ error: 'Não autenticado. Faça login para acessar este recurso.' });
   }
   next();
 }
@@ -171,7 +203,7 @@ function csrfProtection(req: Request, res: Response, next: NextFunction) {
       const csrfHeader = req.headers['x-csrf-token'];
       const sameOrigin = req.headers['sec-fetch-site']==='same-origin' && (!req.headers.origin || new URL(req.headers.origin).host===req.headers.host);
       if (!sameOrigin && (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader)) {
-        return res.status(403).json({ error: 'Falha de validaÃ§Ã£o CSRF (token invÃ¡lido).' });
+        return res.status(403).json({ error: 'Falha de validação CSRF (token inválido).' });
       }
     }
   }
@@ -186,16 +218,16 @@ function requireProjectOwner(req: Request, res: Response, next: NextFunction) {
   if (!projectId) return next();
 
   if (!req.user) {
-    return res.status(401).json({ error: 'NÃ£o autenticado.' });
+    return res.status(401).json({ error: 'Não autenticado.' });
   }
 
   const project = db.prepare('SELECT user_id FROM projects WHERE id = ?').get(projectId) as { user_id?: string } | undefined;
   if (!project) {
-    return res.status(404).json({ error: 'Projeto nÃ£o encontrado.' });
+    return res.status(404).json({ error: 'Projeto não encontrado.' });
   }
 
   if (project.user_id !== req.user.id) {
-    return res.status(403).json({ error: 'Este projeto pertence a outro usuÃ¡rio.' });
+    return res.status(403).json({ error: 'Este projeto pertence a outro usuário.' });
   }
 
   next();
@@ -264,11 +296,11 @@ router.post('/sync/pull',requireAuth,async(req,res)=>{try{res.json(await CloudSy
 
 router.get('/integrations', requireAuth, (req, res) => {
   try { res.json({integrations: Object.keys(integrationFields).map(key => IntegrationService.summary(req.user!.id, key))}); }
-  catch { res.status(500).json({error:'NÃ£o foi possÃ­vel carregar integraÃ§Ãµes.'}); }
+  catch { res.status(500).json({error:'Não foi possível carregar integrações.'}); }
 });
 router.put('/integrations/:service', requireAuth, (req, res) => {
   try { res.json(IntegrationService.save(req.user!.id, req.params.service, req.body.fields || {})); }
-  catch { res.status(400).json({error:'ConfiguraÃ§Ã£o invÃ¡lida. Confira os campos e o JSON da conta de serviÃ§o.'}); }
+  catch { res.status(400).json({error:'Configuração inválida. Confira os campos e o JSON da conta de serviço.'}); }
 });
 router.post('/integrations/:service/test', requireAuth, async (req, res) => {
   try { res.json(await IntegrationService.test(req.user!.id, req.params.service)); }
@@ -332,7 +364,7 @@ router.post('/secrets', requireAuth, (req: Request, res: Response) => {
   try {
     const { providerKey, secretValue } = req.body;
     if (!providerKey || !secretValue) {
-      return res.status(400).json({ error: 'Provedor e valor da chave sÃ£o obrigatÃ³rios.' });
+      return res.status(400).json({ error: 'Provedor e valor da chave são obrigatórios.' });
     }
 
     SecretService.saveSecret(req.user!.id, providerKey, secretValue);
@@ -370,7 +402,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
   try {
     const { name, description, origin = 'novo', repo_url = '', branch = 'main', initialFiles = {}, zipData = '' } = req.body;
     if (!name || name.trim().length === 0) {
-      return res.status(400).json({ error: 'O nome do projeto Ã© obrigatÃ³rio.' });
+      return res.status(400).json({ error: 'O nome do projeto é obrigatório.' });
     }
 
     const projectId = 'proj-' + Date.now();
@@ -382,13 +414,13 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
     // 1. GITHUB REPOSITORY IMPORT
     if (origin === 'github') {
       if (!repo_url || repo_url.trim().length === 0) {
-        return res.status(400).json({ error: 'URL do repositÃ³rio GitHub Ã© obrigatÃ³ria para importaÃ§Ã£o.' });
+        return res.status(400).json({ error: 'URL do repositório GitHub é obrigatória para importação.' });
       }
 
       const parsed = GitHubService.parseRepoUrl(repo_url);
       if (!parsed) {
         return res.status(400).json({
-          error: 'URL do GitHub invÃ¡lida. Formatos aceitos: https://github.com/usuario/repo ou usuario/repo',
+          error: 'URL do GitHub inválida. Formatos aceitos: https://github.com/usuario/repo ou usuario/repo',
         });
       }
 
@@ -396,7 +428,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       const importResult = await GitHubService.importRepoFiles(parsed.owner, parsed.repo, effectiveBranch, userId);
       if (!importResult.success) {
         return res.status(400).json({
-          error: importResult.error || 'Falha ao importar arquivos do repositÃ³rio especificado.',
+          error: importResult.error || 'Falha ao importar arquivos do repositório especificado.',
         });
       }
 
@@ -439,12 +471,12 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       `).run(
         'msg-' + Date.now(),
         convId,
-        `RepositÃ³rio **${parsed.owner}/${parsed.repo}** importado com sucesso!\n\nForam carregados **${importResult.filesCount || 0} arquivos** no workspace. Estou pronto para analisar e implementar o que vocÃª precisar.`,
+        `Repositório **${parsed.owner}/${parsed.repo}** importado com sucesso!\n\nForam carregados **${importResult.filesCount || 0} arquivos** no workspace. Estou pronto para analisar e implementar o que você precisar.`,
         JSON.stringify({ isWelcome: true, mode: 'auto' }),
         now
       );
 
-      WorkspaceManager.createCheckpoint(projectId, 'ImportaÃ§Ã£o do GitHub', `Importado de ${parsed.owner}/${parsed.repo}`);
+      WorkspaceManager.createCheckpoint(projectId, 'Importação do GitHub', `Importado de ${parsed.owner}/${parsed.repo}`);
       return res.json(projectResponse(projectId, userId));
     }
 
@@ -459,7 +491,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       let importedCount = 0;
       if (zipData) {
         const encoded = String(zipData);
-        if (!/^[A-Za-z0-9+/=]+$/.test(encoded) || encoded.length > 36_000_000) throw new Error('Arquivo ZIP invÃ¡lido ou acima do limite permitido.');
+        if (!/^[A-Za-z0-9+/=]+$/.test(encoded) || encoded.length > 36_000_000) throw new Error('Arquivo ZIP inválido ou acima do limite permitido.');
         importedCount = (await WorkspaceManager.importZip(projectId, Buffer.from(encoded, 'base64'))).fileCount;
       } else {
         const normalizedInitialFiles = WorkspaceManager.normalizeImportedFiles(initialFiles as Record<string,string>);
@@ -486,12 +518,12 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
       `).run(
         'msg-' + Date.now(),
         convId,
-        `Arquivo **${name}** extraÃ­do com sucesso!\n\nForam criados **${importedCount} arquivos** no workspace.`,
+        `Arquivo **${name}** extraído com sucesso!\n\nForam criados **${importedCount} arquivos** no workspace.`,
         JSON.stringify({ isWelcome: true, mode: 'auto' }),
         now
       );
 
-      if (!zipData) WorkspaceManager.createCheckpoint(projectId, 'ImportaÃ§Ã£o de Arquivo ZIP', `ExtraÃ§Ã£o de ${importedCount} arquivos`);
+      if (!zipData) WorkspaceManager.createCheckpoint(projectId, 'Importação de Arquivo ZIP', `Extração de ${importedCount} arquivos`);
       return res.json(projectResponse(projectId, userId));
     }
 
@@ -519,7 +551,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
     `).run(
       'msg-' + Date.now(),
       convId,
-      `Projeto **${name}** pronto!\n\nEstou operando no modo **AutomÃ¡tico**. Diga o que deseja construir, modificar ou entender.`,
+      `Projeto **${name}** pronto!\n\nEstou operando no modo **Automático**. Diga o que deseja construir, modificar ou entender.`,
       JSON.stringify({ isWelcome: true, mode: 'auto' }),
       now
     );
@@ -531,7 +563,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${starterTitle} â Live Preview</title>
+  <title>${starterTitle} — Live Preview</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
@@ -541,15 +573,15 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 <body class="p-6 md:p-8 min-h-screen flex flex-col justify-between">
   <div class="max-w-3xl mx-auto w-full space-y-6">
     <div class="border-b border-slate-800 pb-4">
-      <span class="text-xs font-mono text-cyan-400">Sandbox Preview â¢ Forge Agent</span>
+      <span class="text-xs font-mono text-cyan-400">Sandbox Preview • Forge Agent</span>
       <h1 class="text-2xl font-bold mt-1 text-slate-100">${starterTitle}</h1>
       <p class="text-xs text-slate-400 mt-1">${description || 'Projeto criado com sucesso. Converse com o agente para construir telas e fluxos.'}</p>
     </div>
     <div class="p-6 rounded-xl bg-slate-900/90 border border-slate-800 text-center space-y-3">
-      <div class="w-10 h-10 rounded-full bg-cyan-950/80 border border-cyan-700/60 text-cyan-400 mx-auto flex items-center justify-center font-bold">â</div>
-      <h2 class="text-base font-semibold text-slate-200">Workspace Pronto para IteraÃ§Ãµes</h2>
+      <div class="w-10 h-10 rounded-full bg-cyan-950/80 border border-cyan-700/60 text-cyan-400 mx-auto flex items-center justify-center font-bold">✓</div>
+      <h2 class="text-base font-semibold text-slate-200">Workspace Pronto para Iterações</h2>
       <p class="text-xs text-slate-400 max-w-md mx-auto">
-        Envie sua instruÃ§Ã£o no painel ao lado. Seus arquivos serÃ£o atualizados e renderizados aqui em tempo real.
+        Envie sua instrução no painel ao lado. Seus arquivos serão atualizados e renderizados aqui em tempo real.
       </p>
     </div>
   </div>
@@ -558,7 +590,7 @@ router.post('/projects', requireAuth, async (req: Request, res: Response) => {
 </html>`;
 
     WorkspaceManager.writeFile(projectId, 'index.html', initialHtml);
-    WorkspaceManager.createCheckpoint(projectId, 'CriaÃ§Ã£o do Projeto', 'Setup inicial do workspace');
+    WorkspaceManager.createCheckpoint(projectId, 'Criação do Projeto', 'Setup inicial do workspace');
 
     res.json(projectResponse(projectId, userId));
   } catch (err: any) {
@@ -770,7 +802,7 @@ router.delete('/projects/:id', requireAuth, requireProjectOwner, async (req: Req
     // 7. Delete project row from SQLite
     db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
 
-    res.json({ success: true, message: 'Projeto excluÃ­do com sucesso.' });
+    res.json({ success: true, message: 'Projeto excluído com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -782,7 +814,7 @@ router.post('/projects/:id/duplicate', requireAuth, requireProjectOwner, (req: R
     const source = db.prepare('SELECT * FROM projects WHERE id = ?').get(sourceId) as any;
     const newId = 'proj-' + Date.now();
     const now = new Date().toISOString();
-    const newName = `${source.name} (CÃ³pia)`;
+    const newName = `${source.name} (Cópia)`;
 
     const workspaceId = ensureUserWorkspace(req.user!.id);
 
@@ -831,7 +863,7 @@ router.post('/projects/:id/duplicate', requireAuth, requireProjectOwner, (req: R
       now
     );
 
-    WorkspaceManager.createCheckpoint(newId, 'DuplicaÃ§Ã£o do Projeto', `CÃ³pia criada a partir de ${source.name}`);
+    WorkspaceManager.createCheckpoint(newId, 'Duplicação do Projeto', `Cópia criada a partir de ${source.name}`);
     res.json({ success: true, projectId: newId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -869,17 +901,17 @@ router.get('/projects/:id/files', requireAuth, requireProjectOwner, (req: Reques
 router.get('/projects/:id/files/content', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   try {
     const filePath = req.query.path as string;
-    if (!filePath) return res.status(400).json({ error: 'ParÃ¢metro path ausente.' });
+    if (!filePath) return res.status(400).json({ error: 'Parâmetro path ausente.' });
 
     if (WorkspaceManager.isBinaryPath(filePath)) {
       const buffer = WorkspaceManager.readBinaryFile(req.params.id, filePath);
-      if (buffer === null) return res.status(404).json({ error: 'Arquivo nÃ£o encontrado.' });
+      if (buffer === null) return res.status(404).json({ error: 'Arquivo não encontrado.' });
       return res.json({ path: filePath, isBinary: true, base64: buffer.toString('base64') });
     }
 
     const content = WorkspaceManager.readFile(req.params.id, filePath);
     if (content === null) {
-      return res.status(404).json({ error: 'Arquivo nÃ£o encontrado.' });
+      return res.status(404).json({ error: 'Arquivo não encontrado.' });
     }
     res.json({ path: filePath, isBinary: false, content });
   } catch (err: any) {
@@ -891,10 +923,10 @@ router.post('/projects/:id/files', requireAuth, requireProjectOwner, (req: Reque
   try {
     const { path: filePath, content } = req.body;
     if (!filePath || content === undefined) {
-      return res.status(400).json({ error: 'Campos path e content sÃ£o obrigatÃ³rios.' });
+      return res.status(400).json({ error: 'Campos path e content são obrigatórios.' });
     }
     WorkspaceManager.writeFile(req.params.id, filePath, content);
-    const cpId = WorkspaceManager.createCheckpoint(req.params.id, `EdiÃ§Ã£o manual: ${filePath}`);
+    const cpId = WorkspaceManager.createCheckpoint(req.params.id, `Edição manual: ${filePath}`);
     res.json({ success: true, checkpointId: cpId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -914,12 +946,12 @@ router.post('/projects/:id/checkpoints', requireAuth, requireProjectOwner, (req:
   try {
     const { title, description } = req.body;
     if (!title || title.trim().length === 0) {
-      return res.status(400).json({ error: 'O nome da versÃ£o (o que foi alterado nesta atualizaÃ§Ã£o) Ã© obrigatÃ³rio.' });
+      return res.status(400).json({ error: 'O nome da versão (o que foi alterado nesta atualização) é obrigatório.' });
     }
 
     const cpId = WorkspaceManager.createCheckpoint(req.params.id, title.trim(), description?.trim() || '');
     const cp = db.prepare('SELECT id, title, description, parent_id, created_at FROM checkpoints WHERE id = ?').get(cpId);
-    res.json({ success: true, checkpoint: cp, message: `VersÃ£o "${title.trim()}" criada com sucesso.` });
+    res.json({ success: true, checkpoint: cp, message: `Versão "${title.trim()}" criada com sucesso.` });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -929,18 +961,18 @@ router.post('/projects/:id/checkpoints/rollback-previous', requireAuth, requireP
   try {
     const checkpoints = db.prepare('SELECT id, title, description, created_at FROM checkpoints WHERE project_id = ? ORDER BY created_at DESC LIMIT 2').all(req.params.id) as any[];
     if (checkpoints.length < 2) {
-      return res.status(400).json({ error: 'NÃ£o hÃ¡ versÃ£o anterior registrada para restaurar neste projeto.' });
+      return res.status(400).json({ error: 'Não há versão anterior registrada para restaurar neste projeto.' });
     }
 
     const previousCheckpoint = checkpoints[1];
     const success = WorkspaceManager.restoreCheckpoint(req.params.id, previousCheckpoint.id);
     if (!success) {
-      return res.status(500).json({ error: 'Falha ao restaurar arquivos da versÃ£o anterior.' });
+      return res.status(500).json({ error: 'Falha ao restaurar arquivos da versão anterior.' });
     }
 
     res.json({
       success: true,
-      message: `VersÃ£o anterior "${previousCheckpoint.title}" restaurada com sucesso!`,
+      message: `Versão anterior "${previousCheckpoint.title}" restaurada com sucesso!`,
       restoredCheckpoint: previousCheckpoint,
     });
   } catch (err: any) {
@@ -952,7 +984,7 @@ router.post('/projects/:id/checkpoints/:checkpointId/restore', requireAuth, requ
   try {
     const success = WorkspaceManager.restoreCheckpoint(req.params.id, req.params.checkpointId);
     if (!success) {
-      return res.status(404).json({ error: 'Checkpoint nÃ£o encontrado.' });
+      return res.status(404).json({ error: 'Checkpoint não encontrado.' });
     }
     res.json({ success: true, message: 'Checkpoint restaurado com sucesso.' });
   } catch (err: any) {
@@ -986,9 +1018,10 @@ router.get('/projects/:id/requirements', requireAuth, requireProjectOwner, (req:
 
 router.get('/conversations/:projectId', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   try {
+    repairLegacyProjectText(req.params.projectId);
     const conversation = db.prepare('SELECT * FROM conversations WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(req.params.projectId) as any;
     if (!conversation) {
-      return res.status(404).json({ error: 'Conversa nÃ£o encontrada.' });
+      return res.status(404).json({ error: 'Conversa não encontrada.' });
     }
 
     const messages = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC').all(conversation.id);
@@ -1001,531 +1034,459 @@ router.get('/conversations/:projectId', requireAuth, requireProjectOwner, (req: 
 });
 
 router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
-  const projectId = req.params.projectId;
-  if (activeProjects.has(projectId)) {
-    return res.status(409).json({ error: 'JÃ¡ hÃ¡ uma execuÃ§Ã£o neste projeto. Aguarde ou cancele antes de aprovar o plano.' });
+  const projectId=req.params.projectId;
+  const {planId}=req.body||{};
+  if(!planId)return res.status(400).json({error:'Identificador do plano é obrigatório.'});
+
+  const plan=db.prepare('SELECT * FROM plans WHERE id=? AND project_id=?').get(planId,projectId) as any;
+  if(!plan)return res.status(404).json({error:'Plano não encontrado neste projeto.'});
+  const conversation=db.prepare('SELECT * FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+  if(!conversation)return res.status(404).json({error:'Conversa não encontrada.'});
+
+  if(plan.status==='approved'){
+    const latest=db.prepare('SELECT id,status FROM agent_runs WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+    return res.status(latest?.status==='running'?202:200).json({
+      success:true,accepted:latest?.status==='running',alreadyApproved:true,runId:latest?.id||null,status:latest?.status||'approved',
+    });
+  }
+  if(plan.status!=='draft')return res.status(409).json({error:`Este plano não está mais aguardando aprovação (${plan.status||'estado inválido'}).`});
+  if(activeProjects.has(projectId)){
+    const latest=db.prepare('SELECT id,status FROM agent_runs WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+    return res.status(202).json({success:true,accepted:true,runId:latest?.id||null,status:'already_running'});
   }
 
-  activeProjects.add(projectId);
-  const controller = new AbortController();
-  activeProjectControllers.set(projectId, controller);
-  let execution: { runId: string; stepId: string } | null = null;
+  const providerConfig=LLMAdapterService.getActiveProviderConfig(req.user!.id);
+  if(!providerConfig)return res.status(409).json({error:'Selecione e salve um provedor de IA antes de construir o plano.'});
 
-  const parseStoredList = (value: unknown): string[] => {
-    if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
-    if (typeof value !== 'string' || !value.trim()) return [];
-    try {
-      const parsed = JSON.parse(value);
-      return Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : [String(parsed)];
-    } catch {
-      return [value];
-    }
+  activeProjects.add(projectId);
+  const controller=new AbortController();
+  activeProjectControllers.set(projectId,controller);
+  let execution:{runId:string;stepId:string}|null=null;
+  let acceptedEarly=false;
+  let agentMessagePersisted=false;
+
+  const parseStoredList=(value:unknown):string[]=>{
+    if(Array.isArray(value))return value.map(item=>String(item)).filter(Boolean);
+    if(typeof value!=='string'||!value.trim())return[];
+    try{const parsed=JSON.parse(value);return Array.isArray(parsed)?parsed.map(item=>String(item)).filter(Boolean):[String(parsed)];}
+    catch{return[value];}
   };
 
-  try {
-    const { planId } = req.body || {};
-    if (!planId) return res.status(400).json({ error: 'Identificador do plano Ã© obrigatÃ³rio.' });
-
-    const plan = db.prepare('SELECT * FROM plans WHERE id = ? AND project_id = ?').get(planId, projectId) as any;
-    if (!plan) return res.status(404).json({ error: 'Plano nÃ£o encontrado neste projeto.' });
-    if (plan.status !== 'draft') {
-      return res.status(409).json({ error: `Este plano nÃ£o estÃ¡ mais aguardando aprovaÃ§Ã£o (${plan.status || 'estado invÃ¡lido'}).` });
-    }
-
-    const conversation = db.prepare('SELECT * FROM conversations WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
-    if (!conversation) return res.status(404).json({ error: 'Conversa nÃ£o encontrada.' });
-
-    const providerConfig = LLMAdapterService.getActiveProviderConfig(req.user!.id);
-    if (!providerConfig) {
-      return res.status(409).json({ error: 'Selecione e salve um provedor de IA antes de construir o plano.' });
-    }
-
-    const legacyFiles = parseStoredList(plan.files_affected_json);
-    const existingFilesToModify = parseStoredList(plan.existing_files_json);
-    const newFilesToCreate = parseStoredList(plan.new_files_json);
-    const filesToDelete = parseStoredList(plan.files_to_delete_json);
-    const filesAffected = [...new Set([...existingFilesToModify,...newFilesToCreate,...filesToDelete,...legacyFiles])];
-    const integrations = parseStoredList(plan.integrations_json);
-    const risks = parseStoredList(plan.risks_json);
-    const acceptanceCriteria = parseStoredList(plan.acceptance_criteria_json);
-    const planRequirements = (()=>{try{return JSON.parse(plan.requirements_json||'[]')}catch{return[]}})();
-    const taskGraph = (()=>{try{return JSON.parse(plan.task_graph_json||'[]')}catch{return[]}})();
+  try{
+    const legacyFiles=parseStoredList(plan.files_affected_json);
+    const existingFilesToModify=parseStoredList(plan.existing_files_json);
+    const newFilesToCreate=parseStoredList(plan.new_files_json);
+    const filesToDelete=parseStoredList(plan.files_to_delete_json);
+    const filesAffected=[...new Set([...existingFilesToModify,...newFilesToCreate,...filesToDelete,...legacyFiles])];
+    const integrations=parseStoredList(plan.integrations_json);
+    const risks=parseStoredList(plan.risks_json);
+    const acceptanceCriteria=parseStoredList(plan.acceptance_criteria_json);
+    const planRequirements=(()=>{try{return JSON.parse(plan.requirements_json||'[]')}catch{return[]}})();
+    const taskGraph=(()=>{try{return JSON.parse(plan.task_graph_json||'[]')}catch{return[]}})();
     const architectureSummary=String(plan.architecture_summary||'').trim();
-    const buildPrompt = [
-      'O usuário aprovou este plano técnico. Implemente-o agora no workspace atual.',
-      '',
-      `OBJETIVO:\n${plan.objective || ''}`,
-      architectureSummary ? `ARQUITETURA APROVADA:\n${architectureSummary}` : '',
-      `ESCOPO INCLUÍDO:\n${plan.scope_in || ''}`,
-      `ESCOPO EXCLUÍDO:\n${plan.scope_out || ''}`,
-      existingFilesToModify.length ? `ARQUIVOS EXISTENTES A MODIFICAR:\n- ${existingFilesToModify.join('\n- ')}` : '',
-      newFilesToCreate.length ? `NOVOS ARQUIVOS A CRIAR:\n- ${newFilesToCreate.join('\n- ')}` : '',
-      filesToDelete.length ? `ARQUIVOS A REMOVER:\n- ${filesToDelete.join('\n- ')}` : '',
-      planRequirements.length ? `REQUISITOS:\n${planRequirements.map((r:any)=>`- ${r.id}: ${r.title||r.description}`).join('\n')}` : '',
-      taskGraph.length ? `GRAFO DE TAREFAS:\n${taskGraph.map((t:any)=>`- ${t.id}: ${t.title} [${(t.requirement_ids||[]).join(', ')}]`).join('\n')}` : '',
-      integrations.length ? `INTEGRAÇÕES:\n- ${integrations.join('\n- ')}` : '',
-      risks.length ? `RISCOS:\n- ${risks.join('\n- ')}` : '',
-      acceptanceCriteria.length ? `CRITÉRIOS DE ACEITE:\n- ${acceptanceCriteria.join('\n- ')}` : '',
-      '',
-      'Gere uma proposta concreta e multi-arquivo quando a arquitetura exigir. Não aplique nada automaticamente; retorne os arquivos estruturados para revisão do usuário.',
+    const buildPrompt=[
+      'O usuário aprovou este plano técnico. Implemente-o agora no workspace atual e entregue o resultado final.',
+      `OBJETIVO:\n${plan.objective||''}`,
+      architectureSummary?`ARQUITETURA APROVADA:\n${architectureSummary}`:'',
+      `ESCOPO INCLUÍDO:\n${plan.scope_in||''}`,
+      `ESCOPO EXCLUÍDO:\n${plan.scope_out||''}`,
+      existingFilesToModify.length?`ARQUIVOS EXISTENTES A MODIFICAR:\n- ${existingFilesToModify.join('\n- ')}`:'',
+      newFilesToCreate.length?`NOVOS ARQUIVOS A CRIAR:\n- ${newFilesToCreate.join('\n- ')}`:'',
+      filesToDelete.length?`ARQUIVOS A REMOVER:\n- ${filesToDelete.join('\n- ')}`:'',
+      planRequirements.length?`REQUISITOS:\n${planRequirements.map((item:any)=>`- ${item.id}: ${item.title||item.description}`).join('\n')}`:'',
+      taskGraph.length?`GRAFO DE TAREFAS:\n${taskGraph.map((item:any)=>`- ${item.id}: ${item.title} [${(item.requirement_ids||[]).join(', ')}]`).join('\n')}`:'',
+      integrations.length?`INTEGRAÇÕES:\n- ${integrations.join('\n- ')}`:'',
+      risks.length?`RISCOS:\n- ${risks.join('\n- ')}`:'',
+      acceptanceCriteria.length?`CRITÉRIOS DE ACEITE:\n- ${acceptanceCriteria.join('\n- ')}`:'',
+      'Construa em sandbox. O sistema fará validação, revisão SENTINEL e merge automaticamente; não peça nova aprovação.',
     ].filter(Boolean).join('\n\n');
 
-    const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 20')
-      .all(conversation.id).reverse() as any[];
-    const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
-    const agentEngineEnabled = process.env.AGENT_ENGINE_ENABLED === 'true';
+    const history=db.prepare('SELECT sender,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20').all(conversation.id).reverse() as any[];
+    const existingFiles=WorkspaceManager.getAllFilesContent(projectId);
+    const agentEngineEnabled=process.env.AGENT_ENGINE_ENABLED==='true';
+    let executionRequirementIds:string[]=[];
+    const approvedAt=new Date().toISOString();
 
-    let executionRequirementIds: string[] = [];
-    if (agentEngineEnabled) {
-      execution = RunService.start(req.user!.id, projectId, conversation.id, 'build', .5);
+    db.prepare("UPDATE plans SET status='approved',updated_at=? WHERE id=? AND project_id=? AND status='draft'").run(approvedAt,planId,projectId);
+    db.prepare("UPDATE conversations SET mode='build',updated_at=? WHERE id=?").run(approvedAt,conversation.id);
+    db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'user',?,?,?)")
+      .run('msg-user-'+Date.now(),conversation.id,'Aprovado. Pode construir o plano.',JSON.stringify({mode:'build',action:'approve_plan',planId}),approvedAt);
+
+    if(agentEngineEnabled){
+      execution=RunService.start(req.user!.id,projectId,conversation.id,'build',.5);
       RequirementLedgerService.attachRun(projectId,planId,execution.runId);
-      executionRequirementIds = workflowRequirementIds(projectId, execution.runId, planId);
+      executionRequirementIds = workflowRequirementIds(projectId,execution.runId,planId);
+      acceptedEarly=true;
+      res.status(202).json({success:true,accepted:true,runId:execution.runId,planId});
     }
 
-    let result = !agentEngineEnabled
+    let result=!agentEngineEnabled
       ? await LLMAdapterService.buildApprovedPlanReliably({
-          projectId,
-          providerKey: providerConfig.key,
-          modelId: providerConfig.modelId,
-          userId: req.user!.id,
-          existingFiles,
-          requestedFiles: filesAffected,
-          objective: String(plan.objective || ''),
-          scopeIn: [architectureSummary ? 'ARQUITETURA: '+architectureSummary : '', String(plan.scope_in || '')].filter(Boolean).join('\n\n'),
-          scopeOut: String(plan.scope_out || ''),
-          acceptanceCriteria,
-          signal: controller.signal,
+          projectId,providerKey:providerConfig.key,modelId:providerConfig.modelId,userId:req.user!.id,existingFiles,
+          requestedFiles:filesAffected,objective:String(plan.objective||''),
+          scopeIn:[architectureSummary?'ARQUITETURA: '+architectureSummary:'',String(plan.scope_in||'')].filter(Boolean).join('\n\n'),
+          scopeOut:String(plan.scope_out||''),acceptanceCriteria,signal:controller.signal,
         })
       : await AgentWorkflowEngine.executeWorkflow({
-          prompt: buildPrompt,
-          mode: 'build',
-          projectId,
-          existingFiles,
-          appliedSkills: [],
-          conversationHistory: history,
-          userId: req.user!.id,
-          runId: execution!.runId,
-          stepId: execution!.stepId,
-          signal: controller.signal,
-          requirementIds: executionRequirementIds,
-          reliableBuild: {
-            requestedFiles: filesAffected,
-            objective: String(plan.objective || ''),
-              scopeIn: [architectureSummary ? 'ARQUITETURA: '+architectureSummary : '', String(plan.scope_in || '')].filter(Boolean).join('\n\n'),
-            scopeOut: String(plan.scope_out || ''),
-            acceptanceCriteria,
+          prompt:buildPrompt,mode:'build',projectId,existingFiles,appliedSkills:[],conversationHistory:history,
+          userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal,
+          requirementIds:executionRequirementIds,
+          reliableBuild:{
+            requestedFiles:filesAffected,objective:String(plan.objective||''),
+            scopeIn:[architectureSummary?'ARQUITETURA: '+architectureSummary:'',String(plan.scope_in||'')].filter(Boolean).join('\n\n'),
+            scopeOut:String(plan.scope_out||''),acceptanceCriteria,
           },
         });
-
     controller.signal.throwIfAborted();
 
-    const formatRepairAttempted = false;
-
-    if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
-      return res.status(409).json({ error: 'Os arquivos mudaram durante a construÃ§Ã£o. Aprove o plano novamente para usar a versÃ£o atual.' });
+    if(JSON.stringify(WorkspaceManager.getAllFilesContent(projectId))!==JSON.stringify(existingFiles)){
+      throw new Error('Os arquivos mudaram durante a construção. Tente novamente para usar a versão atual.');
     }
-
-    if (result.build?.files?.length && !result.proposal && !result.isDemonstrativeFallback && !result.hasErrors) {
-      result.proposal = {
-        id: `proposal-${crypto.randomUUID()}`,
-        summary: result.build.summary || `ConstruÃ§Ã£o do plano: ${String(plan.objective || '').slice(0, 80)}`,
-        requiresConfirmation: true,
-        files: result.build.files,
-        status: 'pending',
+    if(result.build?.files?.length&&!result.proposal&&!result.isDemonstrativeFallback&&!result.hasErrors){
+      result.proposal={
+        id:`proposal-${crypto.randomUUID()}`,summary:result.build.summary||`Construção do plano: ${String(plan.objective||'').slice(0,80)}`,
+        requiresConfirmation:false,files:result.build.files,status:'pending',
       };
     }
-
-    if (result.hasErrors || result.invalidResponse || !result.proposal?.files?.length) {
-      if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
-      return res.status(422).json({
-        success: false,
-        error: result.errorMessage || result.errorReason || 'O modelo nÃ£o retornou uma proposta de construÃ§Ã£o vÃ¡lida. O plano continua aguardando aprovaÃ§Ã£o.',
-      });
+    if(result.hasErrors||result.invalidResponse||!result.proposal?.files?.length){
+      throw new Error(result.errorMessage||result.errorReason||'O modelo não retornou uma implementação válida.');
     }
 
-    const now = new Date().toISOString();
-    const agentMsgId = `msg-agent-${Date.now()}`;
-    const metadata = {
-      mode: 'build',
-      decisionType: result.decisionType,
-      providerUsed: result.providerUsed,
-      modelUsed: result.modelUsed,
-      planId,
-      planApproved: true,
-      filesAffected: result.build?.files?.map((file) => file.path) || [],
-      proposal: result.proposal,
-      hasErrors: false,
-      runId: execution?.runId,
-      executionType: agentEngineEnabled ? 'agent_engine' : 'direct_llm',
-      agentKey: agentEngineEnabled ? ((result as any).agentKey || 'PROGRAM') : undefined,
-      profileKey: (result as any).profileKey,
-      workflow: (result as any).workflow,
-      formatRepairAttempted,
-      buildDiagnostics: result.diagnostics,
-    };
-
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      db.prepare("UPDATE plans SET status = 'approved', updated_at = ? WHERE id = ? AND project_id = ? AND status = 'draft'")
-        .run(now, planId, projectId);
-      db.prepare("UPDATE conversations SET mode = 'build', updated_at = ? WHERE id = ?").run(now, conversation.id);
-      db.prepare(`
-        INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
-        VALUES (?, ?, 'agent', ?, ?, ?)
-      `).run(agentMsgId, conversation.id, result.replyText, JSON.stringify(metadata), now);
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
-
-    if (execution) RunService.waitForApproval(execution.runId);
-
-    res.json({
-      success: true,
-      plan: { ...plan, status: 'approved', updated_at: now },
-      agentMessage: {
-        id: agentMsgId,
-        conversation_id: conversation.id,
-        sender: 'agent',
-        content: result.replyText,
-        metadata,
-        created_at: now,
-      },
-      build: result.build,
-      proposal: result.proposal,
+    await materializeProposalInSandbox({
+      userId:req.user!.id,projectId,runId:execution?.runId||null,stepId:execution?.stepId||null,
+      proposal:result.proposal,signal:controller.signal,
     });
-  } catch (err: any) {
-    if (execution) {
-      RunService.finish(execution.runId, execution.stepId, controller.signal.aborted ? 'aborted' : 'failed');
-    }
-    if (!res.headersSent && !res.destroyed) {
-      const detail = String(err?.message || err || '').trim();
-      res.status(controller.signal.aborted ? 499 : 500).json({
-        error: controller.signal.aborted
-          ? 'Construção cancelada. O plano continua aguardando aprovação.'
-          : detail || 'Falha ao aprovar e construir o plano.',
-        code: controller.signal.aborted ? 'PLAN_BUILD_ABORTED' : 'PLAN_BUILD_FAILED',
+
+    const applied=await SandboxProposalApplyService.apply({
+      userId:req.user!.id,projectId,proposal:result.proposal,runId:execution?.runId||null,planId,
+      summary:result.proposal.summary||String(plan.objective||'Plano aprovado'),
+      originalRequest:String(plan.objective||'')+'\n'+String(plan.scope_in||''),shipRequested:false,signal:controller.signal,
+    });
+    if(!applied.success)throw Object.assign(new Error(applied.error||'A implementação não passou pela revisão final.'),{applyResult:applied});
+
+    result.proposal.status='applied';
+    const changedCount=Array.isArray(applied.changedFiles)?applied.changedFiles.length:result.proposal.files.length;
+    const summary=String(result.proposal.summary||'A implementação aprovada foi concluída').replace(/[.\s]+$/,'');
+    const replyText=`Pronto. ${summary}. O plano foi construído, revisado e aplicado ao preview${changedCount?` em ${changedCount} arquivo(s)`:''}.`;
+    const messageNow=new Date().toISOString();
+    const agentMsgId='msg-agent-'+Date.now();
+    const metadata:any={
+      mode:'build',decisionType:result.decisionType,providerUsed:result.providerUsed,modelUsed:result.modelUsed,
+      planId,planApproved:true,filesAffected:applied.changedFiles||result.proposal.files.map((item:any)=>item.path),
+      proposal:result.proposal,hasErrors:false,runId:execution?.runId,executionType:agentEngineEnabled?'agent_engine':'direct_llm',
+      agentKey:agentEngineEnabled?((result as any).agentKey||'PROGRAM'):undefined,profileKey:(result as any).profileKey,
+      workflow:execution?{...((result as any).workflow||{}),runId:execution.runId,status:applied.needsVerification?'needs_verification':'completed',trace:RunService.trace(execution.runId)}:(result as any).workflow,
+      validation:applied.validation,browserQuality:applied.browserQuality,browserRepair:applied.browserRepair,sentinelReview:applied.sentinelReview,
+      checkpointId:applied.checkpointId,technicalReply:result.replyText,autoApplied:true,buildDiagnostics:result.diagnostics,
+    };
+    db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)")
+      .run(agentMsgId,conversation.id,replyText,JSON.stringify(metadata),messageNow);
+    agentMessagePersisted=true;
+
+    if(!res.headersSent&&!res.destroyed){
+      res.json({
+        success:true,plan:{...plan,status:'approved',updated_at:approvedAt},
+        agentMessage:{id:agentMsgId,conversation_id:conversation.id,sender:'agent',content:replyText,metadata,created_at:messageNow},
+        proposal:result.proposal,checkpointId:applied.checkpointId,
       });
     }
-  } finally {
+  }catch(err:any){
+    try{db.prepare("UPDATE plans SET status='draft',updated_at=? WHERE id=? AND project_id=?").run(new Date().toISOString(),planId,projectId);}catch{}
+    if(execution){try{RunService.finish(execution.runId,execution.stepId,controller.signal.aborted?'aborted':'failed');}catch{}}
+    const detail=String(err?.message||err||'Falha ao aprovar e construir o plano.').trim();
+    if(acceptedEarly&&!agentMessagePersisted){
+      const failedAt=new Date().toISOString();
+      const msgId='msg-agent-'+Date.now();
+      const content=controller.signal.aborted?'A construção foi interrompida. O plano voltou a ficar disponível.':`Não consegui concluir a construção com segurança. ${detail}`;
+      const metadata={mode:'build',hasErrors:true,errorMessage:detail,planId,runId:execution?.runId,
+        workflow:execution?{runId:execution.runId,status:controller.signal.aborted?'aborted':'failed',trace:RunService.trace(execution.runId)}:undefined,
+        validation:err?.applyResult?.validation||null,browserQuality:err?.applyResult?.browserQuality||null,sentinelReview:err?.applyResult?.sentinelReview||null};
+      db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)")
+        .run(msgId,conversation.id,content,JSON.stringify(metadata),failedAt);
+    }else if(!res.headersSent&&!res.destroyed){
+      res.status(controller.signal.aborted?499:500).json({error:controller.signal.aborted?'Construção cancelada. O plano continua aguardando aprovação.':detail});
+    }
+  }finally{
     activeProjects.delete(projectId);
     activeProjectControllers.delete(projectId);
   }
 });
 
 router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
-  if (activeProjects.has(req.params.projectId)) return res.status(409).json({error:'JÃ¡ hÃ¡ uma execuÃ§Ã£o neste projeto. Aguarde ou cancele antes de enviar outro pedido.'});
-  activeProjects.add(req.params.projectId);
-  const controller = new AbortController();
-  activeProjectControllers.set(req.params.projectId, controller);
-  let execution: {runId:string;stepId:string}|null=null;
-  try {
-    const { content, mode = 'auto', appliedSkills = [] } = req.body;
-    if (!content || content.trim().length === 0) {
-      return res.status(400).json({ error: 'ConteÃºdo da mensagem obrigatÃ³rio.' });
+  const projectId=req.params.projectId;
+  if (activeProjects.has(projectId)) return res.status(409).json({error:'Já há uma execução neste projeto. Aguarde ou cancele antes de enviar outro pedido.'});
+  activeProjects.add(projectId);
+  const controller=new AbortController();
+  activeProjectControllers.set(projectId,controller);
+  let execution:{runId:string;stepId:string}|null=null;
+  let conv:any=null;
+  let agentMessagePersisted=false;
+  let acceptedEarly=false;
+
+  try{
+    const {content,mode='auto',appliedSkills=[]}=req.body;
+    if(!content||!String(content).trim())return res.status(400).json({error:'Conteúdo da mensagem obrigatório.'});
+
+    const selectedMode=mode as AgentMode;
+    const resolvedMode=LLMAdapterService.resolveRequestedMode(String(content),selectedMode);
+    const now=new Date().toISOString();
+    conv=db.prepare('SELECT * FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+
+    if(!conv){
+      const convId='conv-'+Date.now();
+      db.prepare('INSERT INTO conversations (id,project_id,title,mode,created_at,updated_at) VALUES (?,?,?,?,?,?)')
+        .run(convId,projectId,'Conversa Principal',selectedMode,now,now);
+      conv={id:convId,mode:selectedMode};
+    }else{
+      // O modo Automático continua visível como Automático; resolvedMode é decisão interna do agente.
+      const conversationMode=selectedMode==='auto'?'auto':resolvedMode;
+      db.prepare('UPDATE conversations SET mode=?,updated_at=? WHERE id=?').run(conversationMode,now,conv.id);
     }
 
-    const projectId = req.params.projectId;
-    const selectedMode = mode as AgentMode;
-    const resolvedMode = LLMAdapterService.resolveRequestedMode(content, selectedMode);
-    let conv = db.prepare('SELECT * FROM conversations WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
-    const now = new Date().toISOString();
+    const agentEngineEnabled=process.env.AGENT_ENGINE_ENABLED==='true';
+    if(agentEngineEnabled)execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,.5);
 
-    if (!conv) {
-      const convId = 'conv-' + Date.now();
-      db.prepare('INSERT INTO conversations (id, project_id, title, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(
-        convId,
-        projectId,
-        'Conversa Principal',
-        mode,
-        now,
-        now
-      );
-      conv = { id: convId, mode };
-    } else {
-      db.prepare('UPDATE conversations SET mode = ?, updated_at = ? WHERE id = ?').run(resolvedMode, now, conv.id);
-    }
-    const agentEngineEnabled = process.env.AGENT_ENGINE_ENABLED === 'true';
-    if (agentEngineEnabled) execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,.5);
-
-    // Save user message
-    const userMsgId = 'msg-user-' + Date.now();
+    const userMsgId='msg-user-'+Date.now();
     db.prepare(`
-      INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
-      VALUES (?, ?, 'user', ?, ?, ?)
-    `).run(userMsgId, conv.id, content, JSON.stringify({ mode: resolvedMode, selectedMode, appliedSkills }), now);
+      INSERT INTO messages (id,conversation_id,sender,content,metadata_json,created_at)
+      VALUES (?,?,'user',?,?,?)
+    `).run(userMsgId,conv.id,String(content),JSON.stringify({mode:selectedMode,resolvedMode,appliedSkills}),now);
 
-    const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 20').all(conv.id).reverse() as any[];
-    const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
+    const history=db.prepare('SELECT sender,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20').all(conv.id).reverse() as any[];
+    const existingFiles=WorkspaceManager.getAllFilesContent(projectId);
+    const project=db.prepare('SELECT * FROM projects WHERE id=?').get(projectId) as any;
 
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oÃ³]rio|remoto)\b|\b(github|reposit[oÃ³]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(content);
+    const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oó]rio|remoto)\b|\b(github|reposit[oó]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(String(content));
     if(requestsGitHubPublish){
-      if (execution) RunService.assignAgent(execution.stepId, 'SHIP');
+      if(execution)RunService.assignAgent(execution.stepId,'SHIP');
       const repoContext=projectRepositoryContext(projectId,project);
       if(!repoContext.repoUrl){
-        if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+        if(execution)RunService.finish(execution.runId,execution.stepId,'failed');
         return res.status(409).json({error:'Vincule ou crie um repositório na aba Publicar antes de enviar o projeto ao GitHub.'});
       }
       const parsed=GitHubService.parseRepoUrl(repoContext.repoUrl);
       if(!parsed){
-        if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+        if(execution)RunService.finish(execution.runId,execution.stepId,'failed');
         return res.status(400).json({error:'A URL do repositório vinculado é inválida.'});
       }
-
       const binaryFiles:Record<string,Buffer>={};
       for(const file of WorkspaceManager.getFiles(projectId)){
         if(!file.isBinary)continue;
         const bytes=WorkspaceManager.readBinaryFile(projectId,file.path);
         if(bytes)binaryFiles[file.path]=bytes;
       }
-
       const pushed=await GitHubService.pushFilesToRepo({
-        userId:req.user!.id,
-        owner:parsed.owner,
-        repo:parsed.repo,
-        branch:repoContext.branch,
-        commitMessage:`Forge Agent: ${content.trim().slice(0,72)}`,
-        files:existingFiles,
-        binaryFiles,
+        userId:req.user!.id,owner:parsed.owner,repo:parsed.repo,branch:repoContext.branch,
+        commitMessage:`Forge Agent: ${String(content).trim().slice(0,72)}`,files:existingFiles,binaryFiles,
       });
       if(!pushed.success){
-        if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+        if(execution)RunService.finish(execution.runId,execution.stepId,'failed');
         return res.status(400).json({error:pushed.error||'O GitHub recusou a publicação.'});
       }
-      if(pushed.commitSha){
-        db.prepare('UPDATE branches SET head_commit_hash=? WHERE project_id=? AND name=?')
-          .run(pushed.commitSha,projectId,repoContext.branch);
-      }
-
+      if(pushed.commitSha)db.prepare('UPDATE branches SET head_commit_hash=? WHERE project_id=? AND name=?').run(pushed.commitSha,projectId,repoContext.branch);
       const agentMsgId='msg-agent-'+Date.now();
       const commitUrl=`https://github.com/${parsed.owner}/${parsed.repo}/commit/${pushed.commitSha}`;
       const replyText=`Publicação concluída no GitHub.\n\nCommit: ${pushed.commitSha}\n${commitUrl}`;
-      if (execution) RunService.finish(execution.runId, execution.stepId, 'completed');
+      if(execution)RunService.finish(execution.runId,execution.stepId,'completed');
       const metadata={
-        mode,
-        decisionType:'publish',
-        providerUsed:'GitHub',
-        modelUsed:'ferramenta-direta',
-        filesAffected:[...Object.keys(existingFiles),...Object.keys(binaryFiles)],
-        runId:execution?.runId,
-        executionType:execution?'agent_engine':'direct_tool',
-        agentKey:execution?'SHIP':undefined,
+        mode:selectedMode,decisionType:'publish',providerUsed:'GitHub',modelUsed:'ferramenta-direta',
+        filesAffected:[...Object.keys(existingFiles),...Object.keys(binaryFiles)],runId:execution?.runId,
+        executionType:execution?'agent_engine':'direct_tool',agentKey:execution?'SHIP':undefined,
         workflow:execution?{runId:execution.runId,status:'completed',steps:[execution.stepId],shipRequested:true,trace:RunService.trace(execution.runId)}:undefined,
-        github:{owner:parsed.owner,repo:parsed.repo,branch:repoContext.branch,commitSha:pushed.commitSha,commitUrl}
+        github:{owner:parsed.owner,repo:parsed.repo,branch:repoContext.branch,commitSha:pushed.commitSha,commitUrl},
       };
       db.prepare("INSERT INTO messages (id,conversation_id,sender,content,metadata_json,created_at) VALUES (?,?,'agent',?,?,?)")
-        .run(agentMsgId,conv.id,replyText,JSON.stringify(metadata),now);
+        .run(agentMsgId,conv.id,replyText,JSON.stringify(metadata),new Date().toISOString());
+      agentMessagePersisted=true;
       return res.json({success:true,agentMessage:{id:agentMsgId,sender:'agent',content:replyText,metadata,created_at:now},github:metadata.github});
     }
-    const providerConfig = LLMAdapterService.getActiveProviderConfig(req.user!.id);
-    if (!providerConfig) {
-      if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+
+    const providerConfig=LLMAdapterService.getActiveProviderConfig(req.user!.id);
+    if(!providerConfig){
+      if(execution)RunService.finish(execution.runId,execution.stepId,'failed');
       return res.status(409).json({error:'Selecione e salve um provedor de IA antes de enviar mensagens.'});
     }
-    const providerKey = providerConfig.key;
-    const modelId = providerConfig.modelId;
+    const providerKey=providerConfig.key;
+    const modelId=providerConfig.modelId;
 
-    // Call LLM Adapter with authenticated userId
-    let result = !agentEngineEnabled ? await LLMAdapterService.executePrompt({
-      prompt: content,
-      mode: resolvedMode,
-      projectId,
-      providerKey,
-      modelId,
-      existingFiles,
-      appliedSkills,
-      conversationHistory: history,
-      userId: req.user!.id,
-      signal: controller.signal,
-    }) : await AgentWorkflowEngine.executeWorkflow({prompt:content,mode:resolvedMode,projectId,existingFiles,appliedSkills,conversationHistory:history,userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal});
-    controller.signal.throwIfAborted();
-
-    const effectiveIntent = mode === 'auto' ? LLMAdapterService.classifyIntent(content) : (mode as AgentMode);
-    const explicitPlanIntent = /\b(planej|plano|arquitetura|roadmap|especifica[cç][aã]o)\b/i.test(content);
-
-    if (!agentEngineEnabled && mode === 'auto' && explicitPlanIntent && !result.plan && !result.build && !result.hasErrors) {
-      const fallbackCriteria=['Implementação funcional','Validação sem erros críticos'];
-      result.plan = LLMAdapterService.extractPlan(result.replyText) || {
-        objective: content.trim().slice(0, 500),
-        scope_in: String(result.replyText || content).trim().slice(0, 2500),
-        scope_out: '',
-        architecture_summary: 'Arquitetura a determinar pelo produto solicitado; nenhum arquivo ou stack é presumido.',
-        existing_files_to_modify: [],
-        new_files_to_create: [],
-        files_to_delete: [],
-        files_affected: [],
-        integrations: [],
-        risks: [],
-        acceptance_criteria: fallbackCriteria,
-        requirements: fallbackCriteria.map((criterion,index)=>({
-          id:`REQ-${String(index+1).padStart(3,'0')}`,
-          title:criterion,
-          description:criterion,
-          priority:'high' as const,
-          verification:[criterion],
-        })),
-        task_graph: [],
-      };
-      result.decisionType = 'plan';
+    // Construções longas deixam de depender da conexão HTTP. A UI acompanha o run e a conversa por polling.
+    if(agentEngineEnabled&&resolvedMode==='build'){
+      acceptedEarly=true;
+      res.status(202).json({
+        success:true,accepted:true,runId:execution?.runId,
+        userMessage:{id:userMsgId,conversation_id:conv.id,sender:'user',content:String(content),created_at:now},
+      });
     }
 
-    const recoverableBuildFailure =
-      !agentEngineEnabled &&
-      effectiveIntent === 'build' &&
-      (
-        result.invalidResponse === true ||
-        result.errorReason === 'timeout' ||
-        (
-          result.errorReason === 'provider_error' &&
-          /524|context|token|too large|response|upstream/i.test(String(result.errorMessage || result.replyText || ''))
-        )
-      );
+    let result=!agentEngineEnabled
+      ? await LLMAdapterService.executePrompt({
+          prompt:String(content),mode:resolvedMode,projectId,providerKey,modelId,existingFiles,appliedSkills,
+          conversationHistory:history,userId:req.user!.id,signal:controller.signal,
+        })
+      : await AgentWorkflowEngine.executeWorkflow({
+          prompt:String(content),mode:resolvedMode,projectId,existingFiles,appliedSkills,conversationHistory:history,
+          userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal,
+        });
+    controller.signal.throwIfAborted();
 
-    if (recoverableBuildFailure) {
-      result = await LLMAdapterService.buildApprovedPlanReliably({
-        projectId,
-        providerKey,
-        modelId,
-        userId: req.user!.id,
-        existingFiles,
-        requestedFiles: [],
-        objective: content,
-        acceptanceCriteria: ['Atender integralmente ao pedido do usuário', 'Preservar compatibilidade com o projeto existente'],
-        signal: controller.signal,
+    const effectiveIntent=resolvedMode;
+    const recoverableBuildFailure=
+      !agentEngineEnabled&&effectiveIntent==='build'&&(
+        result.invalidResponse===true||
+        result.errorReason==='timeout'||
+        (result.errorReason==='provider_error'&&/524|context|token|too large|response|upstream/i.test(String(result.errorMessage||result.replyText||'')))
+      );
+    if(recoverableBuildFailure){
+      result=await LLMAdapterService.buildApprovedPlanReliably({
+        projectId,providerKey,modelId,userId:req.user!.id,existingFiles,requestedFiles:[],objective:String(content),
+        acceptanceCriteria:['Atender integralmente ao pedido do usuário','Preservar compatibilidade com o projeto existente'],
+        signal:controller.signal,
       });
       controller.signal.throwIfAborted();
     }
 
-    if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
-      if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
-      return res.status(409).json({error:'Os arquivos mudaram durante a revisão. Envie novamente para usar a versão atual.'});
+    if(JSON.stringify(WorkspaceManager.getAllFilesContent(projectId))!==JSON.stringify(existingFiles)){
+      throw Object.assign(new Error('Os arquivos mudaram durante a execução. Envie novamente para usar a versão atual.'),{code:'STALE_WORKSPACE'});
     }
 
-    let checkpointCreatedId: string | null = null;
-    let validation: Awaited<ReturnType<typeof ValidatorEngine.validate>>|null=null;
+    let checkpointCreatedId:string|null=null;
+    let validation:Awaited<ReturnType<typeof ValidatorEngine.validate>>|null=null;
+    let browserQuality:any=null;
+    let browserRepair:any=null;
+    let sentinelReview:any=null;
+    let applyResult:any=null;
 
-    // Every code change is a server-owned proposal. The browser receives a copy for review;
-    // no generated code is ever written to the official workspace before explicit approval.
-    if (result.build?.files?.length && !result.proposal && !result.isDemonstrativeFallback && !result.hasErrors) {
-      result.proposal = {
-        id: `proposal-${crypto.randomUUID()}`,
-        summary: result.build.summary || content.slice(0, 100),
-        requiresConfirmation: true,
-        files: result.build.files,
-        status: 'pending',
+    if(result.build?.files?.length&&!result.proposal&&!result.isDemonstrativeFallback&&!result.hasErrors){
+      result.proposal={
+        id:`proposal-${crypto.randomUUID()}`,
+        summary:result.build.summary||String(content).slice(0,100),
+        requiresConfirmation:false,
+        files:result.build.files,
+        status:'pending',
       };
     }
 
-    if(result.proposal?.files?.length && !result.hasErrors && !result.isDemonstrativeFallback){
-      await materializeProposalInSandbox({
-        userId:req.user!.id,
-        projectId,
-        runId:execution?.runId || null,
-        stepId:execution?.stepId || null,
-        proposal:result.proposal,
-        signal:controller.signal,
-      });
-      validation=(result.proposal as any).sandboxValidation || null;
+    if(result.hasErrors||result.invalidResponse){
+      throw Object.assign(new Error(result.errorMessage||result.errorReason||'A IA não conseguiu concluir esta etapa com segurança.'),{code:'MODEL_RESULT_FAILED'});
     }
 
-    // Save plan if generated
-    let savedPlanId: string | null = null;
-    if (result.plan) {
-      savedPlanId = 'plan-' + Date.now();
-      db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'")
-        .run(now,projectId);
+    if(result.proposal?.files?.length&&!result.isDemonstrativeFallback){
+      await materializeProposalInSandbox({
+        userId:req.user!.id,projectId,runId:execution?.runId||null,stepId:execution?.stepId||null,
+        proposal:result.proposal,signal:controller.signal,
+      });
+      validation=(result.proposal as any).sandboxValidation||null;
+    }
+
+    let savedPlanId:string|null=null;
+    if(result.plan){
+      savedPlanId='plan-'+Date.now();
+      db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'").run(now,projectId);
       db.prepare(`
         INSERT INTO plans (
-          id, task_id, project_id, objective, scope_in, scope_out,
-          architecture_summary, existing_files_json, new_files_json, files_to_delete_json,
-          files_affected_json, integrations_json, risks_json, acceptance_criteria_json,
-          requirements_json, task_graph_json, status, created_at, updated_at
-        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+          id,task_id,project_id,objective,scope_in,scope_out,
+          architecture_summary,existing_files_json,new_files_json,files_to_delete_json,
+          files_affected_json,integrations_json,risks_json,acceptance_criteria_json,
+          requirements_json,task_graph_json,status,created_at,updated_at
+        ) VALUES (?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',?,?)
       `).run(
-        savedPlanId,
-        projectId,
-        typeof result.plan.objective === 'string' ? result.plan.objective : JSON.stringify(result.plan.objective ?? ''),
-        typeof result.plan.scope_in === 'string' ? result.plan.scope_in : JSON.stringify(result.plan.scope_in ?? ''),
-        typeof result.plan.scope_out === 'string' ? result.plan.scope_out : JSON.stringify(result.plan.scope_out ?? ''),
-        result.plan.architecture_summary || '',
-        JSON.stringify(result.plan.existing_files_to_modify || []),
-        JSON.stringify(result.plan.new_files_to_create || []),
-        JSON.stringify(result.plan.files_to_delete || []),
-        JSON.stringify(result.plan.files_affected || []),
-        JSON.stringify(result.plan.integrations || []),
-        JSON.stringify(result.plan.risks || []),
-        JSON.stringify(result.plan.acceptance_criteria || []),
-        JSON.stringify(result.plan.requirements || []),
-        JSON.stringify(result.plan.task_graph || []),
-        now,
-        now
+        savedPlanId,projectId,
+        typeof result.plan.objective==='string'?result.plan.objective:JSON.stringify(result.plan.objective??''),
+        typeof result.plan.scope_in==='string'?result.plan.scope_in:JSON.stringify(result.plan.scope_in??''),
+        typeof result.plan.scope_out==='string'?result.plan.scope_out:JSON.stringify(result.plan.scope_out??''),
+        result.plan.architecture_summary||'',
+        JSON.stringify(result.plan.existing_files_to_modify||[]),JSON.stringify(result.plan.new_files_to_create||[]),
+        JSON.stringify(result.plan.files_to_delete||[]),JSON.stringify(result.plan.files_affected||[]),
+        JSON.stringify(result.plan.integrations||[]),JSON.stringify(result.plan.risks||[]),
+        JSON.stringify(result.plan.acceptance_criteria||[]),JSON.stringify(result.plan.requirements||[]),
+        JSON.stringify(result.plan.task_graph||[]),now,now
       );
       RequirementLedgerService.syncPlan({
-        projectId,
-        conversationId:conv.id,
-        runId:execution?.runId || null,
-        planId:savedPlanId,
-        requirements:result.plan.requirements || [],
+        projectId,conversationId:conv.id,runId:execution?.runId||null,planId:savedPlanId,requirements:result.plan.requirements||[],
       });
     }
 
-    // Save agent message
-    const agentMsgId = 'msg-agent-' + Date.now();
-    const metadata = {
-      mode,
-      appliedSkills,
-      isDemonstrativeFallback: result.isDemonstrativeFallback,
-      providerUsed: result.providerUsed,
-      modelUsed: result.modelUsed,
-      planId: savedPlanId,
-      checkpointId: checkpointCreatedId,
-      filesAffected: result.build?.files?.map((f) => f.path) || result.plan?.files_affected || [],
-      decisionType: result.decisionType,
-      proposal: result.proposal,
-      hasErrors: result.hasErrors,
-      invalidResponse: result.invalidResponse,
-      errorMessage: result.errorMessage || result.errorReason,
-      runId: execution?.runId,
-      executionType: agentEngineEnabled ? 'agent_engine' : 'direct_llm',
-      agentKey: agentEngineEnabled ? ((result as any).agentKey || 'PROGRAM') : undefined,
-      profileKey: (result as any).profileKey,
-      workflow: (result as any).workflow,
-      validation,
-      buildDiagnostics: result.diagnostics,
+    let replyText=String(result.replyText||'').trim();
+    if(result.proposal?.files?.length&&resolvedMode==='build'){
+      applyResult=await SandboxProposalApplyService.apply({
+        userId:req.user!.id,projectId,proposal:result.proposal,runId:execution?.runId||null,planId:savedPlanId,
+        summary:result.proposal.summary||String(content).slice(0,100),originalRequest:String(content),
+        shipRequested:Boolean((result as any).workflow?.shipRequested),signal:controller.signal,
+      });
+      if(!applyResult.success){
+        throw Object.assign(new Error(applyResult.error||'A implementação não passou pela revisão final.'),{code:'AUTO_APPLY_FAILED',applyResult});
+      }
+      result.proposal.status='applied';
+      checkpointCreatedId=applyResult.checkpointId||null;
+      validation=applyResult.validation||validation;
+      browserQuality=applyResult.browserQuality||null;
+      browserRepair=applyResult.browserRepair||null;
+      sentinelReview=applyResult.sentinelReview||null;
+      const changedCount=Array.isArray(applyResult.changedFiles)?applyResult.changedFiles.length:result.proposal.files.length;
+      const summary=String(result.proposal.summary||result.build?.summary||'A implementação solicitada foi concluída').replace(/[.\s]+$/,'');
+      replyText=`Pronto. ${summary}. A implementação foi construída, revisada e aplicada ao preview${changedCount? ` em ${changedCount} arquivo(s)`:''}.`;
+      if(applyResult.needsVerification)replyText+=' As verificações compatíveis foram executadas; existe uma etapa técnica que não pôde ser verificada automaticamente.';
+    }
+
+    const messageNow=new Date().toISOString();
+    const agentMsgId='msg-agent-'+Date.now();
+    const metadata:any={
+      mode:selectedMode,resolvedMode,appliedSkills,isDemonstrativeFallback:result.isDemonstrativeFallback,
+      providerUsed:result.providerUsed,modelUsed:result.modelUsed,planId:savedPlanId,checkpointId:checkpointCreatedId,
+      filesAffected:applyResult?.changedFiles||result.build?.files?.map((item:any)=>item.path)||result.plan?.files_affected||[],
+      decisionType:result.decisionType,proposal:result.proposal,hasErrors:false,invalidResponse:false,
+      runId:execution?.runId,executionType:agentEngineEnabled?'agent_engine':'direct_llm',
+      agentKey:agentEngineEnabled?((result as any).agentKey||'PROGRAM'):undefined,profileKey:(result as any).profileKey,
+      workflow:execution?{...((result as any).workflow||{}),runId:execution.runId,status:applyResult?(applyResult.needsVerification?'needs_verification':'completed'):((result as any).workflow?.status||'completed'),trace:RunService.trace(execution.runId)}:(result as any).workflow,
+      validation,browserQuality,browserRepair,sentinelReview,buildDiagnostics:result.diagnostics,
+      technicalReply:result.replyText,
+      autoApplied:Boolean(applyResult),
+      originalRequest:String(content),
     };
 
     db.prepare(`
-      INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
-      VALUES (?, ?, 'agent', ?, ?, ?)
-    `).run(agentMsgId, conv.id, result.replyText, JSON.stringify(metadata), now);
+      INSERT INTO messages (id,conversation_id,sender,content,metadata_json,created_at)
+      VALUES (?,?,'agent',?,?,?)
+    `).run(agentMsgId,conv.id,replyText,JSON.stringify(metadata),messageNow);
+    agentMessagePersisted=true;
 
-    if (execution) {
-      if (result.proposal?.status === 'pending' && !result.hasErrors) RunService.waitForApproval(execution.runId);
-      else RunService.finish(execution.runId,execution.stepId,result.hasErrors?'failed':'completed');
+    if(execution&&!applyResult){
+      if(result.proposal?.status==='pending'&&resolvedMode!=='build')RunService.waitForApproval(execution.runId);
+      else RunService.finish(execution.runId,execution.stepId,'completed');
     }
-    res.json({
-      success: !result.hasErrors && !result.invalidResponse,
-      agentMessage: {
-        id: agentMsgId,
-        sender: 'agent',
-        content: result.replyText,
-        metadata,
-        created_at: now,
-      },
-      plan: result.plan,
-      build: result.build,
-      proposal: result.proposal,
-      checkpointId: checkpointCreatedId,
-      invalidResponse: result.invalidResponse,
-    });
-  } catch (err: any) {
-    if(execution)RunService.finish(execution.runId,execution.stepId,controller.signal.aborted?'aborted':'failed');
-    if (!res.destroyed) res.status(500).json({ error: err.message });
-  } finally {
-    activeProjects.delete(req.params.projectId);
-    activeProjectControllers.delete(req.params.projectId);
+
+    if(!res.headersSent&&!res.destroyed){
+      res.json({
+        success:true,
+        agentMessage:{id:agentMsgId,sender:'agent',content:replyText,metadata,created_at:messageNow},
+        plan:result.plan,build:result.build,proposal:result.proposal,checkpointId:checkpointCreatedId,
+      });
+    }
+  }catch(err:any){
+    if(execution){
+      try{RunService.finish(execution.runId,execution.stepId,controller.signal.aborted?'aborted':'failed');}catch{}
+    }
+    const detail=String(err?.message||err||'Falha ao concluir o pedido.').trim();
+    if(acceptedEarly&&conv&&!agentMessagePersisted){
+      const failedAt=new Date().toISOString();
+      const msgId='msg-agent-'+Date.now();
+      const content=controller.signal.aborted
+        ? 'A execução foi interrompida. O progresso concluído foi preservado.'
+        : `Não consegui concluir esta implementação com segurança. ${detail}`;
+      const metadata={
+        mode:req.body?.mode||'auto',hasErrors:true,errorMessage:detail,runId:execution?.runId,
+        workflow:execution?{runId:execution.runId,status:controller.signal.aborted?'aborted':'failed',trace:RunService.trace(execution.runId)}:undefined,
+        validation:err?.applyResult?.validation||null,browserQuality:err?.applyResult?.browserQuality||null,
+        sentinelReview:err?.applyResult?.sentinelReview||null,
+      };
+      db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)")
+        .run(msgId,conv.id,content,JSON.stringify(metadata),failedAt);
+    }else if(!res.headersSent&&!res.destroyed){
+      res.status(controller.signal.aborted?499:500).json({error:controller.signal.aborted?'Execução cancelada.':detail});
+    }
+  }finally{
+    activeProjects.delete(projectId);
+    activeProjectControllers.delete(projectId);
   }
 });
 
@@ -1540,206 +1501,169 @@ router.post('/conversations/:projectId/abort', requireAuth, requireProjectOwner,
 });
 
 router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res: Response) => {
-  const run = db.prepare('SELECT * FROM agent_runs WHERE id=? AND user_id=?').get(req.params.runId, req.user!.id) as any;
-  if (!run) return res.status(404).json({ error: 'Execução não encontrada.' });
-  if (!['failed','aborted'].includes(run.status)) {
-    return res.status(409).json({ error: `Esta execução não pode ser continuada no estado atual (${run.status}).` });
-  }
-  if (!['build','auto'].includes(run.mode)) {
-    return res.status(409).json({ error: 'Continuação por etapa está disponível apenas para fluxos de construção.' });
-  }
-  if (activeProjects.has(run.project_id)) {
-    return res.status(409).json({ error: 'Já há uma execução ativa neste projeto.' });
-  }
+  const run=db.prepare('SELECT * FROM agent_runs WHERE id=? AND user_id=?').get(req.params.runId,req.user!.id) as any;
+  if(!run)return res.status(404).json({error:'Execução não encontrada.'});
+  if(!['failed','aborted'].includes(run.status))return res.status(409).json({error:`Esta execução não pode ser continuada no estado atual (${run.status}).`});
+  if(!['build','auto'].includes(run.mode))return res.status(409).json({error:'Continuação por etapa está disponível apenas para fluxos de construção.'});
+  if(activeProjects.has(run.project_id))return res.status(409).json({error:'Já há uma execução ativa neste projeto.'});
 
-  const trace = RunService.trace(run.id) as any[];
-  const scout = [...trace].reverse().find(step => step.agent_key === 'SCOUT' && step.status === 'completed');
-  if (!scout?.context?.objective) {
-    return res.status(409).json({ error: 'Esta execução não possui contexto persistido suficiente para continuar sem recomeçar.' });
-  }
-  const studio = [...trace].reverse().find(step => step.agent_key === 'STUDIO' && step.status === 'completed');
-  const objective = String(scout.context.objective || '').trim();
-  const scoutBrief = String(scout.context.brief || '').trim();
-  const studioGuidance = String(studio?.context?.guidance || '').trim();
+  const trace=RunService.trace(run.id) as any[];
+  const scout=[...trace].reverse().find(step=>step.agent_key==='SCOUT'&&step.status==='completed');
+  if(!scout?.context?.objective)return res.status(409).json({error:'Esta execução não possui contexto persistido suficiente para continuar sem recomeçar.'});
+  const studio=[...trace].reverse().find(step=>step.agent_key==='STUDIO'&&step.status==='completed');
+  const objective=String(scout.context.objective||'').trim();
+  const scoutBrief=String(scout.context.brief||'').trim();
+  const studioGuidance=String(studio?.context?.guidance||'').trim();
 
   activeProjects.add(run.project_id);
-  const controller = new AbortController();
-  activeProjectControllers.set(run.project_id, controller);
+  const controller=new AbortController();
+  activeProjectControllers.set(run.project_id,controller);
   RunService.resume(run.id);
+  let agentMessagePersisted=false;
+  res.status(202).json({success:true,accepted:true,runId:run.id});
 
-  try {
+  try{
     const interruptedTools=ToolExecutionJournal.recoverable(run.id);
     let recoverySandboxId:string|null=null;
     for(const execution of [...interruptedTools].reverse()){
       if(execution.sandboxId){
-        try{ SandboxManager.assertAccess(execution.sandboxId,req.user!.id,run.project_id); recoverySandboxId=execution.sandboxId; break; }catch{}
+        try{SandboxManager.assertAccess(execution.sandboxId,req.user!.id,run.project_id);recoverySandboxId=execution.sandboxId;break;}catch{}
       }
     }
-    const existingFiles = recoverySandboxId ? SandboxManager.getAllFilesContent(recoverySandboxId,req.user!.id,run.project_id) : WorkspaceManager.getAllFilesContent(run.project_id);
-    const continuedRequirementIds = workflowRequirementIds(run.project_id, run.id, null);
-    const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id=? ORDER BY created_at DESC, rowid DESC LIMIT 20')
-      .all(run.conversation_id).reverse() as any[];
-    const forge = RunService.createStep(
-      run.id,
-      'FORGE',
-      'Continuar proposta de código a partir do progresso salvo',
-      undefined,
-      'local',
-      RunService.context('local', {
-        objective,
-        acceptanceCriteria: ['Continuar sem repetir etapas já concluídas', 'Gerar alteração concreta e revisável'],
-        snippets: [{source:'ContextEngineV2',fileCount:Object.keys(existingFiles).length,recoverySandboxId}],
-        previousAttempt: 'SCOUT/STUDIO preservados; retomada iniciada no FORGE.',
-        constraints: ['Não refazer SCOUT/STUDIO concluídos', 'Não aplicar definitivamente antes da aprovação'],
+    const existingFiles=recoverySandboxId
+      ? SandboxManager.getAllFilesContent(recoverySandboxId,req.user!.id,run.project_id)
+      : WorkspaceManager.getAllFilesContent(run.project_id);
+    const continuedRequirementIds = workflowRequirementIds(run.project_id,run.id,null);
+    const history=db.prepare('SELECT sender,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20').all(run.conversation_id).reverse() as any[];
+    const forge=RunService.createStep(
+      run.id,'FORGE','Continuar implementação a partir do progresso salvo',undefined,'local',
+      RunService.context('local',{
+        objective,acceptanceCriteria:['Continuar sem repetir etapas já concluídas','Entregar alteração funcional e revisada'],
+        snippets:[{source:'ContextEngineV2',fileCount:Object.keys(existingFiles).length,recoverySandboxId}],
+        previousAttempt:'SCOUT/STUDIO preservados; retomada iniciada no FORGE.',
+        constraints:['Não refazer SCOUT/STUDIO concluídos','Validar e revisar antes do merge final'],
       })
     );
-
-    const prompt = [
+    const prompt=[
       objective,
-      scoutBrief ? 'BRIEF SALVO DO SCOUT:\n' + scoutBrief : '',
-      studioGuidance ? 'CRITÉRIOS SALVOS DO STUDIO:\n' + studioGuidance : '',
-      'CONTINUAÇÃO: retome a partir do FORGE. Não repita as etapas já concluídas.',
+      scoutBrief?'BRIEF SALVO DO SCOUT:\n'+scoutBrief:'',
+      studioGuidance?'CRITÉRIOS SALVOS DO STUDIO:\n'+studioGuidance:'',
+      'CONTINUAÇÃO: retome a partir do FORGE. Não repita etapas concluídas. Entregue a implementação para validação e revisão automática.',
     ].filter(Boolean).join('\n\n');
 
-    let result = await AgentEngine.execute({
-      prompt,
-      mode: 'build',
-      projectId: run.project_id,
-      existingFiles,
-      appliedSkills: [],
-      conversationHistory: history,
-      userId: req.user!.id,
-      runId: run.id,
-      stepId: forge,
-      signal: controller.signal,
-      requirementIds: continuedRequirementIds,
-      toolSandboxId: recoverySandboxId || undefined,
-      skipContextSync:Boolean(recoverySandboxId),
-    }, { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true });
+    let result=await AgentEngine.execute({
+      prompt,mode:'build',projectId:run.project_id,existingFiles,appliedSkills:[],conversationHistory:history,
+      userId:req.user!.id,runId:run.id,stepId:forge,signal:controller.signal,requirementIds:continuedRequirementIds,
+      toolSandboxId:recoverySandboxId||undefined,skipContextSync:Boolean(recoverySandboxId),
+    },{profile:'BASE_FREE',forcedAgentKey:'FORGE',allowExpertEscalation:true});
 
-    RunService.finishStep(forge, result.hasErrors ? 'failed' : 'completed', {
-      continuedFromRunId: run.id,
-      providerUsed: result.providerUsed,
-      modelUsed: result.modelUsed,
-      profileKey: result.profileKey,
-      files: result.build?.files?.map((file:any)=>file.path) || result.proposal?.files?.map((file:any)=>file.path) || [],
+    RunService.finishStep(forge,result.hasErrors?'failed':'completed',{
+      continuedFromRunId:run.id,providerUsed:result.providerUsed,modelUsed:result.modelUsed,profileKey:result.profileKey,
+      files:result.build?.files?.map((file:any)=>file.path)||result.proposal?.files?.map((file:any)=>file.path)||[],
     });
 
-    if (result.build?.files?.length && !result.proposal && !result.isDemonstrativeFallback && !result.hasErrors) {
-      result.proposal = {
-        id: `proposal-${crypto.randomUUID()}`,
-        summary: result.build.summary || 'Continuação da construção',
-        requiresConfirmation: true,
-        files: result.build.files,
-        status: 'pending',
-      };
+    if(result.build?.files?.length&&!result.proposal&&!result.isDemonstrativeFallback&&!result.hasErrors){
+      result.proposal={id:`proposal-${crypto.randomUUID()}`,summary:result.build.summary||'Continuação da construção',requiresConfirmation:false,files:result.build.files,status:'pending'};
     }
-
-    if(result.proposal?.files?.length&&!result.hasErrors){
+    if(result.hasErrors||result.invalidResponse||!result.proposal?.files?.length){
+      throw new Error(result.errorMessage||result.errorReason||'A continuação não produziu uma implementação válida.');
+    }
+    if(!result.proposal.sandboxId){
       await materializeProposalInSandbox({userId:req.user!.id,projectId:run.project_id,runId:run.id,stepId:forge,proposal:result.proposal,signal:controller.signal});
     }
 
-    if (result.hasErrors || result.invalidResponse || !result.proposal?.files?.length) {
-      const sentinel = RunService.createStep(run.id,'SENTINEL','Diagnosticar falha após continuação',undefined,'micro',
-        RunService.context('micro',{objective:'Diagnosticar a falha da continuação',errors:[result.errorMessage || result.errorReason || 'Resposta inválida']}));
-      RunService.finishStep(sentinel,'completed');
-      RunService.finish(run.id, forge, 'failed');
-      return res.status(422).json({ success:false, error: result.errorMessage || result.errorReason || 'A continuação não produziu uma proposta válida.', runId:run.id, trace:RunService.trace(run.id) });
-    }
-
-    const sentinel = RunService.createStep(run.id,'SENTINEL','Aguardar aplicação para executar quality gates',undefined,'micro',{
-      status:'pending_user_apply', validator:'ValidatorEngine', continued:true,
+    const applied=await SandboxProposalApplyService.apply({
+      userId:req.user!.id,projectId:run.project_id,proposal:result.proposal,runId:run.id,
+      summary:result.proposal.summary||'Continuação da construção',originalRequest:objective,signal:controller.signal,
     });
-    RunService.finishStep(sentinel,'completed');
-    RunService.waitForApproval(run.id);
+    if(!applied.success)throw Object.assign(new Error(applied.error||'A continuação não passou pela revisão final.'),{applyResult:applied});
+    result.proposal.status='applied';
 
-    const now = new Date().toISOString();
-    const msgId = `msg-agent-${Date.now()}`;
-    const metadata = {
-      mode:'build',
-      decisionType:result.decisionType,
-      providerUsed:result.providerUsed,
-      modelUsed:result.modelUsed,
-      proposal:result.proposal,
-      filesAffected:result.proposal.files.map((file:any)=>file.path),
-      hasErrors:false,
-      runId:run.id,
-      executionType:'agent_engine_continuation',
-      agentKey:'FORGE',
-      profileKey:result.profileKey,
-      workflow:{runId:run.id,status:'waiting_approval',steps:RunService.trace(run.id).map((s:any)=>s.id),trace:RunService.trace(run.id),continued:true},
+    const changedCount=Array.isArray(applied.changedFiles)?applied.changedFiles.length:result.proposal.files.length;
+    const summary=String(result.proposal.summary||'A continuação foi concluída').replace(/[.\s]+$/,'');
+    const replyText=`Pronto. ${summary}. Retomei do ponto salvo, revisei a implementação e atualizei o preview${changedCount?` em ${changedCount} arquivo(s)`:''}.`;
+    const now=new Date().toISOString();
+    const msgId=`msg-agent-${Date.now()}`;
+    const metadata:any={
+      mode:'build',decisionType:result.decisionType,providerUsed:result.providerUsed,modelUsed:result.modelUsed,
+      proposal:result.proposal,filesAffected:applied.changedFiles||result.proposal.files.map((file:any)=>file.path),hasErrors:false,
+      runId:run.id,executionType:'agent_engine_continuation',agentKey:'FORGE',profileKey:result.profileKey,
+      workflow:{runId:run.id,status:applied.needsVerification?'needs_verification':'completed',steps:RunService.trace(run.id).map((step:any)=>step.id),trace:RunService.trace(run.id),continued:true},
+      validation:applied.validation,browserQuality:applied.browserQuality,browserRepair:applied.browserRepair,sentinelReview:applied.sentinelReview,
+      checkpointId:applied.checkpointId,technicalReply:result.replyText,autoApplied:true,
     };
     db.prepare(`INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)`)
-      .run(msgId, run.conversation_id, result.replyText || 'Continuação concluída. Revise a proposta antes de aplicar.', JSON.stringify(metadata), now);
-
-    return res.json({success:true,runId:run.id,proposal:result.proposal,agentMessage:{id:msgId,conversation_id:run.conversation_id,sender:'agent',content:result.replyText || 'Continuação concluída.',metadata,created_at:now},trace:RunService.trace(run.id)});
-  } catch (err:any) {
-    const lastStep = (RunService.trace(run.id) as any[]).slice(-1)[0];
-    if (lastStep?.status === 'running') RunService.finishStep(lastStep.id, controller.signal.aborted ? 'aborted' : 'failed', {error:String(err?.message||err)});
-    RunService.finish(run.id, lastStep?.id || '', controller.signal.aborted ? 'aborted' : 'failed');
-    return res.status(controller.signal.aborted ? 499 : 500).json({error:controller.signal.aborted?'Continuação cancelada.':String(err?.message||err||'Falha ao continuar a execução.'),runId:run.id,trace:RunService.trace(run.id)});
-  } finally {
+      .run(msgId,run.conversation_id,replyText,JSON.stringify(metadata),now);
+    agentMessagePersisted=true;
+  }catch(err:any){
+    const lastStep=(RunService.trace(run.id) as any[]).slice(-1)[0];
+    if(lastStep?.status==='running')RunService.finishStep(lastStep.id,controller.signal.aborted?'aborted':'failed',{error:String(err?.message||err)});
+    try{RunService.finish(run.id,lastStep?.id||'',controller.signal.aborted?'aborted':'failed');}catch{}
+    if(!agentMessagePersisted){
+      const now=new Date().toISOString();
+      const msgId=`msg-agent-${Date.now()}`;
+      const detail=String(err?.message||err||'Falha ao continuar a execução.');
+      const content=controller.signal.aborted?'A continuação foi interrompida. O progresso concluído continua salvo.':`Não consegui concluir a retomada com segurança. ${detail}`;
+      const metadata={mode:'build',hasErrors:true,errorMessage:detail,runId:run.id,
+        workflow:{runId:run.id,status:controller.signal.aborted?'aborted':'failed',trace:RunService.trace(run.id)},
+        validation:err?.applyResult?.validation||null,browserQuality:err?.applyResult?.browserQuality||null,sentinelReview:err?.applyResult?.sentinelReview||null};
+      db.prepare(`INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)`)
+        .run(msgId,run.conversation_id,content,JSON.stringify(metadata),now);
+    }
+  }finally{
     activeProjects.delete(run.project_id);
     activeProjectControllers.delete(run.project_id);
   }
 });
 
 router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
-  const projectId = req.params.projectId;
-  let proposalMessage: any = null;
-  let metadata: any = null;
+  const projectId=req.params.projectId;
+  let proposalMessage:any=null;
+  let metadata:any=null;
+  try{
+    const {proposalId,summary='Alterações aprovadas pelo usuário'}=req.body;
+    if(!proposalId)return res.status(400).json({error:'Identificador da proposta é obrigatório.'});
 
-  try {
-    const { proposalId, summary = 'Alterações aprovadas pelo usuário' } = req.body;
-    if (!proposalId) return res.status(400).json({ error: 'Identificador da proposta é obrigatório.' });
-
-    const conversation = db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
-    const rows = conversation
+    const conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+    const rows=conversation
       ? db.prepare("SELECT id,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[]
       : [];
+    proposalMessage=rows.find((row:any)=>{try{return JSON.parse(row.metadata_json||'{}')?.proposal?.id===proposalId;}catch{return false;}});
+    if(!proposalMessage)return res.status(404).json({error:'Proposta não encontrada nesta conversa.'});
 
-    proposalMessage = rows.find((row: any) => {
-      try { return JSON.parse(row.metadata_json || '{}')?.proposal?.id === proposalId; }
-      catch { return false; }
-    });
-    if (!proposalMessage) return res.status(404).json({ error: 'Proposta não encontrada nesta conversa.' });
+    metadata=JSON.parse(proposalMessage.metadata_json||'{}');
+    if(metadata.proposal?.status!=='pending'){
+      if(metadata.proposal?.status==='applied')return res.json({success:true,alreadyApplied:true,checkpointId:metadata.checkpointId||null});
+      return res.status(409).json({error:`Esta proposta não está mais disponível (${metadata.proposal?.status||'estado inválido'}).`});
+    }
+    const files=metadata.proposal.files;
+    if(!Array.isArray(files)||files.length===0)return res.status(409).json({error:'A proposta armazenada está vazia ou corrompida.'});
 
-    metadata = JSON.parse(proposalMessage.metadata_json || '{}');
-    if (metadata.proposal?.status !== 'pending') {
-      return res.status(409).json({ error: `Esta proposta não está mais disponível (${metadata.proposal?.status || 'estado inválido'}).` });
+    for(const file of files){
+      WorkspaceManager.resolveSafePath(projectId,file.path);
+      if(!['create','update','delete','modify'].includes(file.action))return res.status(400).json({error:'A proposta contém uma ação de arquivo inválida.'});
+      if(file.action!=='delete'&&typeof file.content!=='string')return res.status(400).json({error:'A proposta contém arquivo sem conteúdo válido.'});
     }
 
-    const files = metadata.proposal.files;
-    if (!Array.isArray(files) || files.length === 0) {
-      return res.status(409).json({ error: 'A proposta armazenada está vazia ou corrompida.' });
+    if(conversation){
+      db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'user',?,?,?)")
+        .run('msg-user-'+Date.now(),conversation.id,'Pode aplicar essas alterações.',JSON.stringify({mode:'build',action:'apply_proposal',proposalId}),new Date().toISOString());
     }
 
-    for (const file of files) {
-      WorkspaceManager.resolveSafePath(projectId, file.path);
-      if (!['create', 'update', 'delete', 'modify'].includes(file.action)) {
-        return res.status(400).json({ error: 'A proposta contém uma ação de arquivo inválida.' });
-      }
-      if (file.action !== 'delete' && typeof file.content !== 'string') {
-        return res.status(400).json({ error: 'A proposta contém arquivo sem conteúdo válido.' });
-      }
-    }
-
-    const sandboxRunId = metadata.workflow?.runId || metadata.runId || null;
-    const sandboxApply = await SandboxProposalApplyService.apply({
-      userId:req.user!.id,
-      projectId,
-      proposal:metadata.proposal,
-      runId:sandboxRunId,
-      planId:metadata.planId || null,
-      summary,
-      originalRequest:metadata.originalRequest || summary,
+    const sandboxRunId=metadata.workflow?.runId||metadata.runId||null;
+    const sandboxApply=await SandboxProposalApplyService.apply({
+      userId:req.user!.id,projectId,proposal:metadata.proposal,runId:sandboxRunId,
+      planId:metadata.planId||null,summary,originalRequest:metadata.originalRequest||summary,
       shipRequested:Boolean(metadata.workflow?.shipRequested),
     });
-    metadata.proposal.sandboxId=sandboxApply.sandboxId || metadata.proposal.sandboxId;
-    metadata.validation=sandboxApply.validation || null;
-    metadata.browserQuality=sandboxApply.browserQuality || null;
-    metadata.browserRepair=sandboxApply.browserRepair || null;
+
+    metadata.proposal.sandboxId=sandboxApply.sandboxId||metadata.proposal.sandboxId;
+    metadata.validation=sandboxApply.validation||null;
+    metadata.browserQuality=sandboxApply.browserQuality||null;
+    metadata.browserRepair=sandboxApply.browserRepair||null;
+    metadata.sentinelReview=sandboxApply.sentinelReview||null;
     metadata.hasErrors=!sandboxApply.success;
+
     if(!sandboxApply.success){
       metadata.proposal.status='failed_validation';
       metadata.errorMessage=sandboxApply.error;
@@ -1748,15 +1672,13 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
         metadata.workflow.trace=RunService.trace(sandboxRunId);
       }
       db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
-      return res.status(sandboxApply.statusCode || 422).json({
-        error:sandboxApply.error,
-        validation:sandboxApply.validation,
-        sandboxId:sandboxApply.sandboxId,
-        repair:(sandboxApply as any).repair,
-        browserQuality:sandboxApply.browserQuality,
-        browserRepair:sandboxApply.browserRepair,
+      return res.status(sandboxApply.statusCode||422).json({
+        error:sandboxApply.error,validation:sandboxApply.validation,sandboxId:sandboxApply.sandboxId,
+        repair:(sandboxApply as any).repair,browserQuality:sandboxApply.browserQuality,
+        browserRepair:sandboxApply.browserRepair,sentinelReview:sandboxApply.sentinelReview,
       });
     }
+
     metadata.proposal.status='applied';
     metadata.checkpointId=sandboxApply.checkpointId;
     metadata.sandbox={id:sandboxApply.sandboxId,baseRevision:metadata.proposal.baseRevision,changedFiles:sandboxApply.changedFiles};
@@ -1766,35 +1688,39 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
       metadata.workflow.status=sandboxApply.needsVerification?'needs_verification':'completed';
       metadata.workflow.trace=RunService.trace(sandboxRunId);
     }
-    db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'")
-      .run(new Date().toISOString(),projectId);
+    db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'").run(new Date().toISOString(),projectId);
     db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
-    return res.json({
-      success:true,
-      checkpointId:sandboxApply.checkpointId,
-      validation:sandboxApply.validation,
-      sandboxId:sandboxApply.sandboxId,
-      changedFiles:sandboxApply.changedFiles,
-      needsVerification:sandboxApply.needsVerification,
-      repair:(sandboxApply as any).repair || undefined,
-      browserQuality:sandboxApply.browserQuality,
-      browserRepair:sandboxApply.browserRepair,
-      message:sandboxApply.needsVerification
-        ? 'Alterações validadas em sandbox e aplicadas por merge atômico, mas ainda existem gates não executáveis.'
-        : 'Alterações validadas em sandbox e aplicadas por merge atômico com sucesso.',
-    });
 
-  } catch (err: any) {
-    if (proposalMessage && metadata?.proposal) {
-      try {
-        metadata.proposal.status = 'pending';
-        metadata.hasErrors = true;
-        metadata.errorMessage = 'A aplicação falhou de forma segura; o workspace oficial foi restaurado ou preservado no estado anterior. Você pode tentar novamente.';
-        db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
-      } catch {}
+    if(conversation){
+      const count=Array.isArray(sandboxApply.changedFiles)?sandboxApply.changedFiles.length:files.length;
+      const finalText=`Pronto. As alterações foram revisadas e aplicadas ao preview${count?` em ${count} arquivo(s)`:''}.`;
+      db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)")
+        .run('msg-agent-'+Date.now(),conversation.id,finalText,JSON.stringify({
+          mode:'build',decisionType:'change',filesAffected:sandboxApply.changedFiles||[],checkpointId:sandboxApply.checkpointId,
+          validation:sandboxApply.validation,browserQuality:sandboxApply.browserQuality,browserRepair:sandboxApply.browserRepair,
+          sentinelReview:sandboxApply.sentinelReview,runId:sandboxRunId,
+        }),new Date().toISOString());
     }
 
-    res.status(500).json({ error: 'A aplicação falhou de forma segura; o merge não foi concluído.' });
+    return res.json({
+      success:true,checkpointId:sandboxApply.checkpointId,validation:sandboxApply.validation,
+      sandboxId:sandboxApply.sandboxId,changedFiles:sandboxApply.changedFiles,needsVerification:sandboxApply.needsVerification,
+      repair:(sandboxApply as any).repair||undefined,browserQuality:sandboxApply.browserQuality,
+      browserRepair:sandboxApply.browserRepair,sentinelReview:sandboxApply.sentinelReview,
+      message:sandboxApply.needsVerification
+        ? 'Alterações aplicadas com segurança; uma verificação opcional não estava disponível neste ambiente.'
+        : 'Alterações revisadas e aplicadas com sucesso.',
+    });
+  }catch(err:any){
+    if(proposalMessage&&metadata?.proposal){
+      try{
+        metadata.proposal.status='pending';
+        metadata.hasErrors=true;
+        metadata.errorMessage='A aplicação falhou de forma segura; o workspace oficial foi restaurado ou preservado no estado anterior. Você pode tentar novamente.';
+        db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
+      }catch{}
+    }
+    res.status(500).json({error:'A aplicação falhou de forma segura; o merge não foi concluído.'});
   }
 });
 
@@ -2110,10 +2036,10 @@ router.post('/skills', requireAuth, (req: Request, res: Response) => {
   try {
     const { name, slug, description, system_instructions, scope = 'project', is_active = true } = req.body;
     if (!name || !name.trim()) {
-      return res.status(400).json({ error: 'O nome da skill Ã© obrigatÃ³rio.' });
+      return res.status(400).json({ error: 'O nome da skill é obrigatório.' });
     }
     if (!system_instructions || !system_instructions.trim()) {
-      return res.status(400).json({ error: 'As instruÃ§Ãµes do sistema para o agente sÃ£o obrigatÃ³rias.' });
+      return res.status(400).json({ error: 'As instruções do sistema para o agente são obrigatórias.' });
     }
 
     const cleanSlug = (slug || name)
@@ -2150,9 +2076,9 @@ router.post('/skills', requireAuth, (req: Request, res: Response) => {
 
 router.put('/skills/:id', requireAuth, (req,res) => {
   const skill=db.prepare('SELECT id FROM skills WHERE id=? AND user_id=?').get(req.params.id,req.user!.id);
-  if(!skill)return res.status(404).json({error:'Skill nÃ£o encontrada.'});
+  if(!skill)return res.status(404).json({error:'Skill não encontrada.'});
   const {name,description,system_instructions,scope}=req.body;
-  if(typeof name!=='string'||!name.trim()||typeof system_instructions!=='string'||!system_instructions.trim()||!['message','project','workspace'].includes(scope))return res.status(400).json({error:'Nome, instruÃ§Ãµes e escopo vÃ¡lidos sÃ£o obrigatÃ³rios.'});
+  if(typeof name!=='string'||!name.trim()||typeof system_instructions!=='string'||!system_instructions.trim()||!['message','project','workspace'].includes(scope))return res.status(400).json({error:'Nome, instruções e escopo válidos são obrigatórios.'});
   db.prepare('UPDATE skills SET name=?,description=?,system_instructions=?,scope=? WHERE id=? AND user_id=?').run(name.trim(),String(description||''),system_instructions.trim(),scope,req.params.id,req.user!.id);
   res.json({success:true});
 });
@@ -2160,13 +2086,13 @@ router.put('/skills/:id', requireAuth, (req,res) => {
 router.delete('/skills/:id', requireAuth, (req: Request, res: Response) => {
   try {
     const skill = db.prepare('SELECT * FROM skills WHERE id = ?').get(req.params.id) as any;
-    if (!skill) return res.status(404).json({ error: 'Skill nÃ£o encontrada.' });
+    if (!skill) return res.status(404).json({ error: 'Skill não encontrada.' });
     if (skill.user_id !== req.user!.id) {
-      return res.status(403).json({ error: 'Sem permissÃ£o para excluir esta skill.' });
+      return res.status(403).json({ error: 'Sem permissão para excluir esta skill.' });
     }
 
     db.prepare('DELETE FROM skills WHERE id = ?').run(req.params.id);
-    res.json({ success: true, message: 'Skill excluÃ­da com sucesso.' });
+    res.json({ success: true, message: 'Skill excluída com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2216,7 +2142,7 @@ router.get('/providers', requireAuth, (req: Request, res: Response) => {
 router.post('/providers/save-with-key', requireAuth, async (req: Request, res: Response) => {
   try {
     const { providerKey, baseUrl, modelId, apiKey } = req.body;
-    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatÃ³rio.' });
+    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatório.' });
 
     let hasKey = false;
     let masked = '';
@@ -2260,7 +2186,7 @@ router.post('/providers/save-with-key', requireAuth, async (req: Request, res: R
       success: true,
       providerKey,
       masked,
-      message: 'ConfiguraÃ§Ãµes de IA e chave de API salvas com sucesso!',
+      message: 'Configurações de IA e chave de API salvas com sucesso!',
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2270,7 +2196,7 @@ router.post('/providers/save-with-key', requireAuth, async (req: Request, res: R
 router.post('/providers/update', requireAuth, (req: Request, res: Response) => {
   try {
     const { providerKey, baseUrl, modelId } = req.body;
-    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatÃ³rio.' });
+    if (!providerKey) return res.status(400).json({ error: 'providerKey obrigatório.' });
 
     db.prepare('UPDATE providers SET base_url = COALESCE(?, base_url), model_id = COALESCE(?, model_id) WHERE provider_key = ? AND user_id = ?').run(
       baseUrl || null,
@@ -2278,7 +2204,7 @@ router.post('/providers/update', requireAuth, (req: Request, res: Response) => {
       providerKey, req.user!.id
     );
 
-    res.json({ success: true, message: 'ConfiguraÃ§Ã£o atualizada com sucesso.' });
+    res.json({ success: true, message: 'Configuração atualizada com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2298,7 +2224,7 @@ router.post('/desktop/check-updates', async (req: Request, res: Response) => {
 });
 
 router.post('/desktop/command', requireAuth, (_req, res) => {
-  res.status(501).json({error:'Executor isolado nÃ£o configurado. Comandos no servidor compartilhado nÃ£o estÃ£o habilitados.'});
+  res.status(501).json({error:'Executor isolado não configurado. Comandos no servidor compartilhado não estão habilitados.'});
 });
 
 // ==========================================
@@ -2306,6 +2232,7 @@ router.post('/desktop/command', requireAuth, (_req, res) => {
 // ==========================================
 
 router.get('/projects/:projectId/preview/status', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  repairLegacyProjectText(req.params.projectId);
   const staticInfo = WorkspaceManager.getPreviewInfo(req.params.projectId);
   if (staticInfo.status === 'running') return res.json(staticInfo);
   try {
@@ -2390,13 +2317,13 @@ router.post('/projects/:id/deploy/cloudflare/direct', requireAuth, requireProjec
 
 router.post('/conversations/:projectId/reject-proposal', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const proposalId = String(req.body?.proposalId || '');
-  if (!proposalId) return res.status(400).json({ error: 'Identificador da proposta Ã© obrigatÃ³rio.' });
+  if (!proposalId) return res.status(400).json({ error: 'Identificador da proposta é obrigatório.' });
   const conversation = db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(req.params.projectId) as any;
   const rows = conversation ? db.prepare("SELECT id,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[] : [];
   const row = rows.find(item => { try { return JSON.parse(item.metadata_json || '{}')?.proposal?.id === proposalId; } catch { return false; } });
-  if (!row) return res.status(404).json({ error: 'Proposta nÃ£o encontrada.' });
+  if (!row) return res.status(404).json({ error: 'Proposta não encontrada.' });
   const metadata = JSON.parse(row.metadata_json || '{}');
-  if (metadata.proposal.status !== 'pending') return res.status(409).json({ error: 'Esta proposta jÃ¡ foi encerrada.' });
+  if (metadata.proposal.status !== 'pending') return res.status(409).json({ error: 'Esta proposta já foi encerrada.' });
   metadata.proposal.status = 'rejected';
   const workflowRunId = metadata.workflow?.runId || metadata.runId || null;
   if (workflowRunId) {
@@ -2465,8 +2392,8 @@ router.get('/projects/:projectId/browser-quality/:qualityRunId/screenshot/:viewp
   res.sendFile(file);
 });
 
-router.get('/projects/:projectId/proposals/:proposalId/preview/status',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).json({status:'error',message:'Proposta temporÃ¡ria nÃ£o encontrada.'});const entry=proposal.files.find((f:any)=>f.action!=='delete'&&/(^|\/)index\.html$/i.test(f.path))?.path||WorkspaceManager.getPreviewInfo(req.params.projectId).entryPath;if(!entry)return res.status(422).json({status:'error',message:'A proposta nÃ£o possui um arquivo HTML de entrada.'});res.json({status:'running',entryPath:entry,message:'Preview temporÃ¡rio da proposta.'});});
-router.get('/preview-proposal/:projectId/:proposalId/*',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).send('Proposta temporÃ¡ria nÃ£o encontrada.');const preview=WorkspaceManager.getPreviewInfo(req.params.projectId),requested=path.normalize(req.params[0]||proposal.files.find((f:any)=>/(^|\/)index\.html$/i.test(f.path))?.path||preview.entryPath||'index.html').replace(/^(\.\.[\/\\])+/, '').replace(/\\/g,'/');const proposed=proposal.files.find((f:any)=>f.path.replace(/\\/g,'/')===requested);if(proposed?.action==='delete')return res.status(404).end();res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Content-Security-Policy',"sandbox allow-scripts; default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; connect-src 'self' https: wss:; form-action 'none'");if(proposed){res.type(path.extname(requested)||'text/plain').send(proposed.content);return;}const fallback=WorkspaceManager.resolveSafePath(req.params.projectId,requested);if(!fs.existsSync(fallback)||fs.statSync(fallback).isDirectory())return res.status(404).end();res.sendFile(fallback);});
+router.get('/projects/:projectId/proposals/:proposalId/preview/status',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).json({status:'error',message:'Proposta temporária não encontrada.'});const entry=proposal.files.find((f:any)=>f.action!=='delete'&&/(^|\/)index\.html$/i.test(f.path))?.path||WorkspaceManager.getPreviewInfo(req.params.projectId).entryPath;if(!entry)return res.status(422).json({status:'error',message:'A proposta não possui um arquivo HTML de entrada.'});res.json({status:'running',entryPath:entry,message:'Preview temporário da proposta.'});});
+router.get('/preview-proposal/:projectId/:proposalId/*',requireAuth,requireProjectOwner,(req,res)=>{const proposal=findPendingProposal(req.params.projectId,req.params.proposalId);if(!proposal)return res.status(404).send('Proposta temporária não encontrada.');const preview=WorkspaceManager.getPreviewInfo(req.params.projectId),requested=path.normalize(req.params[0]||proposal.files.find((f:any)=>/(^|\/)index\.html$/i.test(f.path))?.path||preview.entryPath||'index.html').replace(/^(\.\.[\/\\])+/, '').replace(/\\/g,'/');const proposed=proposal.files.find((f:any)=>f.path.replace(/\\/g,'/')===requested);if(proposed?.action==='delete')return res.status(404).end();res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Content-Security-Policy',"sandbox allow-scripts; default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; connect-src 'self' https: wss:; form-action 'none'");if(proposed){res.type(path.extname(requested)||'text/plain').send(proposed.content);return;}const fallback=WorkspaceManager.resolveSafePath(req.params.projectId,requested);if(!fs.existsSync(fallback)||fs.statSync(fallback).isDirectory())return res.status(404).end();res.sendFile(fallback);});
 
 router.all('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const projectId = req.params.projectId;

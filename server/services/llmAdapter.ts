@@ -154,13 +154,19 @@ export class LLMAdapterService {
     const explicitReview = /\b(revisar|revise|auditar|auditoria|encontrar\s+(?:bugs|erros)|corrigir\s+bugs|analisar\s+(?:o\s+)?c[oó]digo)\b/i.test(text);
     if (explicitReview) return 'review';
 
-    const explicitPlan = /\b(planejar|planeje|planeja|fa[cç]a\s+(?:um\s+)?plano|crie\s+(?:um\s+)?plano|arquitetura|roadmap|especifica[cç][aã]o)\b/i.test(text);
-    if (explicitPlan) return 'plan';
+    // No Automático, planejamento é uma etapa interna. Só paramos em PLAN quando
+    // o usuário pede explicitamente apenas o plano/arquitetura ou proíbe implementação.
+    const explicitPlanOnly =
+      /\b(?:s[oó]|somente|apenas)\b[\s\S]{0,40}\b(?:plano|planejamento|arquitetura|roadmap|especifica[cç][aã]o)\b/i.test(text) ||
+      /\b(?:n[aã]o|nao)\s+(?:implemente|construa|crie|altere|edite|fa[cç]a)\b/i.test(text) ||
+      /\b(?:plano|planejamento|arquitetura|roadmap)\b[\s\S]{0,40}\bsem\s+implementar\b/i.test(text);
+    if (explicitPlanOnly) return 'plan';
 
-    const explicitBuild = /\b(construir|construa|implementar|implemente|criar\s+(?:o|a|um|uma)\s|fa[cç]a\s+(?:o|a|um|uma)\s|alterar|altere|corrigir|corrija)\b/i.test(text);
+    const explicitBuild = /\b(construir|construa|implementar|implemente|criar|crie|fa[cç]a|alterar|altere|corrigir|corrija|planejar|planeje|planeja)\b/i.test(text);
     if (explicitBuild) return 'build';
 
-    return selectedMode;
+    // O comportamento padrão do modo Automático é entregar o resultado, não uma proposta.
+    return 'build';
   }
 
   /**
@@ -851,10 +857,26 @@ export class LLMAdapterService {
 
     if (out.length === 0) {
       const isPlaceholder=(path:string)=>path==='index.html'&&/forge-placeholder:\s*preview-only/i.test(String(existingFiles[path]||''));
-      const core = existingPaths
-        .filter((path) => this.isSafeBuildTarget(path) && !isPlaceholder(path))
-        .sort((a, b) => this.buildTargetPriority(a) - this.buildTargetPriority(b));
-      for (const path of core) add(path);
+      const normalizedPrompt=String(prompt||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,' ');
+      const stop=new Set(['para','como','este','esta','isso','essa','esse','uma','com','sem','mais','menos','deixe','fazer','alterar','corrigir','criar','implementar','melhorar','adicionar','remover']);
+      const terms=[...new Set(normalizedPrompt.split(/[^a-z0-9_.-]+/).filter(term=>term.length>=4&&!stop.has(term)))];
+      const scored=existingPaths
+        .filter(path=>this.isSafeBuildTarget(path)&&!isPlaceholder(path))
+        .map(path=>{
+          const lower=path.toLowerCase();
+          const content=String(existingFiles[path]||'').slice(0,12000).toLowerCase();
+          let relevance=0;
+          for(const term of terms){
+            if(lower.includes(term))relevance+=12;
+            else if(content.includes(term))relevance+=2;
+          }
+          const structural=Math.max(0,8-this.buildTargetPriority(path));
+          return {path,relevance,structural};
+        });
+      const relevant=scored.filter(item=>item.relevance>0).sort((a,b)=>b.relevance-a.relevance||b.structural-a.structural);
+      const fallback=scored.filter(item=>item.path!=='package.json').sort((a,b)=>b.structural-a.structural);
+      const chosen=(relevant.length?relevant:fallback).slice(0,relevant.length?6:4);
+      for(const item of chosen)add(item.path);
     }
 
     if (out.length === 0) {
