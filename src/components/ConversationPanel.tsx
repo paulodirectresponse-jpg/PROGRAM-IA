@@ -299,17 +299,24 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                 {meta.hasErrors && meta.decisionType !== 'explanation' && (
                   <div className="mb-2 p-2.5 rounded bg-rose-950/60 border border-rose-800/70 text-[11px] text-rose-300 flex items-start gap-2">
                     <AlertTriangle size={14} className="shrink-0 mt-0.5 text-rose-400" />
-                    <div>
+                    <div className="min-w-0">
                       <div className="font-semibold text-rose-200">Não foi possível concluir a alteração</div>
                       <div className="text-rose-300/90 text-[10px] mt-0.5">
-                        {meta.errorMessage ||
-                          'A resposta não pôde ser validada com segurança. Nenhuma alteração foi aplicada.'}
+                        A revisão automática bloqueou esta versão para preservar o projeto atual.
                       </div>
+                      {meta.errorMessage && (
+                        <details className="mt-1.5 text-[10px] text-rose-300/70">
+                          <summary className="cursor-pointer select-none">Ver motivo técnico</summary>
+                          <div className="mt-1">{meta.errorMessage}</div>
+                        </details>
+                      )}
                     </div>
                   </div>
                 )}
 
-                {shouldRenderPlanCard ? <PlanResponseCard content={msg.content} /> : <ChatMarkdown content={msg.content} />}
+                {!(meta.hasErrors && meta.decisionType !== 'explanation') && (
+                  shouldRenderPlanCard ? <PlanResponseCard content={msg.content} /> : <ChatMarkdown content={msg.content} />
+                )}
 
                 {meta.validation?.status === 'failed' && (
                   <div className="mt-2 flex items-start gap-2 rounded-lg border border-rose-900/60 bg-rose-950/25 px-2.5 py-2 text-[10px] text-rose-300">
