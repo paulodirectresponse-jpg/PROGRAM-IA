@@ -997,6 +997,8 @@ export class LLMAdapterService {
           userId: options.userId,
           signal: options.signal,
           allowActiveFallback: false,
+          contextBrief: options.contextBrief,
+          contextPackId: options.contextPackId,
         });
 
         providerUsed = result.providerUsed || providerUsed;
