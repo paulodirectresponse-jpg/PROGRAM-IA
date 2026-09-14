@@ -523,3 +523,48 @@ test('phase2 atomic merge ignores unapproved extra sandbox files', async () => {
     assert.equal(WorkspaceManager.readFile(env.projectId,'unapproved.txt'),null);
   } finally { cleanup(env); }
 });
+
+
+test('phase2 uncertain interrupted side effect is never replayed silently', async () => {
+  const env=setupProject();
+  try {
+    WorkspaceManager.writeFile(env.projectId,'src/a.ts','export const a=1');
+    const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-uncertain',stepId:'step-uncertain'});
+    const definition=ToolRegistry.get('workspace.write_file')!;
+    const running=ToolExecutionJournal.start({
+      context:{userId:env.userId,projectId:env.projectId,runId:'run-uncertain',stepId:'step-uncertain',sandboxId:sandbox.id},
+      definition,
+      requestInput:{path:'src/a.ts',content:'export const a=2'},
+      idempotencyKey:'uncertain-write',
+    });
+    ToolExecutionJournal.markInterrupted(running.id);
+    const retry=await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-uncertain',stepId:'step-uncertain',sandboxId:sandbox.id},
+      {toolKey:'workspace.write_file',input:{path:'src/a.ts',content:'export const a=2'},idempotencyKey:'uncertain-write'}
+    );
+    assert.equal(retry.status,'blocked');
+    assert.equal(retry.errorCode,'uncertain_previous_execution');
+    assert.equal(WorkspaceManager.readFile(env.projectId,'src/a.ts'),'export const a=1');
+    assert.equal(SandboxManager.readFile(sandbox.id,env.userId,'src/a.ts',env.projectId),'export const a=1');
+  } finally { cleanup(env); }
+});
+
+test('phase2 AbortSignal terminates supervised process tool promptly', async () => {
+  const env=setupProject();
+  try {
+    WorkspaceManager.writeFile(env.projectId,'package.json',JSON.stringify({
+      scripts:{wait:'node -e "setInterval(()=>{},1000)"'}
+    }));
+    const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-abort',stepId:'step-abort'});
+    const controller=new AbortController();
+    const started=Date.now();
+    setTimeout(()=>controller.abort(new DOMException('cancelled','AbortError')),150);
+    const result=await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-abort',stepId:'step-abort',sandboxId:sandbox.id,signal:controller.signal},
+      {toolKey:'process.run',input:{script:'wait',timeoutMs:10000},idempotencyKey:'wait-abort'}
+    );
+    assert.equal(result.status,'aborted');
+    assert.ok(Date.now()-started<5000);
+    assert.equal(ToolExecutionJournal.get(result.executionId)?.status,'aborted');
+  } finally { cleanup(env); }
+});
