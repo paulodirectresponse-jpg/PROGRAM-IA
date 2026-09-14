@@ -1621,7 +1621,7 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
       RunService.context('local', {
         objective,
         acceptanceCriteria: ['Continuar sem repetir etapas já concluídas', 'Gerar alteração concreta e revisável'],
-        snippets: Object.entries(existingFiles).slice(0,10).map(([file,content])=>({file,content:String(content).slice(0,6000)})),
+        snippets: [{source:'ContextEngineV2',fileCount:Object.keys(existingFiles).length,recoverySandboxId}],
         previousAttempt: 'SCOUT/STUDIO preservados; retomada iniciada no FORGE.',
         constraints: ['Não refazer SCOUT/STUDIO concluídos', 'Não aplicar definitivamente antes da aprovação'],
       })
