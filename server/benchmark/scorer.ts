@@ -51,7 +51,12 @@ export function scoreBenchmarkCase(input:BenchmarkScoreInput):BenchmarkCaseScore
   }else if(definition.mode==='review'){
     const reply=lower(result.replyText);
     const terms=definition.checks.replyIncludes||[];
-    add('review_evidence',terms.every(term=>reply.includes(lower(term))),70,terms.join(', '));
+    const anyGroups=definition.checks.replyIncludesAny||[];
+    add('review_evidence',terms.every(term=>reply.includes(lower(term))),anyGroups.length?50:70,terms.join(', '));
+    if(anyGroups.length){
+      const semanticsPassed=anyGroups.every(group=>group.some(term=>reply.includes(lower(term))));
+      add('review_semantics',semanticsPassed,20,anyGroups.map(group=>group.join(' | ')).join(' ; '));
+    }
   }else{
     const files=input.finalFiles||{};
     const changed=normalizedPaths(input.changedPaths||result.proposal?.files?.map(file=>file.path)||result.build?.files?.map(file=>file.path)||[]);
