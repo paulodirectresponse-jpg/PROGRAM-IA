@@ -185,6 +185,37 @@ export function initializeDatabase() {
     );
   }
 
+  // Migration 006: isolated sandbox lifecycle.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sandboxes (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      run_id TEXT,
+      step_id TEXT,
+      status TEXT NOT NULL,
+      root_path TEXT NOT NULL,
+      base_hash TEXT NOT NULL,
+      base_manifest_json TEXT NOT NULL DEFAULT '{}',
+      validation_json TEXT NOT NULL DEFAULT 'null',
+      merged_checkpoint_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS sandboxes_project_status ON sandboxes(project_id,status);
+    CREATE INDEX IF NOT EXISTS sandboxes_run ON sandboxes(run_id,created_at);
+  `);
+  ensureColumn('tool_executions', 'sandbox_id', 'TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS tool_executions_sandbox_created ON tool_executions(sandbox_id,created_at)');
+  const migration6Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 6').get() as { version: number } | undefined;
+  if (!migration6Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      6,
+      '006_phase2_isolated_sandboxes',
+      new Date().toISOString()
+    );
+  }
+
     // Replace legacy global uniqueness with per-user uniqueness, preserving records.
   for (const [table, key] of [['providers', 'provider_key'], ['skills', 'slug']]) {
     const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table) as {sql:string};
