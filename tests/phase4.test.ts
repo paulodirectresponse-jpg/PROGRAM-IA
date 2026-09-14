@@ -69,6 +69,14 @@ test('phase4 scorer passes deterministic review evidence from a real provider',(
   assert.equal(scored.score,100);
 });
 
+test('phase4 review scorer rejects prompt echo without fixture-specific cause',()=>{
+  const definition=PHASE4_BENCHMARK_CASES.find(item=>item.id==='P4-28')!;
+  const result:any={replyText:'PHASE4_REVIEW_28 está em src/app.js.',mode:'review',isDemonstrativeFallback:false,providerUsed:'Provider',modelUsed:'model',decisionType:'review'};
+  const scored=scoreBenchmarkCase({definition,result,providerReal:true});
+  assert.equal(scored.passed,false);
+  assert.equal(scored.checks.find(item=>item.key==='review_semantics')?.passed,false);
+});
+
 test('phase4 scorer enforces build scope, content and browser gate',()=>{
   const definition=PHASE4_BENCHMARK_CASES.find(item=>item.id==='P4-11')!;
   const result:any={
