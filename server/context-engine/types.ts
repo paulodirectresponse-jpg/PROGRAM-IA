@@ -91,6 +91,17 @@ export interface ContextCompileInput {
   stepId?: string | null;
   focusPaths?: string[];
   tokenBudget?: number;
+  fileContents?: Record<string,string>;
+}
+
+export interface ContextContentSelection {
+  path: string;
+  mode: 'full' | 'partial';
+  start: number;
+  end: number;
+  estimatedTokens: number;
+  omittedChars: number;
+  reason: 'fits_budget' | 'oversized_focus' | 'retry_budget';
 }
 
 export interface ContextFileSelection {
@@ -98,6 +109,7 @@ export interface ContextFileSelection {
   score: number;
   reasons: string[];
   estimatedTokens: number;
+  content?: ContextContentSelection;
 }
 
 export interface ContextOmittedFile {
