@@ -2112,7 +2112,7 @@ router.put('/skills/:id', requireAuth, (req,res) => {
   res.json({success:true});
 });
 
-router.delete('/skills/:id', requireAuth, (req: Request, res: Response) => {
+router.delete('/skills/:id', requireAuth, async (req: Request, res: Response) => {
   try {
     const skill = db.prepare('SELECT * FROM skills WHERE id = ?').get(req.params.id) as any;
     if (!skill) return res.status(404).json({ error: 'Skill não encontrada.' });
@@ -2120,7 +2120,9 @@ router.delete('/skills/:id', requireAuth, (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Sem permissão para excluir esta skill.' });
     }
 
-    db.prepare('DELETE FROM skills WHERE id = ?').run(req.params.id);
+    // Delete canonical copy first so a refresh cannot resurrect the skill.
+    await CloudSyncService.deleteSkill(req.user!.id, req.params.id);
+    db.prepare('DELETE FROM skills WHERE id = ? AND user_id = ?').run(req.params.id, req.user!.id);
     res.json({ success: true, message: 'Skill excluída com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
