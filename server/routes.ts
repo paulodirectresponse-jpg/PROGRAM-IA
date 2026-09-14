@@ -1617,61 +1617,68 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
 });
 
 router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
-  const projectId = req.params.projectId;
-  let proposalMessage: any = null;
-  let metadata: any = null;
+  const projectId=req.params.projectId;
+  const userId=req.user!.id;
+  let proposalMessage:any=null;
+  let metadata:any=null;
+  let conversation:any=null;
+  let sandboxRunId:string|null=null;
+  let acceptedEarly=false;
+  let finalMessagePersisted=false;
 
-  try {
-    const { proposalId, summary = 'Alterações aprovadas pelo usuário' } = req.body;
-    if (!proposalId) return res.status(400).json({ error: 'Identificador da proposta é obrigatório.' });
+  try{
+    const {proposalId,summary='Alterações aprovadas pelo usuário'}=req.body;
+    if(!proposalId)return res.status(400).json({error:'Identificador da proposta é obrigatório.'});
+    if(activeProjects.has(projectId))return res.status(409).json({error:'Já há uma execução ativa neste projeto.'});
 
-    const conversation = db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
-    const rows = conversation
+    conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+    const rows=conversation
       ? db.prepare("SELECT id,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC").all(conversation.id) as any[]
       : [];
+    proposalMessage=rows.find((row:any)=>{try{return JSON.parse(row.metadata_json||'{}')?.proposal?.id===proposalId;}catch{return false;}});
+    if(!proposalMessage)return res.status(404).json({error:'Proposta não encontrada nesta conversa.'});
 
-    proposalMessage = rows.find((row: any) => {
-      try { return JSON.parse(row.metadata_json || '{}')?.proposal?.id === proposalId; }
-      catch { return false; }
+    metadata=JSON.parse(proposalMessage.metadata_json||'{}');
+    if(metadata.proposal?.status!=='pending'){
+      if(metadata.proposal?.status==='applied')return res.json({success:true,alreadyApplied:true,checkpointId:metadata.checkpointId||null});
+      return res.status(409).json({error:`Esta proposta não está mais disponível (${metadata.proposal?.status||'estado inválido'}).`});
+    }
+    const files=metadata.proposal.files;
+    if(!Array.isArray(files)||files.length===0)return res.status(409).json({error:'A proposta armazenada está vazia ou corrompida.'});
+    for(const file of files){
+      WorkspaceManager.resolveSafePath(projectId,file.path);
+      if(!['create','update','delete','modify'].includes(file.action))return res.status(400).json({error:'A proposta contém uma ação de arquivo inválida.'});
+      if(file.action!=='delete'&&typeof file.content!=='string')return res.status(400).json({error:'A proposta contém arquivo sem conteúdo válido.'});
+    }
+
+    sandboxRunId=metadata.workflow?.runId||metadata.runId||null;
+    activeProjects.add(projectId);
+    const controller=new AbortController();
+    activeProjectControllers.set(projectId,controller);
+    if(sandboxRunId)try{RunService.resume(sandboxRunId);}catch{}
+
+    const userActionAt=new Date().toISOString();
+    if(conversation){
+      db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'user',?,?,?)")
+        .run('msg-user-'+Date.now(),conversation.id,'Pode aplicar essas alterações.',JSON.stringify({mode:'build',action:'apply_proposal',proposalId}),userActionAt);
+    }
+
+    acceptedEarly=true;
+    res.status(202).json({success:true,accepted:true,runId:sandboxRunId,proposalId});
+
+    const sandboxApply=await SandboxProposalApplyService.apply({
+      userId,projectId,proposal:metadata.proposal,runId:sandboxRunId,
+      planId:metadata.planId||null,summary,originalRequest:metadata.originalRequest||summary,
+      shipRequested:Boolean(metadata.workflow?.shipRequested),signal:controller.signal,
     });
-    if (!proposalMessage) return res.status(404).json({ error: 'Proposta não encontrada nesta conversa.' });
 
-    metadata = JSON.parse(proposalMessage.metadata_json || '{}');
-    if (metadata.proposal?.status !== 'pending') {
-      return res.status(409).json({ error: `Esta proposta não está mais disponível (${metadata.proposal?.status || 'estado inválido'}).` });
-    }
-
-    const files = metadata.proposal.files;
-    if (!Array.isArray(files) || files.length === 0) {
-      return res.status(409).json({ error: 'A proposta armazenada está vazia ou corrompida.' });
-    }
-
-    for (const file of files) {
-      WorkspaceManager.resolveSafePath(projectId, file.path);
-      if (!['create', 'update', 'delete', 'modify'].includes(file.action)) {
-        return res.status(400).json({ error: 'A proposta contém uma ação de arquivo inválida.' });
-      }
-      if (file.action !== 'delete' && typeof file.content !== 'string') {
-        return res.status(400).json({ error: 'A proposta contém arquivo sem conteúdo válido.' });
-      }
-    }
-
-    const sandboxRunId = metadata.workflow?.runId || metadata.runId || null;
-    const sandboxApply = await SandboxProposalApplyService.apply({
-      userId:req.user!.id,
-      projectId,
-      proposal:metadata.proposal,
-      runId:sandboxRunId,
-      planId:metadata.planId || null,
-      summary,
-      originalRequest:metadata.originalRequest || summary,
-      shipRequested:Boolean(metadata.workflow?.shipRequested),
-    });
-    metadata.proposal.sandboxId=sandboxApply.sandboxId || metadata.proposal.sandboxId;
-    metadata.validation=sandboxApply.validation || null;
-    metadata.browserQuality=sandboxApply.browserQuality || null;
-    metadata.browserRepair=sandboxApply.browserRepair || null;
+    metadata.proposal.sandboxId=sandboxApply.sandboxId||metadata.proposal.sandboxId;
+    metadata.validation=sandboxApply.validation||null;
+    metadata.browserQuality=sandboxApply.browserQuality||null;
+    metadata.browserRepair=sandboxApply.browserRepair||null;
+    metadata.sentinelReview=sandboxApply.sentinelReview||null;
     metadata.hasErrors=!sandboxApply.success;
+
     if(!sandboxApply.success){
       metadata.proposal.status='failed_validation';
       metadata.errorMessage=sandboxApply.error;
@@ -1680,15 +1687,9 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
         metadata.workflow.trace=RunService.trace(sandboxRunId);
       }
       db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
-      return res.status(sandboxApply.statusCode || 422).json({
-        error:sandboxApply.error,
-        validation:sandboxApply.validation,
-        sandboxId:sandboxApply.sandboxId,
-        repair:(sandboxApply as any).repair,
-        browserQuality:sandboxApply.browserQuality,
-        browserRepair:sandboxApply.browserRepair,
-      });
+      throw Object.assign(new Error(sandboxApply.error||'A proposta não passou pela validação final.'),{applyResult:sandboxApply});
     }
+
     metadata.proposal.status='applied';
     metadata.checkpointId=sandboxApply.checkpointId;
     metadata.sandbox={id:sandboxApply.sandboxId,baseRevision:metadata.proposal.baseRevision,changedFiles:sandboxApply.changedFiles};
@@ -1698,35 +1699,47 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
       metadata.workflow.status=sandboxApply.needsVerification?'needs_verification':'completed';
       metadata.workflow.trace=RunService.trace(sandboxRunId);
     }
-    db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'")
-      .run(new Date().toISOString(),projectId);
+    db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'").run(new Date().toISOString(),projectId);
     db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
-    return res.json({
-      success:true,
-      checkpointId:sandboxApply.checkpointId,
-      validation:sandboxApply.validation,
-      sandboxId:sandboxApply.sandboxId,
-      changedFiles:sandboxApply.changedFiles,
-      needsVerification:sandboxApply.needsVerification,
-      repair:(sandboxApply as any).repair || undefined,
-      browserQuality:sandboxApply.browserQuality,
-      browserRepair:sandboxApply.browserRepair,
-      message:sandboxApply.needsVerification
-        ? 'Alterações validadas em sandbox e aplicadas por merge atômico, mas ainda existem gates não executáveis.'
-        : 'Alterações validadas em sandbox e aplicadas por merge atômico com sucesso.',
-    });
 
-  } catch (err: any) {
-    if (proposalMessage && metadata?.proposal) {
-      try {
-        metadata.proposal.status = 'pending';
-        metadata.hasErrors = true;
-        metadata.errorMessage = 'A aplicação falhou de forma segura; o workspace oficial foi restaurado ou preservado no estado anterior. Você pode tentar novamente.';
-        db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
-      } catch {}
+    if(conversation){
+      const changedCount=Array.isArray(sandboxApply.changedFiles)?sandboxApply.changedFiles.length:files.length;
+      const text=`Pronto. As alterações foram revisadas e aplicadas ao preview${changedCount?` em ${changedCount} arquivo(s)`:''}.`;
+      const now=new Date().toISOString();
+      db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)")
+        .run('msg-agent-'+Date.now(),conversation.id,text,JSON.stringify({
+          mode:'build',decisionType:'change',proposal:metadata.proposal,filesAffected:sandboxApply.changedFiles||[],
+          checkpointId:sandboxApply.checkpointId,validation:sandboxApply.validation,browserQuality:sandboxApply.browserQuality,
+          browserRepair:sandboxApply.browserRepair,sentinelReview:sandboxApply.sentinelReview,runId:sandboxRunId,autoApplied:true,
+          workflow:sandboxRunId?{runId:sandboxRunId,status:sandboxApply.needsVerification?'needs_verification':'completed',trace:RunService.trace(sandboxRunId)}:undefined,
+        }),now);
+      finalMessagePersisted=true;
     }
-
-    res.status(500).json({ error: 'A aplicação falhou de forma segura; o merge não foi concluído.' });
+  }catch(err:any){
+    if(proposalMessage&&metadata?.proposal){
+      try{
+        if(metadata.proposal.status!=='applied')metadata.proposal.status='pending';
+        metadata.hasErrors=true;
+        metadata.errorMessage=String(err?.message||'A aplicação falhou de forma segura; o workspace oficial foi preservado.');
+        db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),proposalMessage.id);
+      }catch{}
+    }
+    if(sandboxRunId)try{RunService.finish(sandboxRunId,'','failed');}catch{}
+    if(acceptedEarly&&conversation&&!finalMessagePersisted){
+      const now=new Date().toISOString();
+      const detail=String(err?.message||'A aplicação falhou de forma segura.');
+      db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)")
+        .run('msg-agent-'+Date.now(),conversation.id,`Não consegui aplicar essas alterações com segurança. ${detail}`,JSON.stringify({
+          mode:'build',hasErrors:true,errorMessage:detail,runId:sandboxRunId,
+          validation:err?.applyResult?.validation||null,browserQuality:err?.applyResult?.browserQuality||null,
+          sentinelReview:err?.applyResult?.sentinelReview||null,
+        }),now);
+    }else if(!res.headersSent&&!res.destroyed){
+      res.status(500).json({error:'A aplicação falhou de forma segura; o merge não foi concluído.'});
+    }
+  }finally{
+    activeProjects.delete(projectId);
+    activeProjectControllers.delete(projectId);
   }
 });
 
