@@ -68,6 +68,12 @@ export class ToolExecutionJournal {
     return row ? hydrate(row) : null;
   }
 
+  static findByIdempotency(runId:string,idempotencyKey:string) {
+    const row=db.prepare('SELECT * FROM tool_executions WHERE run_id=? AND idempotency_key=? ORDER BY created_at DESC LIMIT 1')
+      .get(runId,idempotencyKey) as any;
+    return row ? hydrate(row) : null;
+  }
+
   static listByRun(runId:string) {
     return (db.prepare('SELECT * FROM tool_executions WHERE run_id=? ORDER BY created_at ASC').all(runId) as any[]).map(hydrate);
   }
@@ -80,5 +86,11 @@ export class ToolExecutionJournal {
     const current=this.get(id);
     if (!current || !['queued','running'].includes(current.status)) return current;
     return this.finish(id,'interrupted',{reason:'worker_interrupted'},'worker_interrupted',current.durationMs);
+  }
+
+  static markAllRunningInterrupted() {
+    const rows=db.prepare("SELECT id FROM tool_executions WHERE status IN ('queued','running')").all() as Array<{id:string}>;
+    for(const row of rows)this.markInterrupted(row.id);
+    return rows.length;
   }
 }
