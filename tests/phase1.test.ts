@@ -411,3 +411,35 @@ test('phase1 oversized focus file is explicitly partial and provider receives th
     assert.ok(seen[0].contextBrief.includes('content=partial'));
   } finally { cleanupRun(run.runId,projectId,userId); }
 });
+
+
+test('phase1 source has no hidden context caps and real route call-sites recover requirements', async () => {
+  const fs=await import('node:fs/promises');
+  const adapter=await fs.readFile('server/services/llmAdapter.ts','utf8');
+  const agent=await fs.readFile('server/agent-engine/agentEngine.ts','utf8');
+  const routes=await fs.readFile('server/routes.ts','utf8');
+  assert.equal(adapter.includes('slice(0, 200000)'),false);
+  assert.equal(adapter.includes('maxChars = 70000'),false);
+  assert.equal(agent.includes('reducedRetryFiles'),false);
+  assert.equal(agent.includes("fragment_task'?8:12"),false);
+  assert.ok(routes.includes('executionRequirementIds = workflowRequirementIds'));
+  assert.ok(routes.includes('continuedRequirementIds = workflowRequirementIds'));
+});
+
+test('phase1 content budget reflects real text length instead of metadata only', () => {
+  const projectId=`phase1-real-budget-${safeIdSuffix()}`;
+  try {
+    const small='export const small=1;';
+    const large='export const large = `' + 'x'.repeat(24000) + '`;';
+    const files={'src/small.ts':small,'src/large.ts':large};
+    ContextEngineV2.syncProject({projectId,files});
+    const pack=ContextCompiler.compile({
+      projectId,agentKey:'FORGE',scope:'MICRO',task:{objective:'inspect large module'},
+      tokenBudget:1000,fileContents:files,
+    });
+    assert.ok(pack.omittedFiles.some(item=>item.path==='src/large.ts'));
+    const largeOmission=pack.omittedFiles.find(item=>item.path==='src/large.ts');
+    assert.ok((largeOmission?.estimatedTokens || 0)>5000);
+    assert.ok(pack.estimatedTokens<=pack.tokenBudget);
+  } finally { cleanup(projectId); }
+});
