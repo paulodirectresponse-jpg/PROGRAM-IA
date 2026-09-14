@@ -217,6 +217,11 @@ export function initializeDatabase() {
   }
 
   db.prepare("UPDATE tool_executions SET status='interrupted',error_code=COALESCE(error_code,'worker_interrupted'),finished_at=COALESCE(finished_at,?) WHERE status IN ('queued','running')").run(new Date().toISOString());
+  const restartRecoveryAt=new Date().toISOString();
+  db.prepare("UPDATE agent_steps SET status='aborted',finished_at=? WHERE status='running' AND run_id IN (SELECT DISTINCT run_id FROM tool_executions WHERE status='interrupted' AND run_id IS NOT NULL)")
+    .run(restartRecoveryAt);
+  db.prepare("UPDATE agent_runs SET status='failed',finished_at=? WHERE status='running' AND id IN (SELECT DISTINCT run_id FROM tool_executions WHERE status='interrupted' AND run_id IS NOT NULL)")
+    .run(restartRecoveryAt);
 
     // Replace legacy global uniqueness with per-user uniqueness, preserving records.
   for (const [table, key] of [['providers', 'provider_key'], ['skills', 'slug']]) {
