@@ -107,7 +107,7 @@ test('phase2 blocks sensitive reads and mutation/process tools instead of preten
 
     const process=await ToolExecutionService.execute(
       {userId:env.userId,projectId:env.projectId,runId:'run-phase2-blocked'},
-      {toolKey:'process.run',input:{command:'npm test'}}
+      {toolKey:'process.run',input:{script:'test'}}
     );
     assert.equal(process.status,'blocked');
     assert.equal(process.errorCode,'sandbox_required');
