@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, initializeDatabase } from '../server/db/index.js';
+import { DatabaseSync } from 'node:sqlite';
+import { db, initializeDatabase, applyBootstrapSchemaIfNeeded } from '../server/db/index.js';
 import { BrowserQualityService } from '../server/browser/browserQualityService.js';
 import { WorkspaceManager } from '../server/services/workspaceManager.js';
 import { SandboxManager } from '../server/tooling/sandboxManager.js';
@@ -58,6 +59,25 @@ function cleanup(env:{userId:string;workspaceId:string;projectId:string}){
   db.prepare('DELETE FROM workspaces WHERE id=?').run(env.workspaceId);
   db.prepare('DELETE FROM users WHERE id=?').run(env.userId);
 }
+
+test('production bootstrap schema is never replayed over a legacy persistent database',()=>{
+  const legacy=new DatabaseSync(':memory:');
+  try{
+    legacy.exec(`
+      CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL);
+      INSERT INTO schema_migrations(version,name,applied_at) VALUES(1,'001_initial_schema','2026-01-01T00:00:00.000Z');
+      CREATE TABLE tool_executions(
+        id TEXT PRIMARY KEY,run_id TEXT,step_id TEXT,tool_key TEXT NOT NULL,status TEXT NOT NULL,
+        duration_ms INTEGER NOT NULL,summary_json TEXT NOT NULL,created_at TEXT NOT NULL
+      );
+    `);
+    const schemaSql=fs.readFileSync(path.resolve(process.cwd(),'server','db','schema.sql'),'utf8');
+    assert.doesNotThrow(()=>applyBootstrapSchemaIfNeeded(legacy,schemaSql));
+    const cols=new Set((legacy.prepare('PRAGMA table_info(tool_executions)').all() as any[]).map(row=>row.name));
+    assert.equal(cols.has('sandbox_id'),false);
+    assert.equal(cols.has('idempotency_key'),false);
+  }finally{legacy.close();}
+});
 
 test('phase3 migration and browser tool are registered',()=>{
   const migration=db.prepare('SELECT name FROM schema_migrations WHERE version=7').get() as any;
