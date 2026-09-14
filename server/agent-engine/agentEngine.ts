@@ -803,30 +803,26 @@ export class AgentWorkflowEngine extends AgentEngine {
     }
 
     const hasReviewableChanges = Boolean(result.proposal?.files?.length || result.build?.files?.length);
-    const sentinelStatus = RunService.createStep(
-      x.runId,
-      'SENTINEL',
-      hasReviewableChanges ? 'Aguardar aplicação para executar quality gates' : 'Registrar ausência de alteração validável',
-      order++,
-      'micro',
-      {
-        status: hasReviewableChanges ? 'pending_user_apply' : 'not_applicable',
-        reason: hasReviewableChanges
-          ? 'A proposta será validada pelo ValidatorEngine somente após aplicação aprovada pelo usuário.'
-          : 'Sem proposta de código para validar.',
-        validator: 'ValidatorEngine',
-      }
-    );
-    steps.push(sentinelStatus);
-    recordContextCommitFromStep({ ...x, stepId: sentinelStatus }, 'SENTINEL', 'MICRO', hasReviewableChanges ? 'Aguardar aprovação para validação' : 'Sem alteração validável', { nextState: { status: hasReviewableChanges ? 'waiting_approval' : 'completed' } });
-    RunService.finishStep(sentinelStatus, 'completed');
+    if(!hasReviewableChanges){
+      const sentinelStatus = RunService.createStep(
+        x.runId,
+        'SENTINEL',
+        'Registrar ausência de alteração validável',
+        order++,
+        'micro',
+        {status:'not_applicable',reason:'Sem proposta de código para validar.',validator:'ValidatorEngine'}
+      );
+      steps.push(sentinelStatus);
+      recordContextCommitFromStep({ ...x, stepId: sentinelStatus }, 'SENTINEL', 'MICRO', 'Sem alteração validável', { nextState: { status:'completed' } });
+      RunService.finishStep(sentinelStatus,'completed');
+    }
 
     return {
       ...result,
       workflow: {
         runId: x.runId,
         steps,
-        status: result.hasErrors ? 'failed' : hasReviewableChanges ? 'waiting_approval' : 'completed',
+        status: result.hasErrors ? 'failed' : hasReviewableChanges ? 'validating' : 'completed',
         shipRequested: needsShip(x.prompt, x.mode),
         trace: RunService.trace(x.runId),
       },
