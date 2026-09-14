@@ -1209,6 +1209,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
   }finally{
     activeProjects.delete(projectId);
     activeProjectControllers.delete(projectId);
+    if(acceptedEarly&&req.user?.id)CloudSyncService.schedule(req.user.id);
   }
 });
 
@@ -1229,6 +1230,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
 
     const selectedMode=mode as AgentMode;
     const resolvedMode=LLMAdapterService.resolveRequestedMode(String(content),selectedMode);
+    const conversationalOnly=selectedMode==='auto'&&resolvedMode==='auto';
     const now=new Date().toISOString();
     conv=db.prepare('SELECT * FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
 
@@ -1244,7 +1246,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     }
 
     const agentEngineEnabled=process.env.AGENT_ENGINE_ENABLED==='true';
-    if(agentEngineEnabled)execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,.5);
+    if(agentEngineEnabled&&!conversationalOnly)execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,.5);
 
     const userMsgId='msg-user-'+Date.now();
     db.prepare(`
@@ -1318,16 +1320,39 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       });
     }
 
-    let result=!agentEngineEnabled
+    const conversationalPrompt=conversationalOnly
+      ? [
+          'MODO CONVERSA. Responda ao usuário diretamente no chat.',
+          'Não crie, altere, remova ou proponha arquivos. Não inicie implementação, plano executável, diff, sandbox ou publicação.',
+          'Você pode explicar capacidades, responder dúvidas, fazer brainstorming, detalhar ideias, melhorar requisitos e ajudar a pensar antes da implementação.',
+          'Se o usuário quiser construir algo depois, ele fará um novo pedido explícito.',
+          '',
+          'PEDIDO DO USUÁRIO:',
+          String(content),
+        ].join('\n')
+      : String(content);
+
+    let result=conversationalOnly
       ? await LLMAdapterService.executePrompt({
-          prompt:String(content),mode:resolvedMode,projectId,providerKey,modelId,existingFiles,appliedSkills,
+          prompt:conversationalPrompt,mode:'auto',projectId,providerKey,modelId,existingFiles,appliedSkills,
           conversationHistory:history,userId:req.user!.id,signal:controller.signal,
         })
-      : await AgentWorkflowEngine.executeWorkflow({
-          prompt:String(content),mode:resolvedMode,projectId,existingFiles,appliedSkills,conversationHistory:history,
-          userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal,
-        });
+      : !agentEngineEnabled
+        ? await LLMAdapterService.executePrompt({
+            prompt:String(content),mode:resolvedMode,projectId,providerKey,modelId,existingFiles,appliedSkills,
+            conversationHistory:history,userId:req.user!.id,signal:controller.signal,
+          })
+        : await AgentWorkflowEngine.executeWorkflow({
+            prompt:String(content),mode:resolvedMode,projectId,existingFiles,appliedSkills,conversationHistory:history,
+            userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal,
+          });
     controller.signal.throwIfAborted();
+
+    if(conversationalOnly){
+      // Conversa nunca pode vazar para o pipeline de mutação mesmo se um provider
+      // retornar por engano um schema de PLAN/BUILD.
+      result={...result,mode:'auto',decisionType:'explanation',plan:undefined,build:undefined,proposal:undefined};
+    }
 
     const effectiveIntent=resolvedMode;
     const recoverableBuildFailure=
@@ -1487,6 +1512,10 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
   }finally{
     activeProjects.delete(projectId);
     activeProjectControllers.delete(projectId);
+    // A resposta 202 pode ter sido enviada minutos antes do merge final. Nesse caso
+    // o middleware global já sincronizou um snapshot antigo. Reagende a sincronização
+    // somente após a execução de background terminar para persistir o workspace final.
+    if(acceptedEarly&&req.user?.id)CloudSyncService.schedule(req.user.id);
   }
 });
 
