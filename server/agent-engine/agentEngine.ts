@@ -162,10 +162,17 @@ function serializeContextPack(pack: ContextPack) {
   ].filter(Boolean).join('\n');
 }
 
-function withCompiledContext(x: Input, agentKey: string, options: ExecuteOptions): Input {
-  const pack = x.contextPack || compileContextForStep(x, agentKey, options);
+function withCompiledContext(x: Input, agentKey: string, options: ExecuteOptions, retryStrategy: RetryStrategy = 'same_candidate'): Input {
+  const requirementIds = resolvedRequirementIds(x);
+  const canReuseProvidedPack = retryStrategy === 'same_candidate'
+    && Boolean(x.contextPack)
+    && requirementIds.every(id => x.contextPack?.requirementIds.includes(id));
+  const pack = canReuseProvidedPack && x.contextPack
+    ? x.contextPack
+    : compileContextForStep({ ...x, requirementIds }, agentKey, options, retryStrategy);
   return {
     ...x,
+    requirementIds,
     existingFiles: contextSelectedFiles(x, pack),
     contextPack: pack,
     contextBrief: serializeContextPack(pack),
