@@ -34,6 +34,13 @@ function ignoredRelative(relative:string){
   return ToolPolicy.isSensitivePath(normalized);
 }
 
+function safeCopyFilter(root:string,sourcePath:string){
+  const rel=path.relative(root,sourcePath).replace(/\\/g,'/');
+  if(!rel)return true;
+  try{if(fs.lstatSync(sourcePath).isSymbolicLink())return false;}catch{return false;}
+  return !ignoredRelative(rel);
+}
+
 function safeJoin(root:string,relativePath:string){
   const normalized=ToolPolicy.normalizeRelativePath(relativePath);
   const resolved=path.resolve(root,normalized);
@@ -97,10 +104,7 @@ export class SandboxManager {
     fs.cpSync(source,root,{
       recursive:true,
       force:true,
-      filter:(sourcePath)=>{
-        const rel=path.relative(source,sourcePath).replace(/\\/g,'/');
-        return !rel || !ignoredRelative(rel);
-      },
+      filter:(sourcePath)=>safeCopyFilter(source,sourcePath),
     });
     const now=new Date().toISOString();
     db.prepare(`INSERT INTO sandboxes(id,project_id,user_id,run_id,step_id,status,root_path,base_hash,base_manifest_json,validation_json,created_at,updated_at)
@@ -225,10 +229,7 @@ export class SandboxManager {
     const token=crypto.randomUUID();
     const stage=path.join(parent,`.merge-stage-${input.projectId}-${token}`);
     const backup=path.join(parent,`.merge-backup-${input.projectId}-${token}`);
-    fs.cpSync(record.rootPath,stage,{recursive:true,force:true,filter:(sourcePath)=>{
-      const rel=path.relative(record.rootPath,sourcePath).replace(/\\/g,'/');
-      return !rel||!ignoredRelative(rel);
-    }});
+    fs.cpSync(record.rootPath,stage,{recursive:true,force:true,filter:(sourcePath)=>safeCopyFilter(record.rootPath,sourcePath)});
 
     // Sensitive project files are intentionally absent from the sandbox. Preserve them
     // from the official workspace during the directory swap without exposing them to tools.
