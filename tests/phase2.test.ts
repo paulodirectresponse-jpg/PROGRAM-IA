@@ -14,6 +14,7 @@ import { ContextEngineV2 } from '../server/context-engine/contextEngine.js';
 import { AgentEngine, AgentWorkflowEngine } from '../server/agent-engine/agentEngine.js';
 import { LLMAdapterService } from '../server/services/llmAdapter.js';
 import { RunService } from '../server/services/runService.js';
+import { RequirementLedgerService } from '../server/services/requirementLedgerService.js';
 
 initializeDatabase();
 
