@@ -148,7 +148,7 @@ export class LLMAdapterService {
   ): AgentMode {
     if (selectedMode !== 'auto') return selectedMode;
 
-    const normalize=(value:string)=>String(value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,' ').trim();
+    const normalize=(value:string)=>String(value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
     const text=normalize(prompt);
     const recent=normalize((context?.conversationHistory||[]).slice(-8).map(item=>item.content).join('\n'));
     const existingFiles=context?.existingFiles||[];
