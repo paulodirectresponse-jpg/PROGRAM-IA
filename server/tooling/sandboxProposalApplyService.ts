@@ -216,26 +216,45 @@ export class SandboxProposalApplyService {
     }
 
     const changedFiles=merge.changedFiles.map((item:any)=>item.path);
-    if(input.runId){
-      RequirementLedgerService.setStatusForRun(input.runId,validation.status==='passed'?'verified':'implemented',{
-        type:validation.status==='passed'?'sandbox_merge_verified':'sandbox_merge_unverified',
-        validation,sandboxId,checkpointId:merge.checkpointId,
-      },changedFiles);
-      ContextEngineV2.recordCommit({
-        projectId:input.projectId,runId:input.runId,agentKey:'SENTINEL',scope:'TASK',
-        task:'Sandbox validado e merge atômico concluído',changedFiles,requirementIds:reqIds,
-        validation,blockers:[],nextState:{status:validation.status==='passed'?'completed':'needs_verification'},
+    try{
+      const finalizeState=db.transaction(()=>{
+        if(input.runId){
+          RequirementLedgerService.setStatusForRun(input.runId,validation.status==='passed'?'verified':'implemented',{
+            type:validation.status==='passed'?'sandbox_merge_verified':'sandbox_merge_unverified',
+            validation,sandboxId,checkpointId:merge.checkpointId,
+          },changedFiles);
+          ContextEngineV2.recordCommit({
+            projectId:input.projectId,runId:input.runId,agentKey:'SENTINEL',scope:'TASK',
+            task:'Sandbox validado e merge atômico concluído',changedFiles,requirementIds:reqIds,
+            validation,blockers:[],nextState:{status:validation.status==='passed'?'completed':'needs_verification'},
+          });
+          if(input.shipRequested&&validation.status==='passed'){
+            const ship=RunService.createStep(input.runId,'SHIP','Preparar publicação após merge validado',undefined,'task',{sandboxId,checkpointId:merge.checkpointId});
+            RunService.finishStep(ship,'completed');
+          }
+          if(validation.status==='passed')RunService.setStatus(input.runId,'completed',true);
+          else RunService.setStatus(input.runId,'needs_verification',true);
+        }else if(input.planId){
+          RequirementLedgerService.setStatusForPlan(input.projectId,input.planId,validation.status==='passed'?'verified':'implemented',{
+            type:'sandbox_merge',validation,sandboxId,checkpointId:merge.checkpointId,
+          },changedFiles);
+        }
       });
-      if(input.shipRequested&&validation.status==='passed'){
-        const ship=RunService.createStep(input.runId,'SHIP','Preparar publicação após merge validado',undefined,'task',{sandboxId,checkpointId:merge.checkpointId});
-        RunService.finishStep(ship,'completed');
-      }
-      if(validation.status==='passed')RunService.setStatus(input.runId,'completed',true);
-      else RunService.setStatus(input.runId,'needs_verification',true);
-    }else if(input.planId){
-      RequirementLedgerService.setStatusForPlan(input.projectId,input.planId,validation.status==='passed'?'verified':'implemented',{
-        type:'sandbox_merge',validation,sandboxId,checkpointId:merge.checkpointId,
-      },changedFiles);
+      finalizeState();
+    }catch(error:any){
+      const restored=WorkspaceManager.restoreCheckpoint(input.projectId,merge.beforeCheckpointId);
+      SandboxManager.markRolledBack(sandboxId,input.userId,input.projectId);
+      return {
+        success:false,
+        statusCode:500,
+        error:restored
+          ? 'O merge foi revertido porque a persistência final do workflow falhou.'
+          : 'A persistência final falhou após o merge e a restauração automática também falhou.',
+        errorCode:restored?'post_merge_state_failed':'post_merge_rollback_failed',
+        validation,
+        sandboxId,
+        repair:repairSummary,
+      };
     }
 
     return {
