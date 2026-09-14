@@ -28,6 +28,7 @@ export interface ToolExecutionContext {
   projectId: string;
   runId?: string | null;
   stepId?: string | null;
+  sandboxId?: string | null;
   signal?: AbortSignal;
 }
 
@@ -53,6 +54,7 @@ export interface ToolExecutionRecord {
   projectId?: string | null;
   runId?: string | null;
   stepId?: string | null;
+  sandboxId?: string | null;
   toolKey: string;
   toolVersion: string;
   status: ToolExecutionStatus;
