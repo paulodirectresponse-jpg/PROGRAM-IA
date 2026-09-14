@@ -75,7 +75,7 @@ test('phase3 real browser inspects static candidate on desktop and mobile with p
     WorkspaceManager.writeFile(env.projectId,'index.html',`<!doctype html><html><head><title>Quality</title></head><body><main><h1>Hello Browser</h1><button aria-label="Continue">Go</button></main></body></html>`);
     const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-browser-pass'});
     const quality=await BrowserQualityService.inspect({userId:env.userId,projectId:env.projectId,sandboxId:sandbox.id,runId:'run-browser-pass'});
-    assert.equal(quality.status,'passed');
+    assert.equal(quality.status,'passed',JSON.stringify({reason:quality.reason,issues:quality.issues,viewports:quality.viewports},null,2));
     assert.equal(quality.runtimeKind,'static');
     assert.equal(quality.viewports.length,2);
     assert.deepEqual(quality.viewports.map(v=>v.name),['desktop','mobile']);
@@ -106,7 +106,7 @@ test('phase3 browser detects executable page error as failed quality gate',async
     WorkspaceManager.writeFile(env.projectId,'index.html',`<!doctype html><html><body><h1>Broken</h1><script>setTimeout(()=>{throw new Error('phase3 boom')},0)</script></body></html>`);
     const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-browser-fail'});
     const quality=await BrowserQualityService.inspect({userId:env.userId,projectId:env.projectId,sandboxId:sandbox.id,runId:'run-browser-fail'});
-    assert.equal(quality.status,'failed');
+    assert.equal(quality.status,'failed',JSON.stringify({reason:quality.reason,issues:quality.issues,viewports:quality.viewports},null,2));
     assert.ok(quality.issues.some(issue=>issue.code==='page_error'&&issue.severity==='error'&&issue.message.includes('phase3 boom')));
   }finally{cleanup(env);}
 });
@@ -121,7 +121,7 @@ test('phase3 browser tool records provenance and hides server screenshot paths f
       {toolKey:'browser.inspect_page',input:{},idempotencyKey:'browser-tool-once'}
     );
     assert.equal(result.status,'succeeded');
-    assert.equal((result.output as any).status,'passed');
+    assert.equal((result.output as any).status,'passed',JSON.stringify(result.output,null,2));
     assert.ok((result.output as any).viewports.every((v:any)=>v.screenshotPath===undefined));
     const record=ToolExecutionJournal.get(result.executionId);
     assert.equal(record?.toolKey,'browser.inspect_page');
@@ -164,7 +164,7 @@ test('phase3 failed browser gate invokes SENTINEL then one bounded FORGE repair 
   try{
     const proposal={id:'phase3-broken-proposal',summary:'broken page',requiresConfirmation:true,status:'pending',files:[{path:'index.html',action:'modify',content:`<!doctype html><html><body><h1>Broken</h1><script>throw new Error('visual boom')</script></body></html>`}]};
     const result=await SandboxProposalApplyService.apply({userId:env.userId,projectId:env.projectId,proposal,runId:run.runId,summary:'browser repair'});
-    assert.equal(result.success,true);
+    assert.equal(result.success,true,JSON.stringify(result,null,2));
     assert.equal(result.browserRepair?.status,'passed');
     assert.equal(result.browserQuality?.status,'passed');
     assert.match(WorkspaceManager.readFile(env.projectId,'index.html')||'',/Fixed/);
