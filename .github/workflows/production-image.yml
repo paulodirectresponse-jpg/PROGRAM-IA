@@ -1,0 +1,44 @@
+name: Production image smoke
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'server.ts'
+      - 'server/**'
+  workflow_dispatch:
+
+jobs:
+  docker-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image
+        run: docker build --progress=plain -t program-ia-smoke .
+      - name: Boot production image and verify health
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name program-ia-smoke-run -p 3000:3000 -e PORT=3000 -e NODE_ENV=production program-ia-smoke
+          cleanup() {
+            docker logs program-ia-smoke-run || true
+            docker rm -f program-ia-smoke-run >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/api/health >/tmp/health.json; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            if ! docker inspect -f '{{.State.Running}}' program-ia-smoke-run 2>/dev/null | grep -q true; then
+              echo "Container exited before becoming healthy."
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Timed out waiting for /api/health."
+          exit 1
