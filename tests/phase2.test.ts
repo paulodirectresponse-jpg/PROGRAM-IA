@@ -211,3 +211,21 @@ test('phase2 patch tool is deterministic and idempotency prevents repeated side 
     assert.equal((db.prepare("SELECT COUNT(*) c FROM tool_executions WHERE run_id='run-patch' AND idempotency_key='patch-once'").get() as any).c,1);
   } finally { cleanup(env); }
 });
+
+
+test('phase2 process tool runs declared npm script with sandbox cwd', async () => {
+  const env=setupProject();
+  try {
+    WorkspaceManager.writeFile(env.projectId,'package.json',JSON.stringify({scripts:{where:'node -e "console.log(process.cwd())"'}}));
+    const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-process',stepId:'step-process'});
+    const result=await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-process',stepId:'step-process',sandboxId:sandbox.id},
+      {toolKey:'process.run',input:{script:'where',timeoutMs:10000},idempotencyKey:'where-once'}
+    );
+    assert.equal(result.status,'succeeded');
+    assert.ok(String((result.output as any).output).includes(sandbox.rootPath));
+    assert.equal(String((result.output as any).output).includes(WorkspaceManager.getProjectDir(env.projectId)),false);
+    const row=ToolExecutionJournal.get(result.executionId);
+    assert.equal(row?.sandboxId,sandbox.id);
+  } finally { cleanup(env); }
+});
