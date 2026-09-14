@@ -4,6 +4,7 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV FORGE_BROWSER_NO_SANDBOX=true
 
 COPY package.json package-lock.json ./
 
