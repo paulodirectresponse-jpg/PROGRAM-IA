@@ -82,6 +82,7 @@ export class SandboxProposalApplyService {
           focusPaths:affectedFiles,
           signal:input.signal,
           skipContextSync:true,
+          toolSandboxId:sandboxId,
         },{profile:'BASE_FREE',forcedAgentKey:'FORGE',allowExpertEscalation:true,repair:true});
         const repairFiles=repair.build?.files||repair.proposal?.files||[];
         if(!repairFiles.length)throw new Error('Repair não retornou arquivos aplicáveis.');
