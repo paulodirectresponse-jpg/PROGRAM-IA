@@ -58,6 +58,19 @@ Papéis:
 
 Estado atual: state machine determinística implementada com `forcedAgentKey`, vínculo ao ValidatorEngine, repair bounded/escalonamento local e Context Engine V2 integrado ao prompt real. Próximo gate fora da Fase 1: WebSocket/HMR, E2E framework real e benchmark real.
 
+## 5.1 Tool-First — Fase 2
+
+A camada Tool-First possui registry backend e journal durável. Ferramentas são classificadas por risco (`read`, `write`, `process`, `network`), disponibilidade e política de resume.
+
+No estágio atual:
+- reads seguros do workspace podem executar e deixam evidência em `tool_executions`;
+- conteúdo sensível conhecido é bloqueado;
+- writes, patch e processos são declarados no registry, mas retornam `sandbox_required` até existir isolamento real;
+- nenhuma ferramenta mutável pode escrever no workspace oficial como atalho;
+- request content não é persistido no journal; somente hash e summary estrutural.
+
+O próximo gate da Fase 2 é conectar os agentes a um worktree/sandbox por run, implementar supervisão de processo, recovery após restart e merge atômico somente depois de aprovação/validação.
+
 ## 6. Validação
 
 `ValidatorEngine` é a única fonte de quality gates. Falha de gate após aplicação restaura o workspace ao checkpoint anterior. Gates skipped geram `unverified`, não falha.
