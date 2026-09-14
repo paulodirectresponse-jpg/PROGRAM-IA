@@ -336,3 +336,78 @@ test('phase1 SENTINEL model invocation keeps ledger requirements and context tel
     assert.ok(commits.some(commit=>commit.agentKey==='SENTINEL'&&commit.requirementIds?.includes('REQ-SENTINEL')));
   } finally { cleanupRun(run.runId,projectId,userId); }
 });
+
+
+test('phase1 retry recompiles ContextPack without fixed file-count caps', async (t) => {
+  const suffix=safeIdSuffix();
+  const userId=`phase1-retry-user-${suffix}`;
+  const projectId=`phase1-retry-project-${suffix}`;
+  const run=RunService.start(userId,projectId,'conv-phase1','build');
+  seedModel(userId,'mock-context','BASE_FREE',2,0.10);
+  const files:Record<string,string>={};
+  const focusPaths:string[]=[];
+  for(let i=0;i<35;i++){
+    const path=`src/feature/relevant-${i}.ts`;
+    files[path]=`export const relevant${i}=${i};`;
+    focusPaths.push(path);
+  }
+  let calls=0;
+  const seen:any[]=[];
+  t.mock.method(LLMAdapterService,'getProviderConfig',()=>({key:'mock-context',type:'openai_compatible',apiKey:'x',baseUrl:'https://mock.invalid/v1',modelId:'mock-model',name:'Mock Context',isConfigured:true} as any));
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    seen.push(options);
+    calls++;
+    if(calls===1) return {replyText:'timeout',mode:'build',decisionType:'none',isDemonstrativeFallback:false,providerUsed:'Mock Context',modelUsed:'mock-model',hasErrors:true,errorReason:'timeout',errorMessage:'context too wide',usage:{inputTokens:1,outputTokens:1,billedCostUsd:0.001}} as any;
+    return {replyText:'ok',mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'Mock Context',modelUsed:'mock-model',hasErrors:false,build:{summary:'ok',explanation:'ok',files:[{path:'src/feature/relevant-0.ts',action:'modify',content:'export const fixed=1'}]},usage:{inputTokens:1,outputTokens:1,billedCostUsd:0.001}} as any;
+  });
+  try {
+    await AgentEngine.execute({
+      prompt:'Adjust all relevant modules',mode:'build',projectId,existingFiles:files,
+      appliedSkills:[],conversationHistory:[],userId,runId:run.runId,stepId:run.stepId,focusPaths,
+    },{forcedAgentKey:'FORGE',profile:'BASE_FREE'});
+    assert.equal(seen.length,2);
+    assert.notEqual(seen[0].contextPackId,seen[1].contextPackId);
+    assert.ok(Object.keys(seen[1].existingFiles).length>12);
+    const invocations=db.prepare('SELECT context_pack_id,context_selected_files_json FROM model_invocations WHERE run_id=? ORDER BY created_at').all(run.runId) as any[];
+    assert.equal(new Set(invocations.map(row=>row.context_pack_id)).size,2);
+    assert.ok(JSON.parse(invocations[1].context_selected_files_json).length>12);
+  } finally { cleanupRun(run.runId,projectId,userId); }
+});
+
+test('phase1 oversized focus file is explicitly partial and provider receives the declared range', async (t) => {
+  const suffix=safeIdSuffix();
+  const userId=`phase1-large-user-${suffix}`;
+  const projectId=`phase1-large-project-${suffix}`;
+  const run=RunService.start(userId,projectId,'conv-phase1','build');
+  seedModel(userId);
+  const huge='export const huge = `' + 'x'.repeat(20000) + '`;';
+  const omitted='export const omitted = `' + 'y'.repeat(16000) + '`;';
+  const files={'src/huge.ts':huge,'src/omitted.ts':omitted};
+  ContextEngineV2.syncProject({projectId,files});
+  const pack=ContextCompiler.compile({
+    projectId,runId:run.runId,stepId:run.stepId,agentKey:'FORGE',scope:'MICRO',
+    task:{objective:'use large file'},focusPaths:['src/huge.ts'],tokenBudget:900,fileContents:files,
+  });
+  const hugeSelection=pack.selectedFiles.find(item=>item.file.path==='src/huge.ts');
+  assert.ok(hugeSelection?.content);
+  assert.equal(hugeSelection?.content?.mode,'partial');
+  assert.ok((hugeSelection?.content?.omittedChars || 0)>0);
+  assert.ok(pack.estimatedTokens<=pack.tokenBudget);
+  assert.ok(pack.omittedFiles.some(item=>item.path==='src/omitted.ts'));
+  const seen:any[]=[];
+  t.mock.method(LLMAdapterService,'getProviderConfig',()=>({key:'mock-context',type:'openai_compatible',apiKey:'x',baseUrl:'https://mock.invalid/v1',modelId:'mock-model',name:'Mock Context',isConfigured:true} as any));
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    seen.push(options);
+    return {replyText:'ok',mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'Mock Context',modelUsed:'mock-model',hasErrors:false,build:{summary:'ok',explanation:'ok',files:[{path:'src/huge.ts',action:'modify',content:'export const fixed=1'}]},usage:{inputTokens:1,outputTokens:1,billedCostUsd:0.001}} as any;
+  });
+  try {
+    await AgentEngine.execute({
+      prompt:'Edit large file',mode:'build',projectId,existingFiles:files,appliedSkills:[],conversationHistory:[],
+      userId,runId:run.runId,stepId:run.stepId,contextPack:pack,focusPaths:['src/huge.ts'],
+    },{forcedAgentKey:'FORGE',profile:'BASE_FREE'});
+    const selection=hugeSelection!.content!;
+    assert.equal(seen[0].existingFiles['src/huge.ts'],huge.slice(selection.start,selection.end));
+    assert.equal('src/omitted.ts' in seen[0].existingFiles,false);
+    assert.ok(seen[0].contextBrief.includes('content=partial'));
+  } finally { cleanupRun(run.runId,projectId,userId); }
+});
