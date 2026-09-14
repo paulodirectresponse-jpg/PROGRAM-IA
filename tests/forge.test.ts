@@ -440,18 +440,34 @@ Criar API segura
       assert.equal(resolved, 'build');
     });
 
-    test('4.11: Somente o modo Automático reclassifica intenção pelo texto', () => {
+    test('4.11: Modo Automático separa conversa de execução de software', () => {
       assert.equal(
         LLMAdapterService.resolveRequestedMode('Apenas planeje a arquitetura do sistema, sem implementar', 'auto'),
         'plan'
       );
       assert.equal(
-        LLMAdapterService.resolveRequestedMode('Planeje a arquitetura e deixe o sistema pronto', 'auto'),
+        LLMAdapterService.resolveRequestedMode('Planeje a arquitetura e depois construa o sistema', 'auto'),
         'build'
       );
       assert.equal(
         LLMAdapterService.resolveRequestedMode('Publique este projeto no GitHub', 'auto'),
         'publish'
+      );
+      assert.equal(
+        LLMAdapterService.resolveRequestedMode('O que você pode fazer por mim?', 'auto'),
+        'auto'
+      );
+      assert.equal(
+        LLMAdapterService.resolveRequestedMode('Me ajude a deixar essa ideia mais detalhada', 'auto'),
+        'auto'
+      );
+      assert.equal(
+        LLMAdapterService.resolveRequestedMode('Adicione mais detalhes a essa ideia', 'auto'),
+        'auto'
+      );
+      assert.equal(
+        LLMAdapterService.resolveRequestedMode('Adicione um botão de login nesta tela', 'auto'),
+        'build'
       );
     });
 
