@@ -408,3 +408,117 @@ test('phase2 workflow materializes FORGE proposal in sandbox while official work
     cleanup(env);
   }
 });
+
+
+test('phase2 sandbox process environment replaces host home temp and provider secrets', async () => {
+  const env=setupProject();
+  const previousSecret=process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY='phase2-host-secret-must-not-leak';
+  try {
+    WorkspaceManager.writeFile(env.projectId,'package.json',JSON.stringify({
+      scripts:{
+        envcheck:'node -e "console.log(JSON.stringify({home:process.env.HOME,userprofile:process.env.USERPROFILE,tmp:process.env.TMP,npmrc:process.env.NPM_CONFIG_USERCONFIG,secret:process.env.OPENAI_API_KEY||null}))"'
+      }
+    }));
+    const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-env',stepId:'step-env'});
+    const result=await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-env',stepId:'step-env',sandboxId:sandbox.id},
+      {toolKey:'process.run',input:{script:'envcheck',timeoutMs:10000},idempotencyKey:'envcheck-once'}
+    );
+    assert.equal(result.status,'succeeded');
+    const output=String((result.output as any).output||'');
+    assert.equal(output.includes('phase2-host-secret-must-not-leak'),false);
+    assert.ok(output.includes(path.join(sandbox.rootPath,'.forge-home')));
+    assert.equal(SandboxManager.getFiles(sandbox.id,env.userId,env.projectId).some(file=>file.path.startsWith('.forge-home/')),false);
+  } finally {
+    if(previousSecret===undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY=previousSecret;
+    cleanup(env);
+  }
+});
+
+test('phase2 validator-generated artifacts are excluded from approved atomic merge', async () => {
+  const env=setupProject();
+  try {
+    WorkspaceManager.writeFile(env.projectId,'index.html','<html><body>old</body></html>');
+    WorkspaceManager.writeFile(env.projectId,'package.json',JSON.stringify({
+      scripts:{build:'node -e "require(\'fs\').writeFileSync(\'generated-by-build.txt\',\'artifact\')"'}
+    }));
+    const proposal={
+      id:'proposal-generated-artifact',
+      summary:'update html only',
+      requiresConfirmation:true,
+      status:'pending',
+      files:[{path:'index.html',action:'modify',content:'<html><body>new</body></html>'}],
+    };
+    const result=await SandboxProposalApplyService.apply({
+      userId:env.userId,projectId:env.projectId,proposal,summary:'merge without build artifact',
+    });
+    assert.equal(result.success,true);
+    assert.equal(result.validation?.status,'passed');
+    assert.equal(WorkspaceManager.readFile(env.projectId,'index.html'),'<html><body>new</body></html>');
+    assert.equal(WorkspaceManager.readFile(env.projectId,'generated-by-build.txt'),null);
+    assert.equal(WorkspaceManager.readFile(env.projectId,'package-lock.json'),null);
+  } finally { cleanup(env); }
+});
+
+test('phase2 apply rejects tampered approved file while preserving official workspace', async () => {
+  const env=setupProject();
+  try {
+    WorkspaceManager.writeFile(env.projectId,'index.html','<html><body>old</body></html>');
+    const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-tamper'});
+    await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-tamper',sandboxId:sandbox.id},
+      {toolKey:'workspace.write_file',input:{path:'index.html',content:'<html><body>approved</body></html>'},idempotencyKey:'approved-content'}
+    );
+    await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-tamper',sandboxId:sandbox.id},
+      {toolKey:'workspace.write_file',input:{path:'index.html',content:'<html><body>tampered</body></html>'},idempotencyKey:'tampered-content'}
+    );
+    const proposal={
+      id:'proposal-tamper',
+      summary:'approved html',
+      requiresConfirmation:true,
+      status:'pending',
+      sandboxId:sandbox.id,
+      files:[{path:'index.html',action:'modify',content:'<html><body>approved</body></html>'}],
+    };
+    const result=await SandboxProposalApplyService.apply({
+      userId:env.userId,projectId:env.projectId,proposal,summary:'reject tamper',
+    });
+    assert.equal(result.success,false);
+    assert.equal(result.statusCode,409);
+    assert.equal(result.errorCode,'sandbox_proposal_mismatch');
+    assert.equal(WorkspaceManager.readFile(env.projectId,'index.html'),'<html><body>old</body></html>');
+  } finally { cleanup(env); }
+});
+
+test('phase2 atomic merge ignores unapproved extra sandbox files', async () => {
+  const env=setupProject();
+  try {
+    WorkspaceManager.writeFile(env.projectId,'index.html','<html><body>old</body></html>');
+    const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-extra'});
+    await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-extra',sandboxId:sandbox.id},
+      {toolKey:'workspace.write_file',input:{path:'index.html',content:'<html><body>approved</body></html>'},idempotencyKey:'extra-approved'}
+    );
+    await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-extra',sandboxId:sandbox.id},
+      {toolKey:'workspace.write_file',input:{path:'unapproved.txt',content:'must not merge'},idempotencyKey:'extra-unapproved'}
+    );
+    const proposal={
+      id:'proposal-extra',
+      summary:'approved html only',
+      requiresConfirmation:true,
+      status:'pending',
+      sandboxId:sandbox.id,
+      files:[{path:'index.html',action:'modify',content:'<html><body>approved</body></html>'}],
+    };
+    const result=await SandboxProposalApplyService.apply({
+      userId:env.userId,projectId:env.projectId,proposal,summary:'merge approved subset',
+    });
+    assert.equal(result.success,true);
+    assert.equal(WorkspaceManager.readFile(env.projectId,'index.html'),'<html><body>approved</body></html>');
+    assert.equal(WorkspaceManager.readFile(env.projectId,'unapproved.txt'),null);
+  } finally { cleanup(env); }
+});
