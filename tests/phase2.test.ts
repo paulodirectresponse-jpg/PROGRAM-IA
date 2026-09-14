@@ -147,3 +147,23 @@ test('phase2 database exposes durable tool journal columns and migration', () =>
   const migration=db.prepare('SELECT name FROM schema_migrations WHERE version=5').get() as any;
   assert.equal(migration?.name,'005_tool_execution_journal_foundation');
 });
+
+
+test('phase2 sandbox write stays isolated until merge', async () => {
+  const env=setupProject();
+  try {
+    WorkspaceManager.writeFile(env.projectId,'src/a.ts','export const a=1');
+    const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-sandbox',stepId:'step-sandbox'});
+    const write=await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-sandbox',stepId:'step-sandbox',sandboxId:sandbox.id},
+      {toolKey:'workspace.write_file',input:{path:'src/a.ts',content:'export const a=2'},idempotencyKey:'write-a'}
+    );
+    assert.equal(write.status,'succeeded');
+    assert.equal(WorkspaceManager.readFile(env.projectId,'src/a.ts'),'export const a=1');
+    assert.equal(SandboxManager.readFile(sandbox.id,env.userId,'src/a.ts',env.projectId),'export const a=2');
+    const merge=SandboxManager.mergeAtomic({sandboxId:sandbox.id,userId:env.userId,projectId:env.projectId,title:'merge test'});
+    assert.equal(WorkspaceManager.readFile(env.projectId,'src/a.ts'),'export const a=2');
+    assert.ok(merge.checkpointId);
+    assert.ok(ProjectFileIndex.get(env.projectId,'src/a.ts'));
+  } finally { cleanup(env); }
+});
