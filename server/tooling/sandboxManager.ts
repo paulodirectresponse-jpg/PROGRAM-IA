@@ -292,15 +292,26 @@ export class SandboxManager {
 
     this.assertExpectedChanges(record.id,input.userId,input.projectId,input.allowedChanges,{allowExtraPaths:true});
     const normalizedChanges=input.allowedChanges.map(change=>({...change,path:ToolPolicy.normalizeRelativePath(change.path)}));
-    const beforeCheckpointId=WorkspaceManager.createCheckpoint(input.projectId,`Antes: ${input.title.slice(0,60)}`,'Checkpoint automático antes do merge atômico do sandbox.');
+    const changedFiles=normalizedChanges
+      .filter(change=>record.baseManifest[change.path]!==undefined || change.action!=='delete')
+      .map(change=>({path:change.path,action:change.action==='update'?'modify':change.action}));
+    const beforeCheckpointId=WorkspaceManager.createCheckpoint(
+      input.projectId,
+      `Antes: ${input.title.slice(0,60)}`,
+      'Checkpoint automático antes do merge atômico do sandbox.'
+    );
+
     const official=WorkspaceManager.getProjectDir(input.projectId);
     const parent=path.dirname(official);
     const token=crypto.randomUUID();
     const stage=path.join(parent,`.merge-stage-${input.projectId}-${token}`);
     const backup=path.join(parent,`.merge-backup-${input.projectId}-${token}`);
+    let backupCreated=false;
+    let replacementActive=false;
+    let checkpointId:string|null=null;
 
-    fs.cpSync(official,stage,{recursive:true,force:true,filter:(sourcePath)=>safeOfficialStageCopyFilter(official,sourcePath)});
     try{
+      fs.cpSync(official,stage,{recursive:true,force:true,filter:(sourcePath)=>safeOfficialStageCopyFilter(official,sourcePath)});
       for(const change of normalizedChanges){
         const target=safeJoin(stage,change.path);
         if(change.action==='delete'){
@@ -312,46 +323,63 @@ export class SandboxManager {
           continue;
         }
         const source=safeJoin(record.rootPath,change.path);
-        if(!fs.existsSync(source)||!fs.lstatSync(source).isFile())throw Object.assign(new Error(`Arquivo do sandbox ausente no merge: ${change.path}`),{code:'sandbox_proposal_mismatch'});
+        if(!fs.existsSync(source)||!fs.lstatSync(source).isFile()){
+          throw Object.assign(new Error(`Arquivo do sandbox ausente no merge: ${change.path}`),{code:'sandbox_proposal_mismatch'});
+        }
         fs.mkdirSync(path.dirname(target),{recursive:true});
         fs.copyFileSync(source,target);
       }
 
-      // Close the TOCTOU window: official revision must still match immediately before swap.
+      // Close the TOCTOU window immediately before the directory swap.
       if(this.projectFingerprint(input.projectId)!==record.baseHash){
         db.prepare("UPDATE sandboxes SET status='stale',updated_at=? WHERE id=?").run(new Date().toISOString(),record.id);
         throw Object.assign(new Error('A revisão-base mudou durante a preparação do merge.'),{code:'stale_base_revision'});
       }
 
-      let officialMoved=false;
-      try{
-        fs.renameSync(official,backup);
-        officialMoved=true;
-        fs.renameSync(stage,official);
-        fs.rmSync(backup,{recursive:true,force:true});
-        officialMoved=false;
-      }catch(error){
-        try{if(fs.existsSync(stage))fs.rmSync(stage,{recursive:true,force:true});}catch{}
-        if(officialMoved){
-          try{if(fs.existsSync(official))fs.rmSync(official,{recursive:true,force:true});}catch{}
-          try{fs.renameSync(backup,official);}catch{}
-        }
-        throw error;
-      }
+      fs.renameSync(official,backup);
+      backupCreated=true;
+      fs.renameSync(stage,official);
+      replacementActive=true;
+
+      // Finalization is part of the merge transaction. Keep the backup until every
+      // durable state update succeeds so a DB/context failure cannot leave a partial apply.
+      ContextEngineV2.syncProject({projectId:input.projectId,files:WorkspaceManager.getAllFilesContent(input.projectId)});
+      checkpointId=WorkspaceManager.createCheckpoint(
+        input.projectId,
+        input.title.slice(0,100),
+        input.description||'Merge atômico aprovado a partir de sandbox validado.'
+      );
+      db.prepare("UPDATE sandboxes SET status='merged',merged_checkpoint_id=?,updated_at=? WHERE id=?")
+        .run(checkpointId,new Date().toISOString(),record.id);
+
+      const mergedHash=this.projectFingerprint(input.projectId);
+      try{if(fs.existsSync(backup))fs.rmSync(backup,{recursive:true,force:true});}catch{}
+      backupCreated=false;
+      replacementActive=false;
+      return {checkpointId,beforeCheckpointId,changedFiles,baseHash:record.baseHash,mergedHash};
     }catch(error){
       try{if(fs.existsSync(stage))fs.rmSync(stage,{recursive:true,force:true});}catch{}
+
+      if(backupCreated){
+        try{
+          if(replacementActive&&fs.existsSync(official))fs.rmSync(official,{recursive:true,force:true});
+          if(fs.existsSync(backup))fs.renameSync(backup,official);
+          replacementActive=false;
+          backupCreated=false;
+          try{ContextEngineV2.syncProject({projectId:input.projectId,files:WorkspaceManager.getAllFilesContent(input.projectId)});}catch{}
+        }catch{}
+      }
+
+      if(checkpointId){
+        try{db.prepare('DELETE FROM file_changes WHERE checkpoint_id=?').run(checkpointId);}catch{}
+        try{db.prepare('DELETE FROM checkpoints WHERE id=?').run(checkpointId);}catch{}
+      }
+      try{
+        db.prepare("UPDATE sandboxes SET status='failed',merged_checkpoint_id=NULL,updated_at=? WHERE id=?")
+          .run(new Date().toISOString(),record.id);
+      }catch{}
       throw error;
     }
-
-    ContextEngineV2.syncProject({projectId:input.projectId,files:WorkspaceManager.getAllFilesContent(input.projectId)});
-    const checkpointId=WorkspaceManager.createCheckpoint(input.projectId,input.title.slice(0,100),input.description||'Merge atômico aprovado a partir de sandbox validado.');
-    db.prepare("UPDATE sandboxes SET status='merged',merged_checkpoint_id=?,updated_at=? WHERE id=?")
-      .run(checkpointId,new Date().toISOString(),record.id);
-    const mergedHash=this.projectFingerprint(input.projectId);
-    const changedFiles=normalizedChanges
-      .filter(change=>record.baseManifest[change.path]!==undefined || change.action!=='delete')
-      .map(change=>({path:change.path,action:change.action==='update'?'modify':change.action}));
-    return {checkpointId,beforeCheckpointId,changedFiles,baseHash:record.baseHash,mergedHash};
   }
 
   static cleanup(id:string,userId:string){
