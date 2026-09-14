@@ -534,7 +534,7 @@ export class SandboxProposalApplyService {
 
       if(sentinelReview?.verdict!=='pass'){
         const error=sentinelRepairError||new Error('A correção solicitada pelo SENTINEL não passou pela revisão final.');
-        RunService.finish(input.runId,undefined,error?.name==='AbortError'?'aborted':'failed');
+        RunService.finish(input.runId,String(sentinelReview?.stepId||''),error?.name==='AbortError'?'aborted':'failed');
         return {
           success:false,statusCode:error?.name==='AbortError'?499:422,
           error:'A correção solicitada pelo SENTINEL não passou pela revisão final; o workspace oficial não foi alterado.',
