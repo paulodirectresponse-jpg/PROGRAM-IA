@@ -17,6 +17,10 @@ export class ExecutionWorker{
     return SandboxProcessSupervisor.safeEnvironment();
   }
 
+  static sandboxEnvironment(cwd:string){
+    return SandboxProcessSupervisor.sandboxEnvironment(cwd);
+  }
+
   static async run(cwd:string,tool:WorkerTool,signal?:AbortSignal):Promise<WorkerResult>{
     const scripts=this.available(cwd);
     let script:WorkerTool|null=null;
