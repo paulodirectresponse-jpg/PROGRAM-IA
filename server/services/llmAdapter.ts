@@ -1238,7 +1238,8 @@ export class LLMAdapterService {
           if (options.signal?.aborted) throw err;
           lastError = err;
           lastReason = this.classifyExecutionError(err);
-          const retryable = lastReason === 'provider_error' || lastReason === 'network_error';
+          const terminalTunnelOutage=/HTTP\s*530|Error\s*1033|Cloudflare Tunnel error|trycloudflare\.com/i.test(String(err?.message||err));
+          const retryable = !terminalTunnelOutage && (lastReason === 'provider_error' || lastReason === 'network_error');
 
           if (!retryable || attempt >= maxAttempts) break;
           await this.waitForRetry(350 * attempt, options.signal);
