@@ -1,8 +1,10 @@
 import { AgentEngine } from '../agent-engine/agentEngine.js';
+import { db } from '../db/index.js';
 import { ContextEngineV2 } from '../context-engine/contextEngine.js';
 import { RequirementLedgerService } from '../services/requirementLedgerService.js';
 import { RunService } from '../services/runService.js';
 import { ValidatorEngine } from '../services/validatorEngine.js';
+import { WorkspaceManager } from '../services/workspaceManager.js';
 import { ProposalSandboxService } from './proposalSandboxService.js';
 import { SandboxManager } from './sandboxManager.js';
 import { ToolExecutionService } from './toolExecutionService.js';
