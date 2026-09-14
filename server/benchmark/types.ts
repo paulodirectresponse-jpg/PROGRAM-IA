@@ -16,6 +16,7 @@ export interface BenchmarkChecks {
   minAcceptanceCriteria?:number;
   requiredPlanTerms?:string[];
   replyIncludes?:string[];
+  replyIncludesAny?:string[][];
   requiredPaths?:string[];
   allowedChangedPaths?:string[];
   forbiddenChangedPaths?:string[];
