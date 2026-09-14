@@ -29,6 +29,7 @@ export class SandboxProposalApplyService {
       return {success:false,statusCode:409,error:'Proposta vazia ou inválida.'};
     }
 
+    let materializedValidation:any=null;
     if(!proposal.sandboxId){
       const materialized=await ProposalSandboxService.materialize({
         userId:input.userId,projectId:input.projectId,runId:input.runId||null,stepId:null,
@@ -38,12 +39,13 @@ export class SandboxProposalApplyService {
       proposal.baseRevision=materialized.baseRevision;
       proposal.sandboxValidation=materialized.validation;
       proposal.toolExecutionIds=materialized.toolExecutionIds;
+      materializedValidation=materialized.validation;
     }
 
     const sandboxId=String(proposal.sandboxId);
     const reqIds=requirementIds(input.projectId,input.runId,input.planId);
     let repairSummary:any=null;
-    let validation=await ValidatorEngine.validate({
+    let validation=materializedValidation || await ValidatorEngine.validate({
       projectId:input.projectId,runId:input.runId||undefined,signal:input.signal,
       sandboxId,userId:input.userId,
     });
