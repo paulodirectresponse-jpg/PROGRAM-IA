@@ -167,14 +167,28 @@ Esses thresholds podem ser recalibrados após o primeiro run real, mas qualquer 
 - o runner não altera Supabase remoto como parte da implementação;
 - nenhuma execução real de 30 casos deve ser disparada sem decisão explícita do usuário sobre budget.
 
+## Interface operacional — IMPLEMENTADA NA BRANCH
+
+O modal de Agentes agora inclui o painel de Benchmark:
+- preflight de provider/custo;
+- seleção de budget;
+- toggle de EXPERT_PAID;
+- confirmação explícita de créditos reais;
+- smoke de 3 casos;
+- execução dos 30 casos;
+- cancel/resume;
+- polling de progresso;
+- score, pass rate, first-pass, repair rate, custo e breakdown por categoria;
+- detalhe de cada caso;
+- resultado do release gate para run completo.
+
 ## Ainda pendente para concluir a Fase 4
 
-1. Validar 4A no CI final da branch.
-2. Adicionar visualização de benchmark/relatório na interface ou painel operacional.
-3. Executar smoke real de poucos casos com provider configurado.
+1. Validar o HEAD final da implementação no CI e no production-image smoke do PR.
+2. Executar smoke real de poucos casos com provider configurado e budget explicitamente aprovado.
+3. Auditar o smoke e corrigir qualquer falso positivo/falso negativo do score.
 4. Executar a suíte canônica completa de 30 casos com provider real.
-5. Auditar falsos positivos/falsos negativos do score.
-6. Rodar o release gate e registrar resultado final.
-7. Só então marcar a Fase 4 como concluída e integrar à `main`.
+5. Rodar o release gate e registrar resultado final.
+6. Só então marcar a Fase 4 como concluída e integrar à `main`.
 
 Não confundir a existência do harness com a conclusão do benchmark real.
