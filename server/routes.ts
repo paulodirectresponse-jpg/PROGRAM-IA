@@ -2452,6 +2452,13 @@ router.get('/benchmarks/:benchmarkRunId',requireAuth,(req:Request,res:Response)=
   res.json({run});
 });
 
+router.get('/benchmarks/:benchmarkRunId/cases/:caseId/screenshot/:viewport',requireAuth,(req:Request,res:Response)=>{
+  const file=BenchmarkService.screenshotPath(req.params.benchmarkRunId,req.params.caseId,req.params.viewport,req.user!.id);
+  if(!file)return res.status(404).json({error:'Screenshot de benchmark não encontrado.'});
+  res.setHeader('Cache-Control','private, no-store');
+  res.sendFile(file);
+});
+
 router.get('/benchmarks/:benchmarkRunId/release-gate',requireAuth,(req:Request,res:Response)=>{
   const gate=BenchmarkService.releaseGate(req.params.benchmarkRunId,req.user!.id);
   if(!gate)return res.status(404).json({error:'Benchmark não encontrado.'});
