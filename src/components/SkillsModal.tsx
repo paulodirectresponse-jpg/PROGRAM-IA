@@ -261,15 +261,18 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({
                       {onUpdateSkill && <button title="Editar skill" className="p-1 text-slate-400 hover:text-cyan-300" onClick={()=>{
                         setEditingId(skill.id);setName(skill.name);setSlug(skill.slug);setDescription(skill.description);setInstructions(skill.system_instructions);setScope(skill.scope==='workspace'?'workspace':'project');setIsCreating(true);
                       }}><Pencil size={15}/></button>}
-                      {isCustom && onDeleteSkill && (
+                      {onDeleteSkill && (
                         <button
                           onClick={() => {
-                            if (confirm(`Deseja excluir a skill personalizada "${skill.name}"?`)) {
-                              onDeleteSkill(skill.id);
+                            const warning=isCustom
+                              ? `Deseja excluir a skill personalizada "${skill.name}"?`
+                              : `Deseja excluir a skill "${skill.name}"? Ela será removida da sua conta.`;
+                            if (confirm(warning)) {
+                              void onDeleteSkill(skill.id);
                             }
                           }}
                           className="p-1 text-slate-500 hover:text-red-400 hover:bg-red-950/30 rounded transition cursor-pointer"
-                          title="Excluir skill personalizada"
+                          title="Excluir skill"
                         >
                           <Trash2 size={15} />
                         </button>
