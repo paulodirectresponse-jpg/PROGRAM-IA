@@ -26,6 +26,7 @@ import { ToolExecutionJournal } from './tooling/toolExecutionJournal.js';
 import { SandboxManager } from './tooling/sandboxManager.js';
 import { BrowserQualityService } from './browser/browserQualityService.js';
 import { SandboxProposalApplyService } from './tooling/sandboxProposalApplyService.js';
+import { BenchmarkService } from './benchmark/benchmarkService.js';
 
 export const router = express.Router();
 const activeProjects = new Set<string>();
@@ -2431,6 +2432,57 @@ function publicBrowserQuality(result:any){
       : [],
   };
 }
+
+router.get('/benchmarks/catalog',requireAuth,(_req:Request,res:Response)=>{
+  res.json(BenchmarkService.catalog());
+});
+
+router.get('/benchmarks',requireAuth,(req:Request,res:Response)=>{
+  res.json({runs:BenchmarkService.list(req.user!.id)});
+});
+
+router.get('/benchmarks/:benchmarkRunId',requireAuth,(req:Request,res:Response)=>{
+  const run=BenchmarkService.get(req.params.benchmarkRunId,req.user!.id);
+  if(!run)return res.status(404).json({error:'Benchmark não encontrado.'});
+  res.json({run});
+});
+
+router.post('/benchmarks',requireAuth,(req:Request,res:Response)=>{
+  try{
+    const run=BenchmarkService.start({
+      userId:req.user!.id,
+      maxCostUsd:Number(req.body?.maxCostUsd),
+      confirmRealProviderCosts:req.body?.confirmRealProviderCosts===true,
+      allowExpert:req.body?.allowExpert===true,
+      caseIds:Array.isArray(req.body?.caseIds)?req.body.caseIds.map(String):undefined,
+    });
+    res.status(202).json({run});
+  }catch(error:any){
+    const code=String(error?.code||'benchmark_start_failed');
+    const status=code==='benchmark_no_real_provider'?409:code==='benchmark_cost_confirmation_required'||code==='benchmark_invalid_budget'||code==='benchmark_invalid_cases'?400:500;
+    res.status(status).json({error:String(error?.message||error),code});
+  }
+});
+
+router.post('/benchmarks/:benchmarkRunId/cancel',requireAuth,(req:Request,res:Response)=>{
+  const run=BenchmarkService.cancel(req.params.benchmarkRunId,req.user!.id);
+  if(!run)return res.status(404).json({error:'Benchmark não encontrado.'});
+  res.json({run});
+});
+
+router.post('/benchmarks/:benchmarkRunId/resume',requireAuth,(req:Request,res:Response)=>{
+  try{
+    const run=BenchmarkService.resume(req.params.benchmarkRunId,req.user!.id,{
+      maxCostUsd:req.body?.maxCostUsd===undefined?undefined:Number(req.body.maxCostUsd),
+      confirmRealProviderCosts:req.body?.confirmRealProviderCosts===true,
+    });
+    res.status(202).json({run});
+  }catch(error:any){
+    const code=String(error?.code||'benchmark_resume_failed');
+    const status=code==='benchmark_not_found'?404:code==='benchmark_not_resumable'?409:400;
+    res.status(status).json({error:String(error?.message||error),code});
+  }
+});
 
 router.post('/projects/:projectId/browser-quality/run',requireAuth,requireProjectOwner,async(req:Request,res:Response)=>{
   try{
