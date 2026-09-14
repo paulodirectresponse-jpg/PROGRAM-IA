@@ -212,3 +212,20 @@ test('phase3 direct proposal with executable browser failure is blocked before o
     assert.match(WorkspaceManager.readFile(env.projectId,'index.html')||'',/Original/);
   }finally{cleanup(env);}
 });
+
+
+test('phase3 browser evidence cleanup removes persisted screenshot artifacts',async()=>{
+  const env=setupProject();
+  try{
+    WorkspaceManager.writeFile(env.projectId,'index.html','<!doctype html><html><body><h1>Cleanup Evidence</h1></body></html>');
+    const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-browser-cleanup'});
+    const quality=await BrowserQualityService.inspect({userId:env.userId,projectId:env.projectId,sandboxId:sandbox.id,runId:'run-browser-cleanup'});
+    const screenshot=quality.viewports[0]?.screenshotPath;
+    assert.ok(screenshot&&fs.existsSync(screenshot));
+    const cleaned=BrowserQualityService.cleanupProject(env.projectId,env.userId);
+    assert.equal(cleaned.runs,1);
+    assert.ok(cleaned.artifacts>=2);
+    assert.equal(fs.existsSync(screenshot!),false);
+    assert.equal(BrowserQualityService.get(quality.id),null);
+  }finally{cleanup(env);}
+});
