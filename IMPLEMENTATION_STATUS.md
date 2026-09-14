@@ -124,6 +124,9 @@ Implementado e coberto por suíte:
 - não existe hard cap lógico de arquivos introduzido pela Fase 2;
 - migrations locais 005/006 cobrem tool journal e sandboxes;
 - Supabase remoto não foi alterado.
+- produção Railway endurecida com Dockerfile Playwright real e smoke test de container;
+- bootstrap SQLite corrigido para não reaplicar o snapshot de schema sobre volume legado;
+- recuperação de sandboxes interrompidos não pode mais derrubar o boot da aplicação.
 
 Limite explicitamente documentado: o sandbox é uma fronteira lógica de filesystem/processo do PROGRAM-IA, não uma microVM/container de kernel para código deliberadamente hostil.
 
