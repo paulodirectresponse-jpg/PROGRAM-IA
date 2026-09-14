@@ -84,6 +84,28 @@ app.get('/api/health', (_req, res) => {
 app.use('/api', apiRouter);
 
 // Vite middleware setup
+async function maybeRunPhase4Benchmark() {
+  if (process.env.PHASE4_AUTORUN !== 'full') return;
+  const userId=String(process.env.PHASE4_AUTORUN_USER_ID||'').trim();
+  const maxCostUsd=Number(process.env.PHASE4_AUTORUN_MAX_COST_USD||0.5);
+  if(!userId)throw new Error('PHASE4_AUTORUN_USER_ID is required.');
+  if(!Number.isFinite(maxCostUsd)||maxCostUsd<0.05||maxCostUsd>1){
+    throw new Error('PHASE4_AUTORUN_MAX_COST_USD must be between US$0.05 and US$1.00.');
+  }
+  const sync=await CloudSyncService.pullDirect(userId);
+  if(sync.status!=='synced')throw new Error(`Phase 4 autorun cloud bootstrap failed: ${sync.status}`);
+  const preflight=BenchmarkService.preflight(userId,false);
+  console.log('PHASE4_AUTORUN_PREFLIGHT',JSON.stringify(preflight));
+  if(!preflight.canRun||preflight.baseCandidates.length===0)throw new Error('No BASE_FREE provider available for Phase 4 autorun.');
+  const run=BenchmarkService.start({
+    userId,
+    maxCostUsd,
+    confirmRealProviderCosts:true,
+    allowExpert:false,
+  });
+  console.log('PHASE4_AUTORUN_STARTED',JSON.stringify({runId:run?.id||null,totalCases:run?.totalCases||0,maxCostUsd}));
+}
+
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -108,6 +130,11 @@ async function startServer() {
     console.log(
       `Forge Agent full-stack server running on http://0.0.0.0:${PORT}`
     );
+    queueMicrotask(()=>{
+      void maybeRunPhase4Benchmark().catch(error=>{
+        console.error('PHASE4_AUTORUN_ERROR',String(error?.message||error));
+      });
+    });
   });
 
   const shutdown = async () => {
