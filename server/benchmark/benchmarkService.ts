@@ -366,6 +366,8 @@ export class BenchmarkService {
   }
 
   static start(input:{userId:string;maxCostUsd:number;confirmRealProviderCosts:boolean;allowExpert?:boolean;caseIds?:string[]}){
+    const active=db.prepare("SELECT id FROM benchmark_runs WHERE user_id=? AND status IN ('queued','running') LIMIT 1").get(input.userId) as {id:string}|undefined;
+    if(active)throw Object.assign(new Error('Já existe um benchmark pago em execução para este usuário.'),{code:'benchmark_already_running',benchmarkRunId:active.id});
     if(input.confirmRealProviderCosts!==true)throw Object.assign(new Error('Confirme explicitamente o uso de créditos reais dos providers.'),{code:'benchmark_cost_confirmation_required'});
     const maxCostUsd=Number(input.maxCostUsd);
     if(!Number.isFinite(maxCostUsd)||maxCostUsd<0.05||maxCostUsd>MAX_BENCHMARK_COST_USD)throw Object.assign(new Error('maxCostUsd deve estar entre US$0.05 e US$3.00.'),{code:'benchmark_invalid_budget'});
@@ -382,12 +384,19 @@ export class BenchmarkService {
     if(!selected.length||selected.length!==(requested.length||selected.length))throw Object.assign(new Error('caseIds contém caso inexistente ou duplicado.'),{code:'benchmark_invalid_cases'});
 
     const id=`bench-run-${crypto.randomUUID()}`,created=now();
-    db.prepare(`INSERT INTO benchmark_runs(id,user_id,suite_key,status,total_cases,max_cost_usd,allow_expert,config_json,summary_json,created_at)
-      VALUES(?,?,?,'queued',?,?,?,?,?,?)`).run(
-      id,input.userId,PHASE4_SUITE_KEY,selected.length,maxCostUsd,input.allowExpert?1:0,
-      JSON.stringify({caseIds:selected.map(item=>item.id),canonicalFullSuite:selected.length===PHASE4_BENCHMARK_CASES.length,realProvidersRequired:true}),
-      JSON.stringify({}),created
-    );
+    try{
+      db.prepare(`INSERT INTO benchmark_runs(id,user_id,suite_key,status,total_cases,max_cost_usd,allow_expert,config_json,summary_json,created_at)
+        VALUES(?,?,?,'queued',?,?,?,?,?,?)`).run(
+        id,input.userId,PHASE4_SUITE_KEY,selected.length,maxCostUsd,input.allowExpert?1:0,
+        JSON.stringify({caseIds:selected.map(item=>item.id),canonicalFullSuite:selected.length===PHASE4_BENCHMARK_CASES.length,realProvidersRequired:true}),
+        JSON.stringify({}),created
+      );
+    }catch(error:any){
+      if(/UNIQUE constraint failed: benchmark_runs\.user_id/i.test(String(error?.message||error))){
+        throw Object.assign(new Error('Já existe um benchmark pago em execução para este usuário.'),{code:'benchmark_already_running'});
+      }
+      throw error;
+    }
     selected.forEach((definition,index)=>{
       db.prepare(`INSERT INTO benchmark_case_runs(id,benchmark_run_id,case_id,case_order,category,mode,agent_key,status,created_at)
         VALUES(?,?,?,?,?,?,?,'pending',?)`).run(`bench-case-${crypto.randomUUID()}`,id,definition.id,index,definition.category,definition.mode,definition.agentKey,created);
