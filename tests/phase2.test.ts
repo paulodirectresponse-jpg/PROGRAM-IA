@@ -323,3 +323,24 @@ test('phase2 sandbox migration and tool provenance columns exist', () => {
   const migration=db.prepare('SELECT name FROM schema_migrations WHERE version=6').get() as any;
   assert.equal(migration?.name,'006_phase2_isolated_sandboxes');
 });
+
+
+test('phase2 restart marks in-flight tool execution interrupted instead of replaying it', () => {
+  const env=setupProject();
+  try {
+    const definition=ToolRegistry.get('workspace.list_tree')!;
+    const running=ToolExecutionJournal.start({
+      context:{userId:env.userId,projectId:env.projectId,runId:'run-restart',stepId:'step-restart'},
+      definition,
+      requestInput:{},
+      idempotencyKey:'restart-list',
+    });
+    assert.equal(running.status,'running');
+    initializeDatabase();
+    const recovered=ToolExecutionJournal.get(running.id);
+    assert.equal(recovered?.status,'interrupted');
+    assert.equal(recovered?.errorCode,'worker_interrupted');
+    const replay=ToolExecutionJournal.findByIdempotency('run-restart','restart-list');
+    assert.equal(replay?.id,running.id);
+  } finally { cleanup(env); }
+});
