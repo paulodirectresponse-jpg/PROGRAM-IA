@@ -24,6 +24,7 @@ import { ToolRegistry } from './tooling/toolRegistry.js';
 import { ToolExecutionService } from './tooling/toolExecutionService.js';
 import { ToolExecutionJournal } from './tooling/toolExecutionJournal.js';
 import { SandboxManager } from './tooling/sandboxManager.js';
+import { SandboxProposalApplyService } from './tooling/sandboxProposalApplyService.js';
 
 export const router = express.Router();
 const activeProjects = new Set<string>();
