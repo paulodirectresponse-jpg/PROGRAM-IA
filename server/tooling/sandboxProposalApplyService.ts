@@ -42,6 +42,7 @@ export class SandboxProposalApplyService {
 
     const sandboxId=String(proposal.sandboxId);
     const reqIds=requirementIds(input.projectId,input.runId,input.planId);
+    let repairSummary:any=null;
     let validation=await ValidatorEngine.validate({
       projectId:input.projectId,runId:input.runId||undefined,signal:input.signal,
       sandboxId,userId:input.userId,
@@ -61,7 +62,7 @@ export class SandboxProposalApplyService {
       });
       RunService.finishStep(sentinel,'completed',{sandboxId,failedGate:failed?.tool||null,error:String(errorOutput)});
 
-      const repairStep=RunService.createStep(input.runId,'FORGE','Corrigir falha no sandbox',undefined,'local',{
+      const repairStep=RunService.createStep(input.runId,'FORGE','Corrigir falha de validação',undefined,'local',{
         sandboxId,affectedFiles,failedGate:failed?.tool||null,
       });
       try{
@@ -102,6 +103,7 @@ export class SandboxProposalApplyService {
           validation,blockers:validation.status==='failed'?['repair_validation_failed']:[],nextState:{status:validation.status},
         });
         RunService.finishStep(repairStep,validation.status==='failed'?'failed':'completed',{sandboxId,validation,profileKey:repair.profileKey});
+        if(validation.status!=='failed') repairSummary={attempted:true,status:'passed',profileKey:repair.profileKey,files:repairFiles.map((file:any)=>file.path)};
         if(validation.status==='failed'){
           RequirementLedgerService.setStatusForRun(input.runId,'failed',{type:'sandbox_repair_failed',validation},repairFiles.map((f:any)=>f.path));
           RunService.finish(input.runId,repairStep,'failed');
@@ -154,7 +156,7 @@ export class SandboxProposalApplyService {
 
     return {
       success:true,statusCode:200,checkpointId:merge.checkpointId,validation,sandboxId,
-      changedFiles,needsVerification:validation.status!=='passed',merge,
+      changedFiles,needsVerification:validation.status!=='passed',merge,repair:repairSummary,
     };
   }
 }
