@@ -13,7 +13,16 @@ function redact(value:string){
   return value
     .replace(/\b(?:sk|ghp|github_pat|xox[baprs])-[-A-Za-z0-9_]{12,}\b/g,'[REDACTED]')
     .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s]+/ig,'$1[REDACTED]')
-    .replace(/\b(API_KEY|TOKEN|SECRET|PASSWORD)\s*=\s*[^\s]+/ig,'$1=[REDACTED]');
+    .replace(/\b(API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY)\s*=\s*[^\s]+/ig,'$1=[REDACTED]')
+    .replace(/(_authToken\s*=\s*)[^\s]+/ig,'$1[REDACTED]')
+    .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/ig,'$1[REDACTED]@');
+}
+
+function sandboxPath(cwd:string,name:string){
+  const resolved=path.resolve(cwd,name);
+  const root=path.resolve(cwd);
+  if(resolved!==root&&!resolved.startsWith(root+path.sep))throw new Error('Sandbox env path escaped cwd.');
+  return resolved;
 }
 
 export class SandboxProcessSupervisor {
@@ -21,6 +30,53 @@ export class SandboxProcessSupervisor {
     const allowed=['PATH','Path','PATHEXT','SYSTEMROOT','SystemRoot','WINDIR','COMSPEC','TEMP','TMP','TMPDIR','HOME','USERPROFILE','APPDATA','LOCALAPPDATA'];
     const env:NodeJS.ProcessEnv={CI:'1',FORGE_SANDBOX:'1',NO_COLOR:'1'};
     for(const key of allowed)if(process.env[key])env[key]=process.env[key];
+    for(const [key,value] of Object.entries(extra))env[key]=value;
+    return env;
+  }
+
+  static sandboxEnvironment(cwd:string,extra:Record<string,string>={}){
+    const home=sandboxPath(cwd,'.forge-home');
+    const tmp=sandboxPath(home,'tmp');
+    const config=sandboxPath(home,'config');
+    fs.mkdirSync(tmp,{recursive:true});
+    fs.mkdirSync(config,{recursive:true});
+    const npmrc=sandboxPath(home,'.npmrc');
+    if(!fs.existsSync(npmrc))fs.writeFileSync(npmrc,'','utf8');
+
+    const env=this.safeEnvironment(extra);
+    env.HOME=home;
+    env.USERPROFILE=home;
+    env.TEMP=tmp;
+    env.TMP=tmp;
+    env.TMPDIR=tmp;
+    env.APPDATA=config;
+    env.LOCALAPPDATA=config;
+    env.XDG_CONFIG_HOME=config;
+    env.XDG_CACHE_HOME=sandboxPath(home,'cache');
+    env.NPM_CONFIG_USERCONFIG=npmrc;
+    env.NPM_CONFIG_CACHE=sandboxPath(home,'npm-cache');
+    env.NPM_CONFIG_IGNORE_SCRIPTS='true';
+    env.NPM_CONFIG_FUND='false';
+    env.NPM_CONFIG_AUDIT='false';
+    env.GIT_CONFIG_GLOBAL=process.platform==='win32'?'NUL':'/dev/null';
+    env.GIT_CONFIG_NOSYSTEM='1';
+    env.GIT_TERMINAL_PROMPT='0';
+    env.GCM_INTERACTIVE='Never';
+    env.CI='1';
+    env.FORGE_SANDBOX='1';
+
+    const localBin=path.join(cwd,'node_modules','.bin');
+    if(process.platform==='win32'){
+      const hostPath=env.Path||env.PATH||'';
+      env.Path=[localBin,path.dirname(process.execPath),hostPath].filter(Boolean).join(path.delimiter);
+      delete env.PATH;
+    }else{
+      const standard=['/usr/local/bin','/usr/bin','/bin'];
+      const nodeDir=path.dirname(process.execPath);
+      env.PATH=[localBin,nodeDir,...standard].filter((item,index,all)=>all.indexOf(item)===index).join(path.delimiter);
+      delete env.Path;
+    }
+
     for(const [key,value] of Object.entries(extra))env[key]=value;
     return env;
   }
@@ -57,7 +113,7 @@ export class SandboxProcessSupervisor {
         shell:false,
         windowsHide:true,
         detached:process.platform!=='win32',
-        env:this.safeEnvironment(),
+        env:this.sandboxEnvironment(input.cwd),
       });
       const collect=(chunk:Buffer)=>{
         output=redact((output+chunk.toString()).slice(-20000));
