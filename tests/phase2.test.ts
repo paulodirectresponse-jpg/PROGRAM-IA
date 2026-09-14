@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import path from 'node:path';
 import { db, initializeDatabase } from '../server/db/index.js';
 import { WorkspaceManager } from '../server/services/workspaceManager.js';
 import { ToolRegistry } from '../server/tooling/toolRegistry.js';
