@@ -168,7 +168,11 @@ export class ToolExecutionService {
           entryPath:request.input.entryPath ? String(request.input.entryPath) : undefined,
           signal:context.signal,
         });
-        output=quality;
+        const publicQuality={
+          ...quality,
+          viewports:quality.viewports.map(({screenshotPath:_screenshotPath,...viewport})=>viewport),
+        };
+        output=publicQuality;
         summary={
           qualityRunId:quality.id,
           status:quality.status,
