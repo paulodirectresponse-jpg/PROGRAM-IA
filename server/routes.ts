@@ -738,6 +738,12 @@ router.delete('/projects/:id', requireAuth, requireProjectOwner, async (req: Req
     db.prepare('DELETE FROM context_commits WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM context_architecture_graphs WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM context_project_files WHERE project_id = ?').run(projectId);
+    BrowserQualityService.cleanupProject(projectId,req.user!.id);
+    const projectSandboxes=db.prepare('SELECT id FROM sandboxes WHERE project_id=?').all(projectId) as Array<{id:string}>;
+    for(const sandbox of projectSandboxes){
+      try{SandboxManager.cleanup(sandbox.id,req.user!.id);}catch{}
+    }
+    db.prepare('DELETE FROM sandboxes WHERE project_id=?').run(projectId);
     const runIds = db.prepare('SELECT id FROM agent_runs WHERE project_id = ?').all(projectId) as {id:string}[];
     for (const run of runIds) {
       db.prepare('DELETE FROM model_invocations WHERE run_id = ?').run(run.id);
