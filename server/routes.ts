@@ -1349,6 +1349,38 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
           });
     controller.signal.throwIfAborted();
 
+    if(conversationalOnly&&(result.hasErrors||result.invalidResponse)){
+      const tried=new Set([providerKey+'::'+modelId]);
+      const profiles:ProfileKey[]=['BASE_FREE','EXPERT_PAID','PREMIUM_OVERRIDE'];
+      for(const profile of profiles){
+        let recovered=false;
+        for(const candidate of ModelRouter.candidates(req.user!.id,profile)){
+          const key=candidate.provider_key+'::'+candidate.model_id;
+          if(tried.has(key))continue;
+          tried.add(key);
+          const candidateConfig=LLMAdapterService.getProviderConfig(candidate.provider_key,req.user!.id);
+          if(!candidateConfig.isConfigured)continue;
+          const fallbackResult=await LLMAdapterService.executePrompt({
+            prompt:conversationalPrompt,mode:'auto',projectId,
+            providerKey:candidate.provider_key,modelId:candidate.model_id,
+            existingFiles,appliedSkills,conversationHistory:history,
+            userId:req.user!.id,signal:controller.signal,allowActiveFallback:false,
+          });
+          controller.signal.throwIfAborted();
+          if(!fallbackResult.hasErrors&&!fallbackResult.invalidResponse){
+            ModelRouter.recordCandidateResult(candidate.id,true);
+            result=fallbackResult;
+            recovered=true;
+            break;
+          }
+          const reason=String(fallbackResult.errorReason||fallbackResult.errorMessage||'');
+          const operational=/timeout|network|rate_limit|provider_error|429|5\d\d|fetch|enotfound|eai_again/i.test(reason);
+          ModelRouter.recordCandidateResult(candidate.id,false,operational?'operational':'incompatible');
+        }
+        if(recovered)break;
+      }
+    }
+
     if(conversationalOnly){
       // Conversa nunca pode vazar para o pipeline de mutação mesmo se um provider
       // retornar por engano um schema de PLAN/BUILD.
