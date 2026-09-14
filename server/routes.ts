@@ -1659,6 +1659,10 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
       };
     }
 
+    if(result.proposal?.files?.length&&!result.hasErrors){
+      await materializeProposalInSandbox({userId:req.user!.id,projectId:run.project_id,runId:run.id,stepId:forge,proposal:result.proposal,signal:controller.signal});
+    }
+
     if (result.hasErrors || result.invalidResponse || !result.proposal?.files?.length) {
       const sentinel = RunService.createStep(run.id,'SENTINEL','Diagnosticar falha após continuação',undefined,'micro',
         RunService.context('micro',{objective:'Diagnosticar a falha da continuação',errors:[result.errorMessage || result.errorReason || 'Resposta inválida']}));
