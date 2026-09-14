@@ -189,7 +189,7 @@ function recordContextCommitFromStep(x: Input, agentKey: string, scope: ContextS
     task,
     decisions: details.decisions || [],
     changedFiles: details.changedFiles || [],
-    requirementIds: x.requirementIds || [],
+    requirementIds: resolvedRequirementIds(x),
     validation: details.validation ?? null,
     blockers: details.blockers || [],
     nextState: details.nextState ?? null,
