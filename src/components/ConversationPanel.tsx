@@ -65,6 +65,8 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   const [showAdvancedModes, setShowAdvancedModes] = useState(false);
   const [expandedDiffs, setExpandedDiffs] = useState<Record<string, boolean>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesViewportRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
   const [clockNow,setClockNow]=useState(()=>Date.now());
 
   useEffect(()=>{
@@ -86,8 +88,21 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   const executionBusy=isLoading||activeAgentRunStatus==='running';
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading]);
+    if (!stickToBottomRef.current) return;
+    const frame=window.requestAnimationFrame(()=>{
+      const viewport=messagesViewportRef.current;
+      if(viewport) viewport.scrollTop=viewport.scrollHeight;
+      else messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    });
+    return()=>window.cancelAnimationFrame(frame);
+  }, [messages.length, messages[messages.length-1]?.id]);
+
+  const handleMessagesScroll=()=>{
+    const viewport=messagesViewportRef.current;
+    if(!viewport)return;
+    const distanceFromBottom=viewport.scrollHeight-viewport.scrollTop-viewport.clientHeight;
+    stickToBottomRef.current=distanceFromBottom<72;
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -104,6 +119,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
       }
     }
 
+    stickToBottomRef.current=true;
     onSendMessage(inputText, mentionedSkills);
     setInputText('');
     setShowSkillPicker(false);
@@ -142,7 +158,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   return (
     <div
       id="conversation-panel"
-      className={`${sidebarCollapsed ? 'w-[540px] min-w-[440px] max-w-[620px]' : 'w-[460px] min-w-[400px] max-w-[520px]'} bg-slate-950 border-r border-slate-800/80 flex flex-col h-full shrink-0 select-text transition-[width,min-width,max-width] duration-200`}
+      className={`${sidebarCollapsed ? 'w-[540px] min-w-[440px] max-w-[620px]' : 'w-[460px] min-w-[400px] max-w-[520px]'} bg-slate-950 border-r border-slate-800/80 flex flex-col h-full min-h-0 overflow-hidden shrink-0 select-text transition-[width,min-width,max-width] duration-200`}
     >
       {/* Top Mode Bar */}
       <div className="p-3 border-b border-slate-800/80 bg-slate-900/40 space-y-2">
@@ -215,7 +231,11 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
       </div>
 
       {/* Messages Stream */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar text-xs">
+      <div
+        ref={messagesViewportRef}
+        onScroll={handleMessagesScroll}
+        className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 space-y-4 custom-scrollbar text-xs"
+      >
         {messages.map((msg) => {
           const isUser = msg.sender === 'user';
           let parsedMetadata: Record<string, any> = {};
