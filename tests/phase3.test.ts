@@ -44,6 +44,7 @@ function cleanup(env:{userId:string;workspaceId:string;projectId:string}){
   for(const sandbox of sandboxes)SandboxManager.cleanup(sandbox.id,env.userId);
   WorkspaceManager.deleteProject(env.projectId);
   db.prepare('DELETE FROM browser_quality_runs WHERE project_id=?').run(env.projectId);
+  db.prepare("DELETE FROM verifications WHERE project_id=? AND gate_type='preview'").run(env.projectId);
   db.prepare('DELETE FROM tool_executions WHERE project_id=?').run(env.projectId);
   db.prepare('DELETE FROM context_commits WHERE project_id=?').run(env.projectId);
   db.prepare('DELETE FROM context_packs WHERE project_id=?').run(env.projectId);
@@ -85,6 +86,9 @@ test('phase3 real browser inspects static candidate on desktop and mobile with p
       assert.equal(viewport.title,'Quality');
     }
     assert.equal(BrowserQualityService.get(quality.id)?.status,'passed');
+    const verification=db.prepare("SELECT status,details_json FROM verifications WHERE project_id=? AND gate_type='preview' ORDER BY created_at DESC LIMIT 1").get(env.projectId) as any;
+    assert.equal(verification.status,'pass');
+    assert.equal(JSON.parse(verification.details_json).browserQualityRunId,quality.id);
   }finally{cleanup(env);}
 });
 
