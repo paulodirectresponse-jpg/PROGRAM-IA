@@ -267,3 +267,49 @@ test('phase2 sandbox detects stale official revision before merge', async () => 
     assert.equal(WorkspaceManager.readFile(env.projectId,'src/a.ts'),'export const a=1');
   } finally { cleanup(env); }
 });
+
+
+test('phase2 provider can request bounded read tools before final answer', async (t) => {
+  const env=setupProject();
+  seedAgentModel(env.userId);
+  const run=RunService.start(env.userId,env.projectId,'conv-phase2-tools','build');
+  WorkspaceManager.writeFile(env.projectId,'src/a.ts','export const inspected=42;');
+  const seen:any[]=[];
+  let calls=0;
+  t.mock.method(LLMAdapterService,'getProviderConfig',()=>({key:'mock-tools',type:'openai_compatible',apiKey:'x',baseUrl:'https://mock.invalid/v1',modelId:'mock-model',name:'Mock Tools',isConfigured:true} as any));
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    seen.push(options);
+    calls++;
+    if(calls===1){
+      return {
+        replyText:JSON.stringify({type:'tool_request',calls:[{tool:'workspace.read_file',input:{path:'src/a.ts'}}]}),
+        mode:'build',decisionType:'invalid_response',isDemonstrativeFallback:false,providerUsed:'Mock Tools',modelUsed:'mock-model',
+        hasErrors:true,invalidResponse:true,errorReason:'tool_request',usage:{inputTokens:2,outputTokens:1,billedCostUsd:0.001},
+      } as any;
+    }
+    return {
+      replyText:'done',mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'Mock Tools',modelUsed:'mock-model',
+      hasErrors:false,build:{summary:'done',explanation:'done',files:[{path:'src/a.ts',action:'modify',content:'export const inspected=43;'}]},
+      usage:{inputTokens:3,outputTokens:2,billedCostUsd:0.002},
+    } as any;
+  });
+  try {
+    const result=await AgentEngine.execute({
+      prompt:'Inspect and update a',mode:'build',projectId:env.projectId,existingFiles:WorkspaceManager.getAllFilesContent(env.projectId),
+      appliedSkills:[],conversationHistory:[],userId:env.userId,runId:run.runId,stepId:run.stepId,focusPaths:['src/a.ts'],
+    },{profile:'BASE_FREE',forcedAgentKey:'FORGE'});
+    assert.equal(result.hasErrors,false);
+    assert.equal(calls,2);
+    assert.ok(String(seen[1].prompt).includes('TOOL RESULTS'));
+    assert.ok(String(seen[1].prompt).includes('inspected'));
+    const tools=ToolExecutionJournal.listByRun(run.runId);
+    assert.equal(tools.filter(row=>row.toolKey==='workspace.read_file').length,1);
+    assert.equal(result.usage?.inputTokens,5);
+    assert.equal(result.diagnostics?.toolExecutions,1);
+  } finally {
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(run.runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(run.runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(run.runId);
+    cleanup(env);
+  }
+});
