@@ -154,13 +154,19 @@ export class LLMAdapterService {
     const explicitReview = /\b(revisar|revise|auditar|auditoria|encontrar\s+(?:bugs|erros)|corrigir\s+bugs|analisar\s+(?:o\s+)?c[oó]digo)\b/i.test(text);
     if (explicitReview) return 'review';
 
-    const explicitPlan = /\b(planejar|planeje|planeja|fa[cç]a\s+(?:um\s+)?plano|crie\s+(?:um\s+)?plano|arquitetura|roadmap|especifica[cç][aã]o)\b/i.test(text);
-    if (explicitPlan) return 'plan';
+    // No Automático, planejamento é uma etapa interna. Só paramos em PLAN quando
+    // o usuário pede explicitamente apenas o plano/arquitetura ou proíbe implementação.
+    const explicitPlanOnly =
+      /\b(?:s[oó]|somente|apenas)\b[\s\S]{0,40}\b(?:plano|planejamento|arquitetura|roadmap|especifica[cç][aã]o)\b/i.test(text) ||
+      /\b(?:n[aã]o|nao)\s+(?:implemente|construa|crie|altere|edite|fa[cç]a)\b/i.test(text) ||
+      /\b(?:plano|planejamento|arquitetura|roadmap)\b[\s\S]{0,40}\bsem\s+implementar\b/i.test(text);
+    if (explicitPlanOnly) return 'plan';
 
-    const explicitBuild = /\b(construir|construa|implementar|implemente|criar\s+(?:o|a|um|uma)\s|fa[cç]a\s+(?:o|a|um|uma)\s|alterar|altere|corrigir|corrija)\b/i.test(text);
+    const explicitBuild = /\b(construir|construa|implementar|implemente|criar|crie|fa[cç]a|alterar|altere|corrigir|corrija|planejar|planeje|planeja)\b/i.test(text);
     if (explicitBuild) return 'build';
 
-    return selectedMode;
+    // O comportamento padrão do modo Automático é entregar o resultado, não uma proposta.
+    return 'build';
   }
 
   /**
