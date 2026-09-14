@@ -440,7 +440,7 @@ Criar API segura
       assert.equal(resolved, 'build');
     });
 
-    test('4.11: Modo Automático separa conversa de execução de software', () => {
+    test('4.11: Modo Automático decide por contexto entre conversa e execução', () => {
       assert.equal(
         LLMAdapterService.resolveRequestedMode('Apenas planeje a arquitetura do sistema, sem implementar', 'auto'),
         'plan'
@@ -458,11 +458,31 @@ Criar API segura
         'auto'
       );
       assert.equal(
-        LLMAdapterService.resolveRequestedMode('Me ajude a deixar essa ideia mais detalhada', 'auto'),
+        LLMAdapterService.resolveRequestedMode('Me ajude a deixar essa ideia mais detalhada', 'auto', {
+          conversationHistory:[{sender:'agent',content:'Vamos desenhar uma landing page premium para SaaS.'}],
+          existingFiles:['index.html'],
+        }),
         'auto'
       );
       assert.equal(
-        LLMAdapterService.resolveRequestedMode('Adicione mais detalhes a essa ideia', 'auto'),
+        LLMAdapterService.resolveRequestedMode('Crie essa landing page', 'auto', {
+          conversationHistory:[{sender:'agent',content:'A landing page terá hero, CTA, benefícios e FAQ.'}],
+          existingFiles:['index.html'],
+        }),
+        'build'
+      );
+      assert.equal(
+        LLMAdapterService.resolveRequestedMode('Faça isso', 'auto', {
+          conversationHistory:[{sender:'agent',content:'Posso construir a landing page completa com hero, CTA e FAQ.'}],
+          existingFiles:['index.html'],
+        }),
+        'build'
+      );
+      assert.equal(
+        LLMAdapterService.resolveRequestedMode('Adicione mais detalhes a essa ideia', 'auto', {
+          conversationHistory:[{sender:'agent',content:'Ideia para um aplicativo de finanças.'}],
+          existingFiles:['index.html'],
+        }),
         'auto'
       );
       assert.equal(
