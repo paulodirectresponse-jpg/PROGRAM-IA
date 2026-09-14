@@ -1392,7 +1392,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       };
     }
 
-    if(result.hasErrors||result.invalidResponse){
+    if((result.hasErrors||result.invalidResponse)&&!conversationalOnly){
       throw Object.assign(new Error(result.errorMessage||result.errorReason||'A IA não conseguiu concluir esta etapa com segurança.'),{code:'MODEL_RESULT_FAILED'});
     }
 
@@ -1460,7 +1460,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       mode:selectedMode,resolvedMode,appliedSkills,isDemonstrativeFallback:result.isDemonstrativeFallback,
       providerUsed:result.providerUsed,modelUsed:result.modelUsed,planId:savedPlanId,checkpointId:checkpointCreatedId,
       filesAffected:applyResult?.changedFiles||result.build?.files?.map((item:any)=>item.path)||result.plan?.files_affected||[],
-      decisionType:result.decisionType,proposal:result.proposal,hasErrors:false,invalidResponse:false,
+      decisionType:result.decisionType,proposal:result.proposal,hasErrors:Boolean(result.hasErrors),invalidResponse:Boolean(result.invalidResponse),
       runId:execution?.runId,executionType:agentEngineEnabled?'agent_engine':'direct_llm',
       agentKey:agentEngineEnabled?((result as any).agentKey||'PROGRAM'):undefined,profileKey:(result as any).profileKey,
       workflow:execution?{...((result as any).workflow||{}),runId:execution.runId,status:applyResult?(applyResult.needsVerification?'needs_verification':'completed'):((result as any).workflow?.status||'completed'),trace:RunService.trace(execution.runId)}:(result as any).workflow,
@@ -1483,7 +1483,8 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
 
     if(!res.headersSent&&!res.destroyed){
       res.json({
-        success:true,
+        success:!(result.hasErrors||result.invalidResponse),
+        error:result.hasErrors||result.invalidResponse?(result.errorMessage||result.errorReason||'Falha temporária de IA.'):undefined,
         agentMessage:{id:agentMsgId,sender:'agent',content:replyText,metadata,created_at:messageNow},
         plan:result.plan,build:result.build,proposal:result.proposal,checkpointId:checkpointCreatedId,
       });
