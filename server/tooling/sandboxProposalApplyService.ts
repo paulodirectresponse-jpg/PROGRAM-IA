@@ -216,8 +216,9 @@ export class SandboxProposalApplyService {
     }
 
     const changedFiles=merge.changedFiles.map((item:any)=>item.path);
+    const alreadyInTransaction=db.isTransaction;
     try{
-      const finalizeState=db.transaction(()=>{
+      if(!alreadyInTransaction)db.exec('BEGIN IMMEDIATE');
         if(input.runId){
           RequirementLedgerService.setStatusForRun(input.runId,validation.status==='passed'?'verified':'implemented',{
             type:validation.status==='passed'?'sandbox_merge_verified':'sandbox_merge_unverified',
@@ -239,9 +240,11 @@ export class SandboxProposalApplyService {
             type:'sandbox_merge',validation,sandboxId,checkpointId:merge.checkpointId,
           },changedFiles);
         }
-      });
-      finalizeState();
+      if(!alreadyInTransaction)db.exec('COMMIT');
     }catch(error:any){
+      if(!alreadyInTransaction&&db.isTransaction){
+        try{db.exec('ROLLBACK');}catch{}
+      }
       const restored=WorkspaceManager.restoreCheckpoint(input.projectId,merge.beforeCheckpointId);
       SandboxManager.markRolledBack(sandboxId,input.userId,input.projectId);
       return {
