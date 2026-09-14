@@ -25,6 +25,7 @@ export interface SandboxProposalApplyResult {
   merge?:any;
   browserQuality?:any;
   browserRepair?:any;
+  sentinelReview?:any;
 }
 
 function requirementIds(projectId:string,runId?:string|null,planId?:string|null){
@@ -54,6 +55,30 @@ function candidateMismatchResult(error:any,validation:any,sandboxId:string){
     sandboxId,
     errorCode:String(error?.code||'sandbox_proposal_mismatch'),
   };
+}
+
+function parseSentinelReview(raw:string){
+  const text=String(raw||'').trim();
+  const fenced=text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
+  const first=text.indexOf('{'),last=text.lastIndexOf('}');
+  const candidates=[fenced,first>=0&&last>first?text.slice(first,last+1):'',text].filter(Boolean) as string[];
+  for(const candidate of candidates){
+    try{
+      const parsed=JSON.parse(candidate);
+      const verdict=String(parsed?.verdict||'').toLowerCase();
+      if(verdict==='pass'||verdict==='repair'){
+        return {
+          verdict,
+          summary:String(parsed?.summary||'').trim(),
+          issues:Array.isArray(parsed?.issues)?parsed.issues.map((item:any)=>String(item)).filter(Boolean):[],
+          raw:text,
+          structured:true,
+        };
+      }
+    }catch{}
+  }
+  const repair=/\b(?:verdict\s*[:=-]?\s*repair|precisa\s+(?:de\s+)?corre[cç][aã]o|corrigir\s+antes|erro\s+cr[ií]tico|bug\s+cr[ií]tico)\b/i.test(text);
+  return {verdict:repair?'repair':'pass',summary:text.slice(0,1000),issues:repair?[text.slice(0,1500)]:[],raw:text,structured:false};
 }
 
 export class SandboxProposalApplyService {
@@ -358,6 +383,131 @@ export class SandboxProposalApplyService {
       }
     }
 
+    let sentinelReview:any=null;
+    const executeSentinelReview=async(label:string)=>{
+      if(!input.runId)return {verdict:'pass',summary:'Revisão LLM não aplicável sem run do Agent Engine.',issues:[],skipped:true};
+      const affectedFiles=[...expectedByPath.keys()];
+      const sentinelStep=RunService.createStep(input.runId,'SENTINEL',label,undefined,'task',{
+        sandboxId,affectedFiles,validation,browserQuality,
+      });
+      try{
+        const review=await AgentEngine.execute({
+          prompt:[
+            'Faça a revisão final obrigatória desta implementação antes do merge.',
+            'Compare o pedido, requisitos, arquivos atuais do sandbox e evidências dos quality gates.',
+            'Procure bugs funcionais, regressões, inconsistências de estado, problemas de UX relevantes e violações dos requisitos.',
+            'Não proponha melhorias opcionais ou redesign subjetivo.',
+            'Responda SOMENTE JSON no formato {"verdict":"pass|repair","summary":"resumo curto","issues":["problema concreto"]}.',
+            'Use "repair" somente quando existir problema concreto que deva ser corrigido antes do merge.',
+            JSON.stringify({originalRequest:input.originalRequest||input.summary,validation,browserQuality}),
+          ].join('\n\n'),
+          mode:'review',
+          projectId:input.projectId,
+          existingFiles:SandboxManager.getAllFilesContent(sandboxId,input.userId,input.projectId),
+          appliedSkills:[],
+          conversationHistory:[],
+          userId:input.userId,
+          runId:input.runId,
+          stepId:sentinelStep,
+          requirementIds:reqIds,
+          focusPaths:affectedFiles,
+          signal:input.signal,
+          skipContextSync:true,
+          toolSandboxId:sandboxId,
+        },{profile:'BASE_FREE',forcedAgentKey:'SENTINEL',allowExpertEscalation:true,repair:true});
+        const parsed=parseSentinelReview(String(review.replyText||''));
+        ContextEngineV2.recordCommit({
+          projectId:input.projectId,runId:input.runId,taskId:sentinelStep,agentKey:'SENTINEL',scope:'TASK',
+          task:'Revisão final obrigatória antes do merge',changedFiles:affectedFiles,requirementIds:reqIds,
+          decisions:[parsed.summary].filter(Boolean),validation:{validator:validation,browserQuality,sentinel:parsed},
+          blockers:parsed.verdict==='repair'?parsed.issues:[],nextState:{status:parsed.verdict},
+        });
+        RunService.finishStep(sentinelStep,'completed',{sandboxId,verdict:parsed.verdict,issues:parsed.issues,profileKey:review.profileKey});
+        return {...parsed,stepId:sentinelStep,profileKey:review.profileKey};
+      }catch(error:any){
+        RunService.finishStep(sentinelStep,error?.name==='AbortError'?'aborted':'failed',{sandboxId,error:String(error?.message||error)});
+        if(error?.name==='AbortError')throw error;
+        return {verdict:'error',summary:'A revisão final do SENTINEL não pôde ser concluída.',issues:[String(error?.message||error)],error:String(error?.message||error),stepId:sentinelStep};
+      }
+    };
+
+    sentinelReview=await executeSentinelReview('Revisar implementação antes do merge');
+    if(sentinelReview?.verdict==='error'){
+      if(input.runId)RunService.finish(input.runId,sentinelReview.stepId,'failed');
+      return {
+        success:false,statusCode:422,error:'A revisão final do SENTINEL não pôde ser concluída; o workspace oficial não foi alterado.',
+        validation,sandboxId,browserQuality,browserRepair,repair:repairSummary,sentinelReview,
+      };
+    }
+
+    if(sentinelReview?.verdict==='repair'){
+      if(!input.runId){
+        return {
+          success:false,statusCode:422,error:'A revisão final encontrou problemas que exigem correção antes do merge.',
+          validation,sandboxId,browserQuality,browserRepair,repair:repairSummary,sentinelReview,
+        };
+      }
+      const affectedFiles=[...expectedByPath.keys()];
+      const repairStep=RunService.createStep(input.runId,'FORGE','Corrigir problemas encontrados pelo SENTINEL',undefined,'local',{
+        sandboxId,affectedFiles,issues:sentinelReview.issues,
+      });
+      try{
+        const repair=await AgentEngine.execute({
+          prompt:[
+            'Corrija somente os problemas concretos encontrados pela revisão final do SENTINEL. Não expanda o escopo.',
+            JSON.stringify({issues:sentinelReview.issues,summary:sentinelReview.summary}),
+          ].join('\n\n'),
+          mode:'build',
+          projectId:input.projectId,
+          existingFiles:SandboxManager.getAllFilesContent(sandboxId,input.userId,input.projectId),
+          appliedSkills:[],
+          conversationHistory:[],
+          userId:input.userId,
+          runId:input.runId,
+          stepId:repairStep,
+          requirementIds:reqIds,
+          focusPaths:affectedFiles,
+          signal:input.signal,
+          skipContextSync:true,
+          toolSandboxId:sandboxId,
+        },{profile:'BASE_FREE',forcedAgentKey:'FORGE',allowExpertEscalation:true,repair:true});
+        const repairFiles=repair.build?.files||repair.proposal?.files||[];
+        if(!repairFiles.length)throw new Error('O repair do SENTINEL não retornou arquivos aplicáveis.');
+        for(const file of repairFiles){
+          const execution=await ToolExecutionService.execute({
+            userId:input.userId,projectId:input.projectId,runId:input.runId,stepId:repairStep,sandboxId,signal:input.signal,
+          },{
+            toolKey:file.action==='delete'?'workspace.delete_file':'workspace.write_file',
+            input:file.action==='delete'?{path:file.path}:{path:file.path,content:String(file.content||'')},
+            idempotencyKey:`sentinel-repair:${proposal.id}:${file.action}:${file.path}`,
+          });
+          if(execution.status!=='succeeded')throw new Error(execution.message||'Repair do SENTINEL falhou.');
+          expectedByPath.set(String(file.path),{path:String(file.path),action:String(file.action),content:file.content});
+        }
+        validation=await ValidatorEngine.validate({
+          projectId:input.projectId,runId:input.runId,stepId:repairStep,signal:input.signal,sandboxId,userId:input.userId,
+        });
+        if(validation.status==='failed')throw new Error('O repair do SENTINEL falhou no ValidatorEngine.');
+        browserQuality=await executeBrowserGate(repairStep,2);
+        if(browserQuality?.status==='failed')throw new Error('O repair do SENTINEL falhou no Browser Quality Gate.');
+        RunService.finishStep(repairStep,'completed',{sandboxId,validation,browserQuality,profileKey:repair.profileKey});
+        repairSummary={attempted:true,status:'passed',source:'sentinel',profileKey:repair.profileKey,files:repairFiles.map((file:any)=>file.path)};
+        sentinelReview=await executeSentinelReview('Revisar novamente após correção');
+        if(sentinelReview?.verdict!=='pass'){
+          throw new Error(sentinelReview?.verdict==='error'
+            ? 'A segunda revisão do SENTINEL não pôde ser concluída.'
+            : 'A segunda revisão do SENTINEL ainda encontrou problemas concretos.');
+        }
+      }catch(error:any){
+        RunService.finishStep(repairStep,error?.name==='AbortError'?'aborted':'failed',{sandboxId,error:String(error?.message||error)});
+        RunService.finish(input.runId,repairStep,error?.name==='AbortError'?'aborted':'failed');
+        return {
+          success:false,statusCode:error?.name==='AbortError'?499:422,error:'A correção solicitada pelo SENTINEL não passou pela revisão final; o workspace oficial não foi alterado.',
+          validation,sandboxId,browserQuality,browserRepair,repair:{attempted:true,status:'failed',source:'sentinel',error:String(error?.message||error)},sentinelReview,
+        };
+      }
+    }
+
     const allowedChanges=canonicalMergeChanges(sandboxId,[...expectedByPath.values()]);
     try{
       SandboxManager.assertExpectedChanges(sandboxId,input.userId,input.projectId,allowedChanges,{allowExtraPaths:true});
@@ -384,8 +534,9 @@ export class SandboxProposalApplyService {
 
     const changedFiles=merge.changedFiles.map((item:any)=>item.path);
     const browserVerified=['passed','skipped'].includes(String(browserQuality?.status||'skipped'));
-    const qualityVerified=validation.status==='passed'&&browserVerified;
-    const combinedValidation={validator:validation,browserQuality};
+    const sentinelVerified=!input.runId||sentinelReview?.verdict==='pass';
+    const qualityVerified=validation.status==='passed'&&browserVerified&&sentinelVerified;
+    const combinedValidation={validator:validation,browserQuality,sentinelReview};
     const alreadyInTransaction=db.isTransaction;
     try{
       if(!alreadyInTransaction)db.exec('BEGIN IMMEDIATE');
@@ -432,7 +583,7 @@ export class SandboxProposalApplyService {
 
     return {
       success:true,statusCode:200,checkpointId:merge.checkpointId,validation,sandboxId,
-      changedFiles,needsVerification:!qualityVerified,merge,repair:repairSummary,browserQuality,browserRepair,
+      changedFiles,needsVerification:!qualityVerified,merge,repair:repairSummary,browserQuality,browserRepair,sentinelReview,
     };
   }
 }
