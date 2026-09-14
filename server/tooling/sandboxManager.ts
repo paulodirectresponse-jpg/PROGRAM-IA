@@ -30,8 +30,15 @@ function ignoredRelative(relative:string){
   const normalized=relative.replace(/\\/g,'/').replace(/^\.\//,'');
   if(!normalized)return false;
   const parts=normalized.split('/');
-  if(parts.includes('.git')||parts.includes('node_modules')||parts.includes('.DS_Store'))return true;
+  if(parts.includes('.git')||parts.includes('node_modules')||parts.includes('.DS_Store')||parts.includes('.forge-home'))return true;
   return ToolPolicy.isSensitivePath(normalized);
+}
+
+function ignoredOfficialStageRelative(relative:string){
+  const normalized=relative.replace(/\\/g,'/').replace(/^\.\//,'');
+  if(!normalized)return false;
+  const parts=normalized.split('/');
+  return parts.includes('.git')||parts.includes('node_modules')||parts.includes('.DS_Store')||parts.includes('.forge-home');
 }
 
 function safeCopyFilter(root:string,sourcePath:string){
@@ -39,6 +46,13 @@ function safeCopyFilter(root:string,sourcePath:string){
   if(!rel)return true;
   try{if(fs.lstatSync(sourcePath).isSymbolicLink())return false;}catch{return false;}
   return !ignoredRelative(rel);
+}
+
+function safeOfficialStageCopyFilter(root:string,sourcePath:string){
+  const rel=path.relative(root,sourcePath).replace(/\\/g,'/');
+  if(!rel)return true;
+  try{if(fs.lstatSync(sourcePath).isSymbolicLink())return false;}catch{return false;}
+  return !ignoredOfficialStageRelative(rel);
 }
 
 function safeJoin(root:string,relativePath:string){
@@ -201,6 +215,52 @@ export class SandboxManager {
     });
   }
 
+  static assertExpectedChanges(
+    id:string,
+    userId:string,
+    projectId:string,
+    changes:Array<{path:string;action:string;content?:string}>,
+    options:{allowExtraPaths?:boolean}={}
+  ){
+    const record=this.assertAccess(id,userId,projectId);
+    const expected=new Map<string,{path:string;action:string;content?:string}>();
+    for(const change of changes){
+      const normalized=ToolPolicy.normalizeRelativePath(change.path);
+      if(ToolPolicy.isSensitivePath(normalized))throw Object.assign(new Error(`Mudança sensível não permitida: ${normalized}`),{code:'sensitive_path'});
+      if(expected.has(normalized))throw Object.assign(new Error(`Caminho duplicado na proposta: ${normalized}`),{code:'duplicate_change_path'});
+      expected.set(normalized,{...change,path:normalized});
+    }
+
+    const actual=this.changedFiles(id,userId,projectId);
+    if(!options.allowExtraPaths){
+      const extras=actual.filter(item=>!expected.has(item.path));
+      if(extras.length)throw Object.assign(new Error('O sandbox contém alterações fora da proposta aprovada.'),{
+        code:'sandbox_proposal_mismatch',
+        paths:extras.map(item=>item.path),
+      });
+    }
+
+    for(const change of expected.values()){
+      const source=safeJoin(record.rootPath,change.path);
+      const baseExists=record.baseManifest[change.path]!==undefined;
+      const exists=fs.existsSync(source);
+      if(change.action==='delete'){
+        if(exists)throw Object.assign(new Error(`Arquivo deveria estar removido no sandbox: ${change.path}`),{code:'sandbox_proposal_mismatch'});
+        continue;
+      }
+      if(!exists)throw Object.assign(new Error(`Arquivo esperado não existe no sandbox: ${change.path}`),{code:'sandbox_proposal_mismatch'});
+      const stat=fs.lstatSync(source);
+      if(stat.isSymbolicLink()||!stat.isFile())throw Object.assign(new Error(`Tipo de arquivo inválido no sandbox: ${change.path}`),{code:'sandbox_proposal_mismatch'});
+      if(change.action==='create'&&baseExists)throw Object.assign(new Error(`Ação create conflita com arquivo existente: ${change.path}`),{code:'sandbox_proposal_mismatch'});
+      if((change.action==='modify'||change.action==='update')&&!baseExists)throw Object.assign(new Error(`Ação modify/update exige arquivo-base: ${change.path}`),{code:'sandbox_proposal_mismatch'});
+      if(typeof change.content==='string'){
+        const content=fs.readFileSync(source,'utf8');
+        if(content!==change.content)throw Object.assign(new Error(`Conteúdo do sandbox divergiu da proposta: ${change.path}`),{code:'sandbox_proposal_mismatch'});
+      }
+    }
+    return {expectedPaths:[...expected.keys()],actualChangedPaths:actual.map(item=>item.path)};
+  }
+
   static markValidation(id:string,userId:string,validation:unknown,projectId?:string){
     const record=this.assertAccess(id,userId,projectId);
     const status=(validation as any)?.status==='failed'?'failed':'validated';
@@ -214,7 +274,14 @@ export class SandboxManager {
     return this.projectFingerprint(record.projectId)===record.baseHash;
   }
 
-  static mergeAtomic(input:{sandboxId:string;userId:string;projectId:string;title:string;description?:string}) {
+  static mergeAtomic(input:{
+    sandboxId:string;
+    userId:string;
+    projectId:string;
+    title:string;
+    description?:string;
+    allowedChanges:Array<{path:string;action:string;content?:string}>;
+  }) {
     const record=this.assertAccess(input.sandboxId,input.userId,input.projectId);
     const currentHash=this.projectFingerprint(input.projectId);
     if(currentHash!==record.baseHash){
@@ -222,48 +289,56 @@ export class SandboxManager {
       throw Object.assign(new Error('A revisão-base mudou desde a criação da proposta.'),{code:'stale_base_revision'});
     }
 
-    const changedFiles=this.changedFiles(record.id,input.userId,input.projectId);
+    this.assertExpectedChanges(record.id,input.userId,input.projectId,input.allowedChanges,{allowExtraPaths:true});
+    const normalizedChanges=input.allowedChanges.map(change=>({...change,path:ToolPolicy.normalizeRelativePath(change.path)}));
     const beforeCheckpointId=WorkspaceManager.createCheckpoint(input.projectId,`Antes: ${input.title.slice(0,60)}`,'Checkpoint automático antes do merge atômico do sandbox.');
     const official=WorkspaceManager.getProjectDir(input.projectId);
     const parent=path.dirname(official);
     const token=crypto.randomUUID();
     const stage=path.join(parent,`.merge-stage-${input.projectId}-${token}`);
     const backup=path.join(parent,`.merge-backup-${input.projectId}-${token}`);
-    fs.cpSync(record.rootPath,stage,{recursive:true,force:true,filter:(sourcePath)=>safeCopyFilter(record.rootPath,sourcePath)});
 
-    // Sensitive project files are intentionally absent from the sandbox. Preserve them
-    // from the official workspace during the directory swap without exposing them to tools.
-    const preserveSensitive=(dir:string,base:string)=>{
-      if(!fs.existsSync(dir))return;
-      for(const entry of fs.readdirSync(dir,{withFileTypes:true})){
-        if(entry.isSymbolicLink())continue;
-        const rel=path.join(base,entry.name).replace(/\\/g,'/');
-        const full=path.join(dir,entry.name);
-        if(entry.isDirectory()){
-          if(entry.name==='.git'||entry.name==='node_modules')continue;
-          preserveSensitive(full,rel);
-        }else if(ToolPolicy.isSensitivePath(rel)){
-          const target=path.join(stage,rel);
-          fs.mkdirSync(path.dirname(target),{recursive:true});
-          fs.copyFileSync(full,target);
-        }
-      }
-    };
-    preserveSensitive(official,'');
-
-    let officialMoved=false;
+    fs.cpSync(official,stage,{recursive:true,force:true,filter:(sourcePath)=>safeOfficialStageCopyFilter(official,sourcePath)});
     try{
-      fs.renameSync(official,backup);
-      officialMoved=true;
-      fs.renameSync(stage,official);
-      fs.rmSync(backup,{recursive:true,force:true});
-      officialMoved=false;
+      for(const change of normalizedChanges){
+        const target=safeJoin(stage,change.path);
+        if(change.action==='delete'){
+          if(fs.existsSync(target)){
+            const stat=fs.lstatSync(target);
+            if(stat.isDirectory())throw Object.assign(new Error(`Merge não remove diretório recursivamente: ${change.path}`),{code:'directory_delete_blocked'});
+            fs.unlinkSync(target);
+          }
+          continue;
+        }
+        const source=safeJoin(record.rootPath,change.path);
+        if(!fs.existsSync(source)||!fs.lstatSync(source).isFile())throw Object.assign(new Error(`Arquivo do sandbox ausente no merge: ${change.path}`),{code:'sandbox_proposal_mismatch'});
+        fs.mkdirSync(path.dirname(target),{recursive:true});
+        fs.copyFileSync(source,target);
+      }
+
+      // Close the TOCTOU window: official revision must still match immediately before swap.
+      if(this.projectFingerprint(input.projectId)!==record.baseHash){
+        db.prepare("UPDATE sandboxes SET status='stale',updated_at=? WHERE id=?").run(new Date().toISOString(),record.id);
+        throw Object.assign(new Error('A revisão-base mudou durante a preparação do merge.'),{code:'stale_base_revision'});
+      }
+
+      let officialMoved=false;
+      try{
+        fs.renameSync(official,backup);
+        officialMoved=true;
+        fs.renameSync(stage,official);
+        fs.rmSync(backup,{recursive:true,force:true});
+        officialMoved=false;
+      }catch(error){
+        try{if(fs.existsSync(stage))fs.rmSync(stage,{recursive:true,force:true});}catch{}
+        if(officialMoved){
+          try{if(fs.existsSync(official))fs.rmSync(official,{recursive:true,force:true});}catch{}
+          try{fs.renameSync(backup,official);}catch{}
+        }
+        throw error;
+      }
     }catch(error){
       try{if(fs.existsSync(stage))fs.rmSync(stage,{recursive:true,force:true});}catch{}
-      if(officialMoved){
-        try{if(fs.existsSync(official))fs.rmSync(official,{recursive:true,force:true});}catch{}
-        try{fs.renameSync(backup,official);}catch{}
-      }
       throw error;
     }
 
@@ -271,7 +346,11 @@ export class SandboxManager {
     const checkpointId=WorkspaceManager.createCheckpoint(input.projectId,input.title.slice(0,100),input.description||'Merge atômico aprovado a partir de sandbox validado.');
     db.prepare("UPDATE sandboxes SET status='merged',merged_checkpoint_id=?,updated_at=? WHERE id=?")
       .run(checkpointId,new Date().toISOString(),record.id);
-    return {checkpointId,beforeCheckpointId,changedFiles,baseHash:record.baseHash,mergedHash:this.projectFingerprint(input.projectId)};
+    const mergedHash=this.projectFingerprint(input.projectId);
+    const changedFiles=normalizedChanges
+      .filter(change=>record.baseManifest[change.path]!==undefined || change.action!=='delete')
+      .map(change=>({path:change.path,action:change.action==='update'?'modify':change.action}));
+    return {checkpointId,beforeCheckpointId,changedFiles,baseHash:record.baseHash,mergedHash};
   }
 
   static cleanup(id:string,userId:string){
