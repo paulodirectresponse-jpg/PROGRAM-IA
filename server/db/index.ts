@@ -162,6 +162,29 @@ export function initializeDatabase() {
     );
   }
 
+  // Migration 005: Tool-first execution journal foundation.
+  ensureColumn('tool_executions', 'project_id', 'TEXT');
+  ensureColumn('tool_executions', 'tool_version', "TEXT NOT NULL DEFAULT '1'");
+  ensureColumn('tool_executions', 'error_code', 'TEXT');
+  ensureColumn('tool_executions', 'attempt_index', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('tool_executions', 'idempotency_key', 'TEXT');
+  ensureColumn('tool_executions', 'request_hash', 'TEXT');
+  ensureColumn('tool_executions', 'resume_policy', "TEXT NOT NULL DEFAULT 'inspect_only'");
+  ensureColumn('tool_executions', 'started_at', 'TEXT');
+  ensureColumn('tool_executions', 'finished_at', 'TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS tool_executions_run_created ON tool_executions(run_id,created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS tool_executions_step_created ON tool_executions(step_id,created_at)');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS tool_executions_run_idempotency ON tool_executions(run_id,idempotency_key) WHERE run_id IS NOT NULL AND idempotency_key IS NOT NULL');
+
+  const migration5Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 5').get() as { version: number } | undefined;
+  if (!migration5Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      5,
+      '005_tool_execution_journal_foundation',
+      new Date().toISOString()
+    );
+  }
+
     // Replace legacy global uniqueness with per-user uniqueness, preserving records.
   for (const [table, key] of [['providers', 'provider_key'], ['skills', 'slug']]) {
     const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table) as {sql:string};
