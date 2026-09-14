@@ -50,10 +50,11 @@ function configuredCandidates(userId:string,profile:'BASE_FREE'|'EXPERT_PAID'){
 }
 
 function reserveForNextCase(userId:string,allowExpert:boolean){
-  const base=configuredCandidates(userId,'BASE_FREE')[0];
-  const expert=allowExpert?configuredCandidates(userId,'EXPERT_PAID')[0]:null;
-  const values=[base,expert].filter(Boolean).map((item:any)=>Number(item.max_cost_usd||0));
-  return Math.max(0.01,...values);
+  const base=configuredCandidates(userId,'BASE_FREE')[0] as any;
+  const expert=allowExpert?(configuredCandidates(userId,'EXPERT_PAID')[0] as any):null;
+  if(base)return Math.max(0.01,Number(base.max_cost_usd||0));
+  if(expert)return Math.max(0.01,Number(expert.max_cost_usd||0));
+  return Number.POSITIVE_INFINITY;
 }
 
 function createEphemeralProject(userId:string,benchmarkRunId:string,definition:BenchmarkCaseDefinition){
@@ -304,6 +305,62 @@ async function executeCase(runRow:any,caseRow:any,definition:BenchmarkCaseDefini
 }
 
 export class BenchmarkService {
+  static preflight(userId:string,allowExpert=false){
+    const base=configuredCandidates(userId,'BASE_FREE').map((candidate:any)=>({
+      providerKey:candidate.provider_key,modelId:candidate.model_id,maxCostUsd:Number(candidate.max_cost_usd||0),priority:Number(candidate.priority||0),
+    }));
+    const expert=allowExpert?configuredCandidates(userId,'EXPERT_PAID').map((candidate:any)=>({
+      providerKey:candidate.provider_key,modelId:candidate.model_id,maxCostUsd:Number(candidate.max_cost_usd||0),priority:Number(candidate.priority||0),
+    })):[];
+    const startOfDay=new Date();startOfDay.setHours(0,0,0,0);
+    const spentToday=ModelRouter.spent(userId,startOfDay.toISOString());
+    return {
+      suiteKey:PHASE4_SUITE_KEY,
+      totalCases:PHASE4_BENCHMARK_CASES.length,
+      realProviderRequired:true,
+      baseCandidates:base,
+      expertCandidates:expert,
+      canRun:base.length>0||expert.length>0,
+      minimumCaseReserveUsd:Number.isFinite(reserveForNextCase(userId,allowExpert))?reserveForNextCase(userId,allowExpert):null,
+      dailyLimitUsd:DAILY_MODEL_BUDGET_USD,
+      spentTodayUsd:roundMoney(spentToday),
+      remainingDailyUsd:roundMoney(Math.max(0,DAILY_MODEL_BUDGET_USD-spentToday)),
+      maxBenchmarkBudgetUsd:MAX_BENCHMARK_COST_USD,
+    };
+  }
+
+  static releaseGate(id:string,userId:string){
+    const run=this.get(id,userId);
+    if(!run)return null;
+    const cases=run.cases as any[];
+    const summary=run.summary as BenchmarkRunSummary;
+    const fullCatalog=new Set(PHASE4_BENCHMARK_CASES.map(item=>item.id));
+    const fullSuite=run.totalCases===30&&cases.length===30&&cases.every(item=>fullCatalog.has(item.caseId));
+    const allReal=cases.length===30&&cases.every(item=>item.providerReal===true);
+    const repairsBounded=cases.every(item=>Number(item.repairs||0)<=2);
+    const categoryFloor=Object.values(summary.categoryBreakdown||{}).every((entry:any)=>entry.cases>0&&(entry.passed/entry.cases)>=0.60);
+    const criteria={
+      completed:run.status==='completed'&&summary.completedCases===30,
+      fullSuite,
+      allRealProviders:allReal,
+      passRate:(summary.passRate||0)>=0.80,
+      averageScore:(summary.averageScore||0)>=80,
+      verifiedRate:(summary.verifiedRate||0)>=0.90,
+      categoryFloor,
+      repairsBounded,
+      withinBudget:Number(run.spentUsd)<=Number(run.maxCostUsd)+1e-9,
+    };
+    const eligible=criteria.completed&&criteria.fullSuite&&criteria.allRealProviders;
+    return {
+      version:'phase4-release-gate-v1',
+      eligible,
+      passed:eligible&&Object.values(criteria).every(Boolean),
+      criteria,
+      thresholds:{passRate:0.80,averageScore:80,verifiedRate:0.90,categoryPassRate:0.60,maxRepairsPerCase:2},
+      summary,
+    };
+  }
+
   static catalog(){
     return {suiteKey:PHASE4_SUITE_KEY,total:PHASE4_BENCHMARK_CASES.length,cases:PHASE4_BENCHMARK_CASES.map(({fixtureFiles:_fixture,...item})=>({...item,fixtureFileCount:Object.keys(_fixture).length}))};
   }
@@ -417,12 +474,34 @@ export class BenchmarkService {
   }
 
   static recoverStartup(){
-    const interrupted=db.prepare("SELECT id FROM benchmark_runs WHERE status IN ('queued','running')").all() as Array<{id:string}>;
+    const interrupted=db.prepare("SELECT id,user_id FROM benchmark_runs WHERE status IN ('queued','running')").all() as Array<{id:string;user_id:string}>;
     const when=now();
+    let recoveredCases=0;
     for(const row of interrupted){
-      db.prepare("UPDATE benchmark_case_runs SET status='interrupted',failure_reason=COALESCE(failure_reason,'server_restart'),finished_at=COALESCE(finished_at,?) WHERE benchmark_run_id=? AND status='running'").run(when,row.id);
+      const cases=db.prepare("SELECT id,agent_run_id,project_id FROM benchmark_case_runs WHERE benchmark_run_id=? AND status='running'").all(row.id) as Array<{id:string;agent_run_id?:string;project_id?:string}>;
+      for(const item of cases){
+        let metrics:any=null;
+        if(item.agent_run_id){
+          try{
+            metrics=invocationMetrics(item.agent_run_id);
+            db.prepare('UPDATE model_invocations SET benchmark_run_id=?,benchmark_case_id=?,project_id=NULL WHERE run_id=?')
+              .run(row.id,item.id,item.agent_run_id);
+          }catch{}
+        }
+        db.prepare(`UPDATE benchmark_case_runs SET status='interrupted',provider_real=COALESCE(?,provider_real),profile_key=COALESCE(?,profile_key),
+          provider_key=COALESCE(?,provider_key),model_id=COALESCE(?,model_id),cost_usd=MAX(cost_usd,?),latency_ms=MAX(latency_ms,?),
+          input_tokens=MAX(input_tokens,?),output_tokens=MAX(output_tokens,?),attempts=MAX(attempts,?),repairs=MAX(repairs,?),
+          expert_escalations=MAX(expert_escalations,?),failure_reason=COALESCE(failure_reason,'server_restart'),finished_at=COALESCE(finished_at,?)
+          WHERE id=?`).run(
+            metrics?.providerReal?1:null,metrics?.profileKey||null,metrics?.providerKey||null,metrics?.modelId||null,
+            Number(metrics?.costUsd||0),Number(metrics?.latencyMs||0),Number(metrics?.inputTokens||0),Number(metrics?.outputTokens||0),
+            Number(metrics?.attempts||0),Number(metrics?.repairs||0),Number(metrics?.expertEscalations||0),when,item.id
+          );
+        if(item.project_id)void cleanupEphemeralProject(item.project_id,row.user_id).catch(()=>undefined);
+        recoveredCases++;
+      }
       updateRunSummary(row.id,'interrupted');
     }
-    return {interrupted:interrupted.length};
+    return {interrupted:interrupted.length,recoveredCases};
   }
 }
