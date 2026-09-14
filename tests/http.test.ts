@@ -103,58 +103,33 @@ test('failed executed validation rolls an applied proposal back to the exact pre
   assert.equal(metadata.validation.status,'failed');
 });
 
-test('unverified static proposal remains needs_verification and cannot trigger SHIP',async()=>{
+
+test('static proposal passes applicable gates, final sentinel review, and can trigger SHIP',async(t)=>{
+  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>({
+    replyText:'{"verdict":"pass","summary":"implementação coerente","issues":[]}',mode:options.mode,decisionType:'review',
+    isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}
+  } as any));
   const now=new Date(Date.now()+1500).toISOString();
-  const conversation=`unverified-conversation-${Date.now()}`;
-  const proposal=`unverified-proposal-${Date.now()}`;
-  const planId=`unverified-plan-${Date.now()}`;
-  WorkspaceManager.deleteFile(id,'package.json');
-  WorkspaceManager.writeFile(id,'index.html','<!doctype html><html><body>BASE</body></html>');
-  db.prepare('INSERT INTO conversations(id,project_id,title,mode,created_at,updated_at) VALUES(?,?,?,?,?,?)')
-    .run(conversation,id,'Unverified static','build',now,now);
-  db.prepare(`INSERT INTO plans(
-    id,task_id,project_id,objective,scope_in,scope_out,architecture_summary,
-    existing_files_json,new_files_json,files_to_delete_json,files_affected_json,
-    integrations_json,risks_json,acceptance_criteria_json,requirements_json,task_graph_json,status,created_at,updated_at
-  ) VALUES(?,NULL,?,?,?,?,?,'[]','[]','[]','[]','[]','[]','[]',?,'[]','approved',?,?)`)
-    .run(planId,id,'Static feature','Static HTML','','Static architecture',JSON.stringify([
-      {id:'REQ-001',title:'Render feature',description:'Feature visível',priority:'critical',verification:['browser evidence']}
-    ]),now,now);
+  const conversation=`static-verified-conversation-${Date.now()}`;const proposal=`static-verified-proposal-${Date.now()}`;const planId=`static-verified-plan-${Date.now()}`;
+  WorkspaceManager.deleteFile(id,'package.json');WorkspaceManager.writeFile(id,'index.html','<!doctype html><html><body>BASE</body></html>');
+  db.prepare('INSERT INTO conversations(id,project_id,title,mode,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(conversation,id,'Verified static','build',now,now);
+  db.prepare(`INSERT INTO plans(id,task_id,project_id,objective,scope_in,scope_out,architecture_summary,existing_files_json,new_files_json,files_to_delete_json,files_affected_json,integrations_json,risks_json,acceptance_criteria_json,requirements_json,task_graph_json,status,created_at,updated_at)
+    VALUES(?,NULL,?,?,?,?,?,'[]','[]','[]','[]','[]','[]','[]',?,'[]','approved',?,?)`).run(planId,id,'Static feature','Static HTML','','Static architecture',JSON.stringify([{id:'REQ-001',title:'Render feature',description:'Feature visível',priority:'critical',verification:['browser evidence']}]),now,now);
   const {runId,stepId}=RunService.start(userA,id,conversation,'build',0.5);
-  RequirementLedgerService.syncPlan({
-    projectId:id,conversationId:conversation,runId,planId,
-    requirements:[{id:'REQ-001',title:'Render feature',description:'Feature visível',priority:'critical',verification:['browser evidence']}],
-  });
-  const messageId=`unverified-message-${Date.now()}`;
-  db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent','proposal',?,?)")
-    .run(messageId,conversation,JSON.stringify({
-      planId,
-      runId,
-      executionType:'agent_engine',
-      agentKey:'FORGE',
-      workflow:{runId,status:'waiting_approval',steps:[stepId],shipRequested:true},
-      proposal:{id:proposal,status:'pending',summary:'Static change',files:[
-        {path:'index.html',action:'modify',content:'<!doctype html><html><body><button>Novo Produto</button></body></html>'}
-      ]}
-    }),now);
-
-  const response=await fetch(`${base}/conversations/${id}/apply-proposal`,{
-    method:'POST',
-    headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
-    body:JSON.stringify({proposalId:proposal,summary:'Static unverified'})
-  });
-  assert.equal(response.status,200);
-  const body=await response.json();
-  assert.equal(body.validation.status,'unverified');
-  assert.equal(body.needsVerification,true);
-  const run=db.prepare('SELECT status FROM agent_runs WHERE id=?').get(runId) as any;
-  assert.equal(run.status,'needs_verification');
-  const requirement=db.prepare('SELECT status FROM requirements WHERE run_id=? AND requirement_key=?').get(runId,'REQ-001') as any;
-  assert.equal(requirement.status,'implemented');
-  const shipCount=(db.prepare("SELECT COUNT(*) n FROM agent_steps WHERE run_id=? AND agent_key='SHIP'").get(runId) as any).n;
-  assert.equal(shipCount,0);
+  RequirementLedgerService.syncPlan({projectId:id,conversationId:conversation,runId,planId,requirements:[{id:'REQ-001',title:'Render feature',description:'Feature visível',priority:'critical',verification:['browser evidence']}]});
+  const messageId=`static-verified-message-${Date.now()}`;
+  db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent','proposal',?,?)").run(messageId,conversation,JSON.stringify({
+    planId,runId,executionType:'agent_engine',agentKey:'FORGE',workflow:{runId,status:'validating',steps:[stepId],shipRequested:true},
+    proposal:{id:proposal,status:'pending',summary:'Static change',files:[{path:'index.html',action:'modify',content:'<!doctype html><html><body><button>Novo Produto</button></body></html>'}]}
+  }),now);
+  const response=await fetch(`${base}/conversations/${id}/apply-proposal`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({proposalId:proposal,summary:'Static verified'})});
+  assert.equal(response.status,200);const body=await response.json();
+  assert.equal(body.validation.status,'passed');assert.equal(body.needsVerification,false);assert.equal(body.sentinelReview.verdict,'pass');
+  assert.equal((db.prepare('SELECT status FROM agent_runs WHERE id=?').get(runId) as any).status,'completed');
+  assert.equal((db.prepare('SELECT status FROM requirements WHERE run_id=? AND requirement_key=?').get(runId,'REQ-001') as any).status,'verified');
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM agent_steps WHERE run_id=? AND agent_key='SHIP'").get(runId) as any).n,1);
 });
-
 test('invalid proposal is rejected before mutation and remains pending',async()=>{
   const now=new Date(Date.now()+2000).toISOString();
   const conversation=`invalid-proposal-conversation-${Date.now()}`;
@@ -642,7 +617,9 @@ test('rejecting proposal closes run as rejected without validation or repair inv
   } finally { WorkspaceManager.deleteProject(projectId); db.prepare('DELETE FROM projects WHERE id=?').run(projectId); }
 });
 
-test('approving proposal with passing validator completes waiting run without repair', async () => {
+test('approving proposal with passing validator completes run after final sentinel review', async (t) => {
+  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>({replyText:'{"verdict":"pass","summary":"ok","issues":[]}',mode:options.mode,decisionType:'review',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any));
   const projectId=createLifecycleProject('approval-pass');
   const {runId}=RunService.start(userA,projectId,`conv-placeholder-${Date.now()}`,'auto',0.5);RunService.waitForApproval(runId);
   const {proposalId}=insertLifecycleProposal(projectId,runId,[{path:'index.html',action:'modify',content:'<html></html>'},{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(0)"'}})}]);
@@ -656,7 +633,9 @@ test('approving proposal with passing validator completes waiting run without re
   } finally { WorkspaceManager.deleteProject(projectId); db.prepare('DELETE FROM projects WHERE id=?').run(projectId); }
 });
 
-test('approved publish proposal creates SHIP only after validation passes', async () => {
+test('approved publish proposal creates SHIP only after validation and sentinel review pass', async (t) => {
+  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>({replyText:'{"verdict":"pass","summary":"ok","issues":[]}',mode:options.mode,decisionType:'review',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any));
   const projectId=createLifecycleProject('approval-ship');
   const {runId}=RunService.start(userA,projectId,`conv-placeholder-${Date.now()}`,'publish',0.5);RunService.waitForApproval(runId);
   const {proposalId}=insertLifecycleProposal(projectId,runId,[{path:'index.html',action:'modify',content:'<html></html>'},{path:'package.json',action:'modify',content:JSON.stringify({scripts:{build:'node -e "process.exit(0)"'}})}],true);
