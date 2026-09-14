@@ -442,8 +442,12 @@ Criar API segura
 
     test('4.11: Somente o modo Automático reclassifica intenção pelo texto', () => {
       assert.equal(
-        LLMAdapterService.resolveRequestedMode('Planeje a arquitetura do sistema', 'auto'),
+        LLMAdapterService.resolveRequestedMode('Apenas planeje a arquitetura do sistema, sem implementar', 'auto'),
         'plan'
+      );
+      assert.equal(
+        LLMAdapterService.resolveRequestedMode('Planeje a arquitetura e deixe o sistema pronto', 'auto'),
+        'build'
       );
       assert.equal(
         LLMAdapterService.resolveRequestedMode('Publique este projeto no GitHub', 'auto'),
