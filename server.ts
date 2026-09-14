@@ -8,11 +8,13 @@ import { initializeDatabase } from './server/db/index.js';
 import { router as apiRouter } from './server/routes.js';
 import { CloudSyncService } from './server/services/cloudSyncService.js';
 import { RuntimeManager } from './server/services/runtimeManager.js';
+import { Phase2RecoveryService } from './server/tooling/phase2RecoveryService.js';
 
 dotenv.config();
 
 // Initialize SQLite database and run migrations
 initializeDatabase();
+Phase2RecoveryService.recoverStartup();
 
 if (process.env.FORGE_REQUIRE_CLOUD_SYNC === 'true') {
   CloudSyncService.assertPersistentConfiguration();
