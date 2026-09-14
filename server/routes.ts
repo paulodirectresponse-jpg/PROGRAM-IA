@@ -1248,317 +1248,280 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
 });
 
 router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
-  if (activeProjects.has(req.params.projectId)) return res.status(409).json({error:'Já há uma execução neste projeto. Aguarde ou cancele antes de enviar outro pedido.'});
-  activeProjects.add(req.params.projectId);
-  const controller = new AbortController();
-  activeProjectControllers.set(req.params.projectId, controller);
-  let execution: {runId:string;stepId:string}|null=null;
-  try {
-    const { content, mode = 'auto', appliedSkills = [] } = req.body;
-    if (!content || content.trim().length === 0) {
-      return res.status(400).json({ error: 'Conteúdo da mensagem obrigatório.' });
+  const projectId=req.params.projectId;
+  if (activeProjects.has(projectId)) return res.status(409).json({error:'Já há uma execução neste projeto. Aguarde ou cancele antes de enviar outro pedido.'});
+  activeProjects.add(projectId);
+  const controller=new AbortController();
+  activeProjectControllers.set(projectId,controller);
+  let execution:{runId:string;stepId:string}|null=null;
+  let conv:any=null;
+  let agentMessagePersisted=false;
+  let acceptedEarly=false;
+
+  try{
+    const {content,mode='auto',appliedSkills=[]}=req.body;
+    if(!content||!String(content).trim())return res.status(400).json({error:'Conteúdo da mensagem obrigatório.'});
+
+    const selectedMode=mode as AgentMode;
+    const resolvedMode=LLMAdapterService.resolveRequestedMode(String(content),selectedMode);
+    const now=new Date().toISOString();
+    conv=db.prepare('SELECT * FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+
+    if(!conv){
+      const convId='conv-'+Date.now();
+      db.prepare('INSERT INTO conversations (id,project_id,title,mode,created_at,updated_at) VALUES (?,?,?,?,?,?)')
+        .run(convId,projectId,'Conversa Principal',selectedMode,now,now);
+      conv={id:convId,mode:selectedMode};
+    }else{
+      // O modo Automático continua visível como Automático; resolvedMode é decisão interna do agente.
+      const conversationMode=selectedMode==='auto'?'auto':resolvedMode;
+      db.prepare('UPDATE conversations SET mode=?,updated_at=? WHERE id=?').run(conversationMode,now,conv.id);
     }
 
-    const projectId = req.params.projectId;
-    const selectedMode = mode as AgentMode;
-    const resolvedMode = LLMAdapterService.resolveRequestedMode(content, selectedMode);
-    let conv = db.prepare('SELECT * FROM conversations WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
-    const now = new Date().toISOString();
+    const agentEngineEnabled=process.env.AGENT_ENGINE_ENABLED==='true';
+    if(agentEngineEnabled)execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,.5);
 
-    if (!conv) {
-      const convId = 'conv-' + Date.now();
-      db.prepare('INSERT INTO conversations (id, project_id, title, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(
-        convId,
-        projectId,
-        'Conversa Principal',
-        mode,
-        now,
-        now
-      );
-      conv = { id: convId, mode };
-    } else {
-      db.prepare('UPDATE conversations SET mode = ?, updated_at = ? WHERE id = ?').run(resolvedMode, now, conv.id);
-    }
-    const agentEngineEnabled = process.env.AGENT_ENGINE_ENABLED === 'true';
-    if (agentEngineEnabled) execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,.5);
-
-    // Save user message
-    const userMsgId = 'msg-user-' + Date.now();
+    const userMsgId='msg-user-'+Date.now();
     db.prepare(`
-      INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
-      VALUES (?, ?, 'user', ?, ?, ?)
-    `).run(userMsgId, conv.id, content, JSON.stringify({ mode: resolvedMode, selectedMode, appliedSkills }), now);
+      INSERT INTO messages (id,conversation_id,sender,content,metadata_json,created_at)
+      VALUES (?,?,'user',?,?,?)
+    `).run(userMsgId,conv.id,String(content),JSON.stringify({mode:selectedMode,resolvedMode,appliedSkills}),now);
 
-    const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 20').all(conv.id).reverse() as any[];
-    const existingFiles = WorkspaceManager.getAllFilesContent(projectId);
+    const history=db.prepare('SELECT sender,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20').all(conv.id).reverse() as any[];
+    const existingFiles=WorkspaceManager.getAllFilesContent(projectId);
+    const project=db.prepare('SELECT * FROM projects WHERE id=?').get(projectId) as any;
 
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oó]rio|remoto)\b|\b(github|reposit[oó]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(content);
+    const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oó]rio|remoto)\b|\b(github|reposit[oó]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(String(content));
     if(requestsGitHubPublish){
-      if (execution) RunService.assignAgent(execution.stepId, 'SHIP');
+      if(execution)RunService.assignAgent(execution.stepId,'SHIP');
       const repoContext=projectRepositoryContext(projectId,project);
       if(!repoContext.repoUrl){
-        if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+        if(execution)RunService.finish(execution.runId,execution.stepId,'failed');
         return res.status(409).json({error:'Vincule ou crie um repositório na aba Publicar antes de enviar o projeto ao GitHub.'});
       }
       const parsed=GitHubService.parseRepoUrl(repoContext.repoUrl);
       if(!parsed){
-        if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+        if(execution)RunService.finish(execution.runId,execution.stepId,'failed');
         return res.status(400).json({error:'A URL do repositório vinculado é inválida.'});
       }
-
       const binaryFiles:Record<string,Buffer>={};
       for(const file of WorkspaceManager.getFiles(projectId)){
         if(!file.isBinary)continue;
         const bytes=WorkspaceManager.readBinaryFile(projectId,file.path);
         if(bytes)binaryFiles[file.path]=bytes;
       }
-
       const pushed=await GitHubService.pushFilesToRepo({
-        userId:req.user!.id,
-        owner:parsed.owner,
-        repo:parsed.repo,
-        branch:repoContext.branch,
-        commitMessage:`Forge Agent: ${content.trim().slice(0,72)}`,
-        files:existingFiles,
-        binaryFiles,
+        userId:req.user!.id,owner:parsed.owner,repo:parsed.repo,branch:repoContext.branch,
+        commitMessage:`Forge Agent: ${String(content).trim().slice(0,72)}`,files:existingFiles,binaryFiles,
       });
       if(!pushed.success){
-        if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+        if(execution)RunService.finish(execution.runId,execution.stepId,'failed');
         return res.status(400).json({error:pushed.error||'O GitHub recusou a publicação.'});
       }
-      if(pushed.commitSha){
-        db.prepare('UPDATE branches SET head_commit_hash=? WHERE project_id=? AND name=?')
-          .run(pushed.commitSha,projectId,repoContext.branch);
-      }
-
+      if(pushed.commitSha)db.prepare('UPDATE branches SET head_commit_hash=? WHERE project_id=? AND name=?').run(pushed.commitSha,projectId,repoContext.branch);
       const agentMsgId='msg-agent-'+Date.now();
       const commitUrl=`https://github.com/${parsed.owner}/${parsed.repo}/commit/${pushed.commitSha}`;
       const replyText=`Publicação concluída no GitHub.\n\nCommit: ${pushed.commitSha}\n${commitUrl}`;
-      if (execution) RunService.finish(execution.runId, execution.stepId, 'completed');
+      if(execution)RunService.finish(execution.runId,execution.stepId,'completed');
       const metadata={
-        mode,
-        decisionType:'publish',
-        providerUsed:'GitHub',
-        modelUsed:'ferramenta-direta',
-        filesAffected:[...Object.keys(existingFiles),...Object.keys(binaryFiles)],
-        runId:execution?.runId,
-        executionType:execution?'agent_engine':'direct_tool',
-        agentKey:execution?'SHIP':undefined,
+        mode:selectedMode,decisionType:'publish',providerUsed:'GitHub',modelUsed:'ferramenta-direta',
+        filesAffected:[...Object.keys(existingFiles),...Object.keys(binaryFiles)],runId:execution?.runId,
+        executionType:execution?'agent_engine':'direct_tool',agentKey:execution?'SHIP':undefined,
         workflow:execution?{runId:execution.runId,status:'completed',steps:[execution.stepId],shipRequested:true,trace:RunService.trace(execution.runId)}:undefined,
-        github:{owner:parsed.owner,repo:parsed.repo,branch:repoContext.branch,commitSha:pushed.commitSha,commitUrl}
+        github:{owner:parsed.owner,repo:parsed.repo,branch:repoContext.branch,commitSha:pushed.commitSha,commitUrl},
       };
       db.prepare("INSERT INTO messages (id,conversation_id,sender,content,metadata_json,created_at) VALUES (?,?,'agent',?,?,?)")
-        .run(agentMsgId,conv.id,replyText,JSON.stringify(metadata),now);
+        .run(agentMsgId,conv.id,replyText,JSON.stringify(metadata),new Date().toISOString());
+      agentMessagePersisted=true;
       return res.json({success:true,agentMessage:{id:agentMsgId,sender:'agent',content:replyText,metadata,created_at:now},github:metadata.github});
     }
-    const providerConfig = LLMAdapterService.getActiveProviderConfig(req.user!.id);
-    if (!providerConfig) {
-      if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
+
+    const providerConfig=LLMAdapterService.getActiveProviderConfig(req.user!.id);
+    if(!providerConfig){
+      if(execution)RunService.finish(execution.runId,execution.stepId,'failed');
       return res.status(409).json({error:'Selecione e salve um provedor de IA antes de enviar mensagens.'});
     }
-    const providerKey = providerConfig.key;
-    const modelId = providerConfig.modelId;
+    const providerKey=providerConfig.key;
+    const modelId=providerConfig.modelId;
 
-    // Call LLM Adapter with authenticated userId
-    let result = !agentEngineEnabled ? await LLMAdapterService.executePrompt({
-      prompt: content,
-      mode: resolvedMode,
-      projectId,
-      providerKey,
-      modelId,
-      existingFiles,
-      appliedSkills,
-      conversationHistory: history,
-      userId: req.user!.id,
-      signal: controller.signal,
-    }) : await AgentWorkflowEngine.executeWorkflow({prompt:content,mode:resolvedMode,projectId,existingFiles,appliedSkills,conversationHistory:history,userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal});
-    controller.signal.throwIfAborted();
-
-    const effectiveIntent = mode === 'auto' ? LLMAdapterService.classifyIntent(content) : (mode as AgentMode);
-    const explicitPlanIntent = /\b(planej|plano|arquitetura|roadmap|especifica[cç][aã]o)\b/i.test(content);
-
-    if (!agentEngineEnabled && mode === 'auto' && explicitPlanIntent && !result.plan && !result.build && !result.hasErrors) {
-      const fallbackCriteria=['Implementação funcional','Validação sem erros críticos'];
-      result.plan = LLMAdapterService.extractPlan(result.replyText) || {
-        objective: content.trim().slice(0, 500),
-        scope_in: String(result.replyText || content).trim().slice(0, 2500),
-        scope_out: '',
-        architecture_summary: 'Arquitetura a determinar pelo produto solicitado; nenhum arquivo ou stack é presumido.',
-        existing_files_to_modify: [],
-        new_files_to_create: [],
-        files_to_delete: [],
-        files_affected: [],
-        integrations: [],
-        risks: [],
-        acceptance_criteria: fallbackCriteria,
-        requirements: fallbackCriteria.map((criterion,index)=>({
-          id:`REQ-${String(index+1).padStart(3,'0')}`,
-          title:criterion,
-          description:criterion,
-          priority:'high' as const,
-          verification:[criterion],
-        })),
-        task_graph: [],
-      };
-      result.decisionType = 'plan';
+    // Construções longas deixam de depender da conexão HTTP. A UI acompanha o run e a conversa por polling.
+    if(agentEngineEnabled&&resolvedMode==='build'){
+      acceptedEarly=true;
+      res.status(202).json({
+        success:true,accepted:true,runId:execution?.runId,
+        userMessage:{id:userMsgId,conversation_id:conv.id,sender:'user',content:String(content),created_at:now},
+      });
     }
 
-    const recoverableBuildFailure =
-      !agentEngineEnabled &&
-      effectiveIntent === 'build' &&
-      (
-        result.invalidResponse === true ||
-        result.errorReason === 'timeout' ||
-        (
-          result.errorReason === 'provider_error' &&
-          /524|context|token|too large|response|upstream/i.test(String(result.errorMessage || result.replyText || ''))
-        )
-      );
+    let result=!agentEngineEnabled
+      ? await LLMAdapterService.executePrompt({
+          prompt:String(content),mode:resolvedMode,projectId,providerKey,modelId,existingFiles,appliedSkills,
+          conversationHistory:history,userId:req.user!.id,signal:controller.signal,
+        })
+      : await AgentWorkflowEngine.executeWorkflow({
+          prompt:String(content),mode:resolvedMode,projectId,existingFiles,appliedSkills,conversationHistory:history,
+          userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal,
+        });
+    controller.signal.throwIfAborted();
 
-    if (recoverableBuildFailure) {
-      result = await LLMAdapterService.buildApprovedPlanReliably({
-        projectId,
-        providerKey,
-        modelId,
-        userId: req.user!.id,
-        existingFiles,
-        requestedFiles: [],
-        objective: content,
-        acceptanceCriteria: ['Atender integralmente ao pedido do usuário', 'Preservar compatibilidade com o projeto existente'],
-        signal: controller.signal,
+    const effectiveIntent=resolvedMode;
+    const recoverableBuildFailure=
+      !agentEngineEnabled&&effectiveIntent==='build'&&(
+        result.invalidResponse===true||
+        result.errorReason==='timeout'||
+        (result.errorReason==='provider_error'&&/524|context|token|too large|response|upstream/i.test(String(result.errorMessage||result.replyText||'')))
+      );
+    if(recoverableBuildFailure){
+      result=await LLMAdapterService.buildApprovedPlanReliably({
+        projectId,providerKey,modelId,userId:req.user!.id,existingFiles,requestedFiles:[],objective:String(content),
+        acceptanceCriteria:['Atender integralmente ao pedido do usuário','Preservar compatibilidade com o projeto existente'],
+        signal:controller.signal,
       });
       controller.signal.throwIfAborted();
     }
 
-    if (JSON.stringify(WorkspaceManager.getAllFilesContent(projectId)) !== JSON.stringify(existingFiles)) {
-      if (execution) RunService.finish(execution.runId, execution.stepId, 'failed');
-      return res.status(409).json({error:'Os arquivos mudaram durante a revisão. Envie novamente para usar a versão atual.'});
+    if(JSON.stringify(WorkspaceManager.getAllFilesContent(projectId))!==JSON.stringify(existingFiles)){
+      throw Object.assign(new Error('Os arquivos mudaram durante a execução. Envie novamente para usar a versão atual.'),{code:'STALE_WORKSPACE'});
     }
 
-    let checkpointCreatedId: string | null = null;
-    let validation: Awaited<ReturnType<typeof ValidatorEngine.validate>>|null=null;
+    let checkpointCreatedId:string|null=null;
+    let validation:Awaited<ReturnType<typeof ValidatorEngine.validate>>|null=null;
+    let browserQuality:any=null;
+    let browserRepair:any=null;
+    let sentinelReview:any=null;
+    let applyResult:any=null;
 
-    // Every code change is a server-owned proposal. The browser receives a copy for review;
-    // no generated code is ever written to the official workspace before explicit approval.
-    if (result.build?.files?.length && !result.proposal && !result.isDemonstrativeFallback && !result.hasErrors) {
-      result.proposal = {
-        id: `proposal-${crypto.randomUUID()}`,
-        summary: result.build.summary || content.slice(0, 100),
-        requiresConfirmation: true,
-        files: result.build.files,
-        status: 'pending',
+    if(result.build?.files?.length&&!result.proposal&&!result.isDemonstrativeFallback&&!result.hasErrors){
+      result.proposal={
+        id:`proposal-${crypto.randomUUID()}`,
+        summary:result.build.summary||String(content).slice(0,100),
+        requiresConfirmation:false,
+        files:result.build.files,
+        status:'pending',
       };
     }
 
-    if(result.proposal?.files?.length && !result.hasErrors && !result.isDemonstrativeFallback){
-      await materializeProposalInSandbox({
-        userId:req.user!.id,
-        projectId,
-        runId:execution?.runId || null,
-        stepId:execution?.stepId || null,
-        proposal:result.proposal,
-        signal:controller.signal,
-      });
-      validation=(result.proposal as any).sandboxValidation || null;
+    if(result.hasErrors||result.invalidResponse){
+      throw Object.assign(new Error(result.errorMessage||result.errorReason||'A IA não conseguiu concluir esta etapa com segurança.'),{code:'MODEL_RESULT_FAILED'});
     }
 
-    // Save plan if generated
-    let savedPlanId: string | null = null;
-    if (result.plan) {
-      savedPlanId = 'plan-' + Date.now();
-      db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'")
-        .run(now,projectId);
+    if(result.proposal?.files?.length&&!result.isDemonstrativeFallback){
+      await materializeProposalInSandbox({
+        userId:req.user!.id,projectId,runId:execution?.runId||null,stepId:execution?.stepId||null,
+        proposal:result.proposal,signal:controller.signal,
+      });
+      validation=(result.proposal as any).sandboxValidation||null;
+    }
+
+    let savedPlanId:string|null=null;
+    if(result.plan){
+      savedPlanId='plan-'+Date.now();
+      db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'").run(now,projectId);
       db.prepare(`
         INSERT INTO plans (
-          id, task_id, project_id, objective, scope_in, scope_out,
-          architecture_summary, existing_files_json, new_files_json, files_to_delete_json,
-          files_affected_json, integrations_json, risks_json, acceptance_criteria_json,
-          requirements_json, task_graph_json, status, created_at, updated_at
-        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+          id,task_id,project_id,objective,scope_in,scope_out,
+          architecture_summary,existing_files_json,new_files_json,files_to_delete_json,
+          files_affected_json,integrations_json,risks_json,acceptance_criteria_json,
+          requirements_json,task_graph_json,status,created_at,updated_at
+        ) VALUES (?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',?,?)
       `).run(
-        savedPlanId,
-        projectId,
-        typeof result.plan.objective === 'string' ? result.plan.objective : JSON.stringify(result.plan.objective ?? ''),
-        typeof result.plan.scope_in === 'string' ? result.plan.scope_in : JSON.stringify(result.plan.scope_in ?? ''),
-        typeof result.plan.scope_out === 'string' ? result.plan.scope_out : JSON.stringify(result.plan.scope_out ?? ''),
-        result.plan.architecture_summary || '',
-        JSON.stringify(result.plan.existing_files_to_modify || []),
-        JSON.stringify(result.plan.new_files_to_create || []),
-        JSON.stringify(result.plan.files_to_delete || []),
-        JSON.stringify(result.plan.files_affected || []),
-        JSON.stringify(result.plan.integrations || []),
-        JSON.stringify(result.plan.risks || []),
-        JSON.stringify(result.plan.acceptance_criteria || []),
-        JSON.stringify(result.plan.requirements || []),
-        JSON.stringify(result.plan.task_graph || []),
-        now,
-        now
+        savedPlanId,projectId,
+        typeof result.plan.objective==='string'?result.plan.objective:JSON.stringify(result.plan.objective??''),
+        typeof result.plan.scope_in==='string'?result.plan.scope_in:JSON.stringify(result.plan.scope_in??''),
+        typeof result.plan.scope_out==='string'?result.plan.scope_out:JSON.stringify(result.plan.scope_out??''),
+        result.plan.architecture_summary||'',
+        JSON.stringify(result.plan.existing_files_to_modify||[]),JSON.stringify(result.plan.new_files_to_create||[]),
+        JSON.stringify(result.plan.files_to_delete||[]),JSON.stringify(result.plan.files_affected||[]),
+        JSON.stringify(result.plan.integrations||[]),JSON.stringify(result.plan.risks||[]),
+        JSON.stringify(result.plan.acceptance_criteria||[]),JSON.stringify(result.plan.requirements||[]),
+        JSON.stringify(result.plan.task_graph||[]),now,now
       );
       RequirementLedgerService.syncPlan({
-        projectId,
-        conversationId:conv.id,
-        runId:execution?.runId || null,
-        planId:savedPlanId,
-        requirements:result.plan.requirements || [],
+        projectId,conversationId:conv.id,runId:execution?.runId||null,planId:savedPlanId,requirements:result.plan.requirements||[],
       });
     }
 
-    // Save agent message
-    const agentMsgId = 'msg-agent-' + Date.now();
-    const metadata = {
-      mode,
-      appliedSkills,
-      isDemonstrativeFallback: result.isDemonstrativeFallback,
-      providerUsed: result.providerUsed,
-      modelUsed: result.modelUsed,
-      planId: savedPlanId,
-      checkpointId: checkpointCreatedId,
-      filesAffected: result.build?.files?.map((f) => f.path) || result.plan?.files_affected || [],
-      decisionType: result.decisionType,
-      proposal: result.proposal,
-      hasErrors: result.hasErrors,
-      invalidResponse: result.invalidResponse,
-      errorMessage: result.errorMessage || result.errorReason,
-      runId: execution?.runId,
-      executionType: agentEngineEnabled ? 'agent_engine' : 'direct_llm',
-      agentKey: agentEngineEnabled ? ((result as any).agentKey || 'PROGRAM') : undefined,
-      profileKey: (result as any).profileKey,
-      workflow: (result as any).workflow,
-      validation,
-      buildDiagnostics: result.diagnostics,
+    let replyText=String(result.replyText||'').trim();
+    if(result.proposal?.files?.length&&resolvedMode==='build'){
+      applyResult=await SandboxProposalApplyService.apply({
+        userId:req.user!.id,projectId,proposal:result.proposal,runId:execution?.runId||null,planId:savedPlanId,
+        summary:result.proposal.summary||String(content).slice(0,100),originalRequest:String(content),
+        shipRequested:Boolean((result as any).workflow?.shipRequested),signal:controller.signal,
+      });
+      if(!applyResult.success){
+        throw Object.assign(new Error(applyResult.error||'A implementação não passou pela revisão final.'),{code:'AUTO_APPLY_FAILED',applyResult});
+      }
+      result.proposal.status='applied';
+      checkpointCreatedId=applyResult.checkpointId||null;
+      validation=applyResult.validation||validation;
+      browserQuality=applyResult.browserQuality||null;
+      browserRepair=applyResult.browserRepair||null;
+      sentinelReview=applyResult.sentinelReview||null;
+      const changedCount=Array.isArray(applyResult.changedFiles)?applyResult.changedFiles.length:result.proposal.files.length;
+      const summary=String(result.proposal.summary||result.build?.summary||'A implementação solicitada foi concluída').replace(/[.\s]+$/,'');
+      replyText=`Pronto. ${summary}. A implementação foi construída, revisada e aplicada ao preview${changedCount? ` em ${changedCount} arquivo(s)`:''}.`;
+      if(applyResult.needsVerification)replyText+=' As verificações compatíveis foram executadas; existe uma etapa técnica que não pôde ser verificada automaticamente.';
+    }
+
+    const messageNow=new Date().toISOString();
+    const agentMsgId='msg-agent-'+Date.now();
+    const metadata:any={
+      mode:selectedMode,resolvedMode,appliedSkills,isDemonstrativeFallback:result.isDemonstrativeFallback,
+      providerUsed:result.providerUsed,modelUsed:result.modelUsed,planId:savedPlanId,checkpointId:checkpointCreatedId,
+      filesAffected:applyResult?.changedFiles||result.build?.files?.map((item:any)=>item.path)||result.plan?.files_affected||[],
+      decisionType:result.decisionType,proposal:result.proposal,hasErrors:false,invalidResponse:false,
+      runId:execution?.runId,executionType:agentEngineEnabled?'agent_engine':'direct_llm',
+      agentKey:agentEngineEnabled?((result as any).agentKey||'PROGRAM'):undefined,profileKey:(result as any).profileKey,
+      workflow:execution?{...((result as any).workflow||{}),runId:execution.runId,status:applyResult?(applyResult.needsVerification?'needs_verification':'completed'):((result as any).workflow?.status||'completed'),trace:RunService.trace(execution.runId)}:(result as any).workflow,
+      validation,browserQuality,browserRepair,sentinelReview,buildDiagnostics:result.diagnostics,
+      technicalReply:result.replyText,
+      autoApplied:Boolean(applyResult),
+      originalRequest:String(content),
     };
 
     db.prepare(`
-      INSERT INTO messages (id, conversation_id, sender, content, metadata_json, created_at)
-      VALUES (?, ?, 'agent', ?, ?, ?)
-    `).run(agentMsgId, conv.id, result.replyText, JSON.stringify(metadata), now);
+      INSERT INTO messages (id,conversation_id,sender,content,metadata_json,created_at)
+      VALUES (?,?,'agent',?,?,?)
+    `).run(agentMsgId,conv.id,replyText,JSON.stringify(metadata),messageNow);
+    agentMessagePersisted=true;
 
-    if (execution) {
-      if (result.proposal?.status === 'pending' && !result.hasErrors) RunService.waitForApproval(execution.runId);
-      else RunService.finish(execution.runId,execution.stepId,result.hasErrors?'failed':'completed');
+    if(execution&&!applyResult){
+      if(result.proposal?.status==='pending'&&resolvedMode!=='build')RunService.waitForApproval(execution.runId);
+      else RunService.finish(execution.runId,execution.stepId,'completed');
     }
-    res.json({
-      success: !result.hasErrors && !result.invalidResponse,
-      agentMessage: {
-        id: agentMsgId,
-        sender: 'agent',
-        content: result.replyText,
-        metadata,
-        created_at: now,
-      },
-      plan: result.plan,
-      build: result.build,
-      proposal: result.proposal,
-      checkpointId: checkpointCreatedId,
-      invalidResponse: result.invalidResponse,
-    });
-  } catch (err: any) {
-    if(execution)RunService.finish(execution.runId,execution.stepId,controller.signal.aborted?'aborted':'failed');
-    if (!res.destroyed) res.status(500).json({ error: err.message });
-  } finally {
-    activeProjects.delete(req.params.projectId);
-    activeProjectControllers.delete(req.params.projectId);
+
+    if(!res.headersSent&&!res.destroyed){
+      res.json({
+        success:true,
+        agentMessage:{id:agentMsgId,sender:'agent',content:replyText,metadata,created_at:messageNow},
+        plan:result.plan,build:result.build,proposal:result.proposal,checkpointId:checkpointCreatedId,
+      });
+    }
+  }catch(err:any){
+    if(execution){
+      try{RunService.finish(execution.runId,execution.stepId,controller.signal.aborted?'aborted':'failed');}catch{}
+    }
+    const detail=String(err?.message||err||'Falha ao concluir o pedido.').trim();
+    if(acceptedEarly&&conv&&!agentMessagePersisted){
+      const failedAt=new Date().toISOString();
+      const msgId='msg-agent-'+Date.now();
+      const content=controller.signal.aborted
+        ? 'A execução foi interrompida. O progresso concluído foi preservado.'
+        : `Não consegui concluir esta implementação com segurança. ${detail}`;
+      const metadata={
+        mode:req.body?.mode||'auto',hasErrors:true,errorMessage:detail,runId:execution?.runId,
+        workflow:execution?{runId:execution.runId,status:controller.signal.aborted?'aborted':'failed',trace:RunService.trace(execution.runId)}:undefined,
+        validation:err?.applyResult?.validation||null,browserQuality:err?.applyResult?.browserQuality||null,
+        sentinelReview:err?.applyResult?.sentinelReview||null,
+      };
+      db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)")
+        .run(msgId,conv.id,content,JSON.stringify(metadata),failedAt);
+    }else if(!res.headersSent&&!res.destroyed){
+      res.status(controller.signal.aborted?499:500).json({error:controller.signal.aborted?'Execução cancelada.':detail});
+    }
+  }finally{
+    activeProjects.delete(projectId);
+    activeProjectControllers.delete(projectId);
   }
 });
 
