@@ -4,6 +4,7 @@ import { db } from '../db/index.js';
 import { WorkspaceManager } from './workspaceManager.js';
 import { ExecutionWorker, type WorkerResult } from './executionWorker.js';
 import { SandboxManager } from '../tooling/sandboxManager.js';
+import { ensureDependenciesAt } from './runtimeManager.js';
 
 export type ValidationStatus = 'passed' | 'failed' | 'unverified';
 type SecurityResult = { status: 'pass' | 'fail'; issues: string[] };
@@ -104,6 +105,22 @@ export class ValidatorEngine {
     const dir = input.sandboxId
       ? SandboxManager.rootPath(input.sandboxId,String(input.userId||''),input.projectId)
       : WorkspaceManager.getProjectDir(input.projectId);
+    if(input.sandboxId){
+      const dependencies=await ensureDependenciesAt(dir,input.signal);
+      db.prepare(
+        'INSERT INTO verifications(id,project_id,checkpoint_id,gate_type,status,details_json,created_at) VALUES(?,?,?,?,?,?,?)'
+      ).run(
+        `ver-${crypto.randomUUID()}`,input.projectId,input.checkpointId||null,'sandbox_dependencies',
+        dependencies.ok?'pass':'fail',
+        JSON.stringify({executed:!dependencies.skipped,packageManager:dependencies.packageManager,durationMs:dependencies.durationMs,output:String(dependencies.output||'').slice(-4000),sandboxId:input.sandboxId}),
+        new Date().toISOString()
+      );
+      if(!dependencies.ok){
+        const result={passed:false,status:'failed' as ValidationStatus,results:[] as WorkerResult[],security,advisory,sandboxId:input.sandboxId,dependencyInstall:dependencies};
+        if(input.userId)SandboxManager.markValidation(input.sandboxId,input.userId,result,input.projectId);
+        return result;
+      }
+    }
     const results: WorkerResult[] = [];
     for (const tool of ['typecheck', 'build', 'test'] as const) {
       input.signal?.throwIfAborted();
