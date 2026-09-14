@@ -23,13 +23,20 @@ function ensureColumn(tableName: string, columnName: string, columnDef: string) 
   }
 }
 
+export function applyBootstrapSchemaIfNeeded(database:DatabaseSync,schemaSql:string){
+  const existingSchema=database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get();
+  if(!existingSchema)database.exec(schemaSql);
+}
+
 // Run migrations and initial seeds
 export function initializeDatabase() {
-  // Read and execute schema
+  // schema.sql is a bootstrap snapshot, not an incremental migration. Replaying it
+  // against an older persistent database can reference additive columns before the
+  // corresponding migration has created them (for example Phase 2 indexes).
   const schemaPath = path.resolve(process.cwd(), 'server', 'db', 'schema.sql');
   if (fs.existsSync(schemaPath)) {
     const schemaSql = fs.readFileSync(schemaPath, 'utf8');
-    db.exec(schemaSql);
+    applyBootstrapSchemaIfNeeded(db,schemaSql);
   }
 
   // Check if migration 1 is logged
