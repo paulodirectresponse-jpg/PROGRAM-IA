@@ -179,3 +179,36 @@ test('phase3 failed browser gate invokes SENTINEL then one bounded FORGE repair 
     cleanup(env);
   }
 });
+
+
+test('phase3 screenshot evidence is owner-scoped and cannot be resolved by another user',async()=>{
+  const env=setupProject();
+  try{
+    WorkspaceManager.writeFile(env.projectId,'index.html','<!doctype html><html><body><h1>Owner Evidence</h1></body></html>');
+    const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-browser-owner'});
+    const quality=await BrowserQualityService.inspect({userId:env.userId,projectId:env.projectId,sandboxId:sandbox.id,runId:'run-browser-owner'});
+    assert.equal(quality.status,'passed');
+    assert.ok(BrowserQualityService.screenshotPath(quality.id,'desktop',env.userId,env.projectId));
+    assert.equal(BrowserQualityService.screenshotPath(quality.id,'desktop','different-user',env.projectId),null);
+    assert.equal(BrowserQualityService.screenshotPath(quality.id,'desktop',env.userId,'different-project'),null);
+  }finally{cleanup(env);}
+});
+
+test('phase3 direct proposal with executable browser failure is blocked before official merge',async()=>{
+  const env=setupProject();
+  try{
+    WorkspaceManager.writeFile(env.projectId,'index.html','<!doctype html><html><body><h1>Original</h1></body></html>');
+    const proposal={
+      id:'phase3-direct-fail',
+      summary:'broken direct proposal',
+      requiresConfirmation:true,
+      status:'pending',
+      files:[{path:'index.html',action:'modify',content:'<!doctype html><html><body><h1>Broken</h1><script>throw new Error("direct browser failure")</script></body></html>'}],
+    };
+    const result=await SandboxProposalApplyService.apply({userId:env.userId,projectId:env.projectId,proposal,summary:'direct browser fail'});
+    assert.equal(result.success,false);
+    assert.equal(result.statusCode,422);
+    assert.equal(result.browserQuality?.status,'failed');
+    assert.match(WorkspaceManager.readFile(env.projectId,'index.html')||'',/Original/);
+  }finally{cleanup(env);}
+});
