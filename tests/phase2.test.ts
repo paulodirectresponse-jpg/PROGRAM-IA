@@ -30,6 +30,18 @@ function setupProject() {
   return {userId,workspaceId,projectId};
 }
 
+function seedAgentModel(userId:string) {
+  const now=new Date().toISOString();
+  const providerKey='mock-tools';
+  db.prepare('INSERT OR REPLACE INTO providers(id,user_id,provider_key,name,base_url,model_id,is_configured,is_active,connection_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
+    .run(`provider-${userId}`,userId,providerKey,'Mock Tools','https://mock.invalid/v1','mock-model',1,1,'connected',now);
+  const profileId=`profile-${userId}`;
+  db.prepare('INSERT OR REPLACE INTO model_profiles(id,user_id,profile_key,level,max_attempts,max_cost_usd,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(profileId,userId,'BASE_FREE',1,1,0.05,1,now,now);
+  db.prepare('INSERT OR REPLACE INTO model_candidates(id,profile_id,provider_key,model_id,priority,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+    .run(`candidate-${userId}`,profileId,providerKey,'mock-model',0,1,now,now);
+}
+
 function cleanup(input:{userId:string;workspaceId:string;projectId:string}) {
   const sandboxes=db.prepare('SELECT id FROM sandboxes WHERE project_id=?').all(input.projectId) as Array<{id:string}>;
   for(const sandbox of sandboxes) SandboxManager.cleanup(sandbox.id,input.userId);
