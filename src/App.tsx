@@ -547,6 +547,9 @@ export default function App() {
 
       const remaining = projects.filter((p) => p.id !== projectId);
       setProjects(remaining);
+      if (localStorage.getItem('forge:lastActiveProjectId') === projectId) {
+        localStorage.removeItem('forge:lastActiveProjectId');
+      }
 
       if (activeProject?.id === projectId) {
         if (remaining.length > 0) {
