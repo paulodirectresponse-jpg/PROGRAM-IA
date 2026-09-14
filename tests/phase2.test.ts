@@ -229,3 +229,23 @@ test('phase2 process tool runs declared npm script with sandbox cwd', async () =
     assert.equal(row?.sandboxId,sandbox.id);
   } finally { cleanup(env); }
 });
+
+
+test('phase2 sandbox detects stale official revision before merge', async () => {
+  const env=setupProject();
+  try {
+    WorkspaceManager.writeFile(env.projectId,'src/a.ts','export const a=1');
+    const sandbox=SandboxManager.create({userId:env.userId,projectId:env.projectId,runId:'run-stale'});
+    await ToolExecutionService.execute(
+      {userId:env.userId,projectId:env.projectId,runId:'run-stale',sandboxId:sandbox.id},
+      {toolKey:'workspace.write_file',input:{path:'src/a.ts',content:'export const a=2'},idempotencyKey:'stale-write'}
+    );
+    WorkspaceManager.writeFile(env.projectId,'src/other.ts','export const other=1');
+    assert.equal(SandboxManager.baseMatches(sandbox.id,env.userId,env.projectId),false);
+    let code='';
+    try { SandboxManager.mergeAtomic({sandboxId:sandbox.id,userId:env.userId,projectId:env.projectId,title:'stale'}); }
+    catch(error:any){ code=String(error?.code||''); }
+    assert.equal(code,'stale_base_revision');
+    assert.equal(WorkspaceManager.readFile(env.projectId,'src/a.ts'),'export const a=1');
+  } finally { cleanup(env); }
+});
