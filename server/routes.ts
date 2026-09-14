@@ -1177,7 +1177,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
       agentKey:agentEngineEnabled?((result as any).agentKey||'PROGRAM'):undefined,profileKey:(result as any).profileKey,
       workflow:execution?{...((result as any).workflow||{}),runId:execution.runId,status:applied.needsVerification?'needs_verification':'completed',trace:RunService.trace(execution.runId)}:(result as any).workflow,
       validation:applied.validation,browserQuality:applied.browserQuality,browserRepair:applied.browserRepair,sentinelReview:applied.sentinelReview,
-      checkpointId:applied.checkpointId,technicalReply:result.replyText,autoApplied:true,
+      checkpointId:applied.checkpointId,technicalReply:result.replyText,autoApplied:true,buildDiagnostics:result.diagnostics,
     };
     db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)")
       .run(agentMsgId,conversation.id,replyText,JSON.stringify(metadata),messageNow);
