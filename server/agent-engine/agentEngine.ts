@@ -131,6 +131,7 @@ function serializeContextPack(pack: ContextPack) {
   const fileLines = pack.selectedFiles.map(item => [
     `- ${item.file.path}`,
     `  language=${item.file.language}; module=${item.file.moduleKey}; tokens≈${item.estimatedTokens}`,
+    item.content ? `  content=${item.content.mode}; range=${item.content.start}-${item.content.end}; omittedChars=${item.content.omittedChars}` : '  content=legacy-full',
     item.file.summary ? `  summary=${item.file.summary}` : '',
     item.file.symbols.length ? `  symbols=${item.file.symbols.slice(0,20).join(', ')}` : '',
     item.file.imports.length ? `  imports=${item.file.imports.slice(0,20).join(', ')}` : '',
