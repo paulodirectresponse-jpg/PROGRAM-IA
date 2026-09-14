@@ -242,7 +242,6 @@ export class SandboxManager {
 
     for(const change of expected.values()){
       const source=safeJoin(record.rootPath,change.path);
-      const baseExists=record.baseManifest[change.path]!==undefined;
       const exists=fs.existsSync(source);
       if(change.action==='delete'){
         if(exists)throw Object.assign(new Error(`Arquivo deveria estar removido no sandbox: ${change.path}`),{code:'sandbox_proposal_mismatch'});
@@ -251,8 +250,6 @@ export class SandboxManager {
       if(!exists)throw Object.assign(new Error(`Arquivo esperado não existe no sandbox: ${change.path}`),{code:'sandbox_proposal_mismatch'});
       const stat=fs.lstatSync(source);
       if(stat.isSymbolicLink()||!stat.isFile())throw Object.assign(new Error(`Tipo de arquivo inválido no sandbox: ${change.path}`),{code:'sandbox_proposal_mismatch'});
-      if(change.action==='create'&&baseExists)throw Object.assign(new Error(`Ação create conflita com arquivo existente: ${change.path}`),{code:'sandbox_proposal_mismatch'});
-      if((change.action==='modify'||change.action==='update')&&!baseExists)throw Object.assign(new Error(`Ação modify/update exige arquivo-base: ${change.path}`),{code:'sandbox_proposal_mismatch'});
       if(typeof change.content==='string'){
         const content=fs.readFileSync(source,'utf8');
         if(content!==change.content)throw Object.assign(new Error(`Conteúdo do sandbox divergiu da proposta: ${change.path}`),{code:'sandbox_proposal_mismatch'});
