@@ -7,7 +7,6 @@ import { createServer as createViteServer } from 'vite';
 import { initializeDatabase } from './server/db/index.js';
 import { router as apiRouter } from './server/routes.js';
 import { CloudSyncService } from './server/services/cloudSyncService.js';
-import { AuthService } from './server/services/authService.js';
 import { RuntimeManager } from './server/services/runtimeManager.js';
 import { Phase2RecoveryService } from './server/tooling/phase2RecoveryService.js';
 import { BenchmarkService } from './server/benchmark/benchmarkService.js';
