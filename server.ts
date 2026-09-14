@@ -175,11 +175,6 @@ async function startServer() {
     console.log(
       `Forge Agent full-stack server running on http://0.0.0.0:${PORT}`
     );
-    queueMicrotask(()=>{
-      void maybeRunPhase4Benchmark().catch(error=>{
-        console.error('PHASE4_AUTORUN_ERROR',String(error?.message||error));
-      });
-    });
   });
 
   const shutdown = async () => {
