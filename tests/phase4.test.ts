@@ -9,8 +9,17 @@ import { BenchmarkService } from '../server/benchmark/benchmarkService.js';
 initializeDatabase();
 
 test('phase4 migration and canonical benchmark catalog exist',()=>{
-  const migration=db.prepare('SELECT name FROM schema_migrations WHERE version=8').get() as any;
-  assert.equal(migration?.name,'008_phase4_benchmark_framework');
+  const migration8=db.prepare('SELECT name FROM schema_migrations WHERE version=8').get() as any;
+  const migration9=db.prepare('SELECT name FROM schema_migrations WHERE version=9').get() as any;
+  const migration10=db.prepare('SELECT name FROM schema_migrations WHERE version=10').get() as any;
+  assert.equal(migration8?.name,'008_phase4_benchmark_framework');
+  assert.equal(migration9?.name,'009_phase4_benchmark_invocation_provenance');
+  assert.equal(migration10?.name,'010_phase4_single_active_benchmark_per_user');
+  const invocationColumns=new Set((db.prepare('PRAGMA table_info(model_invocations)').all() as any[]).map(row=>row.name));
+  assert.ok(invocationColumns.has('benchmark_run_id'));
+  assert.ok(invocationColumns.has('benchmark_case_id'));
+  const benchmarkIndexes=(db.prepare("PRAGMA index_list('benchmark_runs')").all() as any[]).map(row=>row.name);
+  assert.ok(benchmarkIndexes.includes('benchmark_runs_one_active_user'));
   assert.equal(PHASE4_SUITE_KEY,'phase4-v1-30');
   assert.equal(PHASE4_BENCHMARK_CASES.length,30);
   assert.equal(new Set(PHASE4_BENCHMARK_CASES.map(item=>item.id)).size,30);
@@ -109,5 +118,55 @@ test('phase4 startup recovery marks in-flight benchmark state interrupted',()=>{
   }finally{
     db.prepare('DELETE FROM benchmark_case_runs WHERE benchmark_run_id=?').run(id);
     db.prepare('DELETE FROM benchmark_runs WHERE id=?').run(id);
+  }
+});
+
+
+test('phase4 database prevents two concurrent paid benchmark runs for one user',()=>{
+  const userId=`phase4-concurrency-${crypto.randomUUID()}`;
+  const first=`bench-${crypto.randomUUID()}`,second=`bench-${crypto.randomUUID()}`,created=new Date().toISOString();
+  try{
+    db.prepare(`INSERT INTO benchmark_runs(id,user_id,suite_key,status,total_cases,max_cost_usd,allow_expert,config_json,summary_json,created_at)
+      VALUES(?,?,?,'running',30,1,0,'{}','{}',?)`).run(first,userId,PHASE4_SUITE_KEY,created);
+    assert.throws(()=>db.prepare(`INSERT INTO benchmark_runs(id,user_id,suite_key,status,total_cases,max_cost_usd,allow_expert,config_json,summary_json,created_at)
+      VALUES(?,?,?,'queued',30,1,0,'{}','{}',?)`).run(second,userId,PHASE4_SUITE_KEY,created),/UNIQUE/);
+  }finally{
+    db.prepare('DELETE FROM benchmark_runs WHERE user_id=?').run(userId);
+  }
+});
+
+test('phase4 release gate only approves a complete thirty-case real-provider run',()=>{
+  const userId=`phase4-gate-${crypto.randomUUID()}`,runId=`bench-${crypto.randomUUID()}`,created=new Date().toISOString();
+  const categoryBreakdown:any={};
+  for(const definition of PHASE4_BENCHMARK_CASES){
+    categoryBreakdown[definition.category]||={cases:0,passed:0,averageScore:100};
+    categoryBreakdown[definition.category].cases++;
+    categoryBreakdown[definition.category].passed++;
+  }
+  const summary={
+    totalCases:30,completedCases:30,passedCases:30,failedCases:0,passRate:1,averageScore:100,
+    firstPassRate:1,expertEscalationRate:0,repairRate:0,verifiedRate:1,totalCostUsd:.5,averageLatencyMs:100,
+    providerBreakdown:{real:{cases:30,costUsd:.5,passed:30}},categoryBreakdown,
+  };
+  try{
+    db.prepare(`INSERT INTO benchmark_runs(id,user_id,suite_key,status,total_cases,completed_cases,passed_cases,failed_cases,max_cost_usd,spent_usd,allow_expert,config_json,summary_json,created_at,started_at,finished_at)
+      VALUES(?,?,?,'completed',30,30,30,0,1,.5,0,'{}',?,?,?,?)`).run(runId,userId,PHASE4_SUITE_KEY,JSON.stringify(summary),created,created,created);
+    PHASE4_BENCHMARK_CASES.forEach((definition,index)=>{
+      db.prepare(`INSERT INTO benchmark_case_runs(id,benchmark_run_id,case_id,case_order,category,mode,agent_key,status,score,passed,provider_real,provider_key,model_id,cost_usd,attempts,repairs,expert_escalations,evidence_json,created_at,finished_at)
+        VALUES(?,?,?,?,?,?,?,'passed',100,1,1,'real','model',.01,1,0,0,'{}',?,?)`).run(
+          `case-${crypto.randomUUID()}`,runId,definition.id,index,definition.category,definition.mode,definition.agentKey,created,created
+        );
+    });
+    const gate=BenchmarkService.releaseGate(runId,userId);
+    assert.equal(gate?.eligible,true);
+    assert.equal(gate?.passed,true);
+    assert.equal(gate?.version,'phase4-release-gate-v1');
+    db.prepare("UPDATE benchmark_case_runs SET provider_real=0 WHERE benchmark_run_id=? AND case_id='P4-30'").run(runId);
+    const invalid=BenchmarkService.releaseGate(runId,userId);
+    assert.equal(invalid?.eligible,false);
+    assert.equal(invalid?.passed,false);
+  }finally{
+    db.prepare('DELETE FROM benchmark_case_runs WHERE benchmark_run_id=?').run(runId);
+    db.prepare('DELETE FROM benchmark_runs WHERE id=?').run(runId);
   }
 });
