@@ -1601,7 +1601,14 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
   RunService.resume(run.id);
 
   try {
-    const existingFiles = WorkspaceManager.getAllFilesContent(run.project_id);
+    const interruptedTools=ToolExecutionJournal.recoverable(run.id);
+    let recoverySandboxId:string|null=null;
+    for(const execution of [...interruptedTools].reverse()){
+      if(execution.sandboxId){
+        try{ SandboxManager.assertAccess(execution.sandboxId,req.user!.id,run.project_id); recoverySandboxId=execution.sandboxId; break; }catch{}
+      }
+    }
+    const existingFiles = recoverySandboxId ? SandboxManager.getAllFilesContent(recoverySandboxId,req.user!.id,run.project_id) : WorkspaceManager.getAllFilesContent(run.project_id);
     const continuedRequirementIds = workflowRequirementIds(run.project_id, run.id, null);
     const history = db.prepare('SELECT sender, content FROM messages WHERE conversation_id=? ORDER BY created_at DESC, rowid DESC LIMIT 20')
       .all(run.conversation_id).reverse() as any[];
