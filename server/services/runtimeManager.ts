@@ -140,6 +140,15 @@ async function runTool(cwd: string, packageManager: string, args: string[], time
   });
 }
 
+export async function ensureDependenciesAt(cwd:string,signal?:AbortSignal){
+  const pkg=readPackage(cwd);
+  if(!pkg)return {ok:true,skipped:true,output:'Projeto sem package.json.',durationMs:0,packageManager:'none'};
+  const packageManager=detectPackageManager(cwd);
+  if(fs.existsSync(path.join(cwd,'node_modules')))return {ok:true,skipped:true,output:'Dependências já presentes.',durationMs:0,packageManager};
+  const result=await runTool(cwd,packageManager,installArgs(packageManager,cwd),INSTALL_TIMEOUT_MS,signal);
+  return {...result,skipped:false,packageManager};
+}
+
 async function waitForHttp(port: number, signal?: AbortSignal) {
   const deadline = Date.now() + START_TIMEOUT_MS;
   while (Date.now() < deadline) {
