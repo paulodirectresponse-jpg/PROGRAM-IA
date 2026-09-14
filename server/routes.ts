@@ -1679,8 +1679,6 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
 
 router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   const projectId = req.params.projectId;
-  let rollbackCheckpointId: string | null = null;
-  let workspaceMutated = false;
   let proposalMessage: any = null;
   let metadata: any = null;
 
@@ -1774,20 +1772,16 @@ router.post('/conversations/:projectId/apply-proposal', requireAuth, requireProj
     });
 
   } catch (err: any) {
-    if (workspaceMutated && rollbackCheckpointId) {
-      try { WorkspaceManager.restoreCheckpoint(projectId, rollbackCheckpointId); } catch {}
-    }
-
     if (proposalMessage && metadata?.proposal) {
       try {
         metadata.proposal.status = 'pending';
         metadata.hasErrors = true;
-        metadata.errorMessage = 'A aplicação falhou e o workspace foi restaurado. Você pode tentar novamente.';
+        metadata.errorMessage = 'A aplicação falhou antes de concluir o merge aprovado. Você pode tentar novamente.';
         db.prepare('UPDATE messages SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata), proposalMessage.id);
       } catch {}
     }
 
-    res.status(500).json({ error: 'A aplicação falhou de forma segura; nenhuma alteração parcial foi mantida.' });
+    res.status(500).json({ error: 'A aplicação falhou de forma segura; o merge não foi concluído.' });
   }
 });
 
