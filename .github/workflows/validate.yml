@@ -19,7 +19,7 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run lint
       - run: npx playwright install --with-deps chromium
-      - run: npx tsx --test --test-concurrency=1 tests/foundation.test.ts tests/http.test.ts tests/directPersistence.test.ts tests/regression.test.ts tests/agentEngine.test.ts tests/phase0.test.ts tests/phase1.test.ts tests/phase2.test.ts tests/phase3.test.ts
+      - run: npx tsx --test --test-concurrency=1 tests/foundation.test.ts tests/http.test.ts tests/directPersistence.test.ts tests/regression.test.ts tests/agentEngine.test.ts tests/phase0.test.ts tests/phase1.test.ts tests/phase2.test.ts tests/phase3.test.ts tests/phase4.test.ts
       - run: npm test
       - run: npm run build
       - run: npx playwright test
