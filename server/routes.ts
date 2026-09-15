@@ -1261,7 +1261,12 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       if(typeof value!=='string'||!value.trim())return[];
       try{const parsed=JSON.parse(value);return Array.isArray(parsed)?parsed.map(item=>String(item)).filter(Boolean):[];}catch{return[];}
     };
-    const implicitDraftPlan=resolvedMode==='build'
+    const normalizedBuildCommand=userContent.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    const continuesDraftPlan=resolvedMode==='build'&&(
+      /\b(plano|planejamento|isso|isto|esse\s+site|este\s+site|esse\s+sistema|este\s+sistema|site\s+agora|sistema\s+agora)\b/.test(normalizedBuildCommand)||
+      (normalizedBuildCommand.length<=220&&/^(ok\b|sim\b|perfeito\b|agora\b|pode\b|faca\b|faz\b|construa\b|implemente\b|crie\b)/.test(normalizedBuildCommand))
+    );
+    const implicitDraftPlan=continuesDraftPlan
       ? db.prepare("SELECT * FROM plans WHERE project_id=? AND status='draft' ORDER BY created_at DESC LIMIT 1").get(projectId) as any
       : null;
     const implicitPlanExisting=implicitDraftPlan?parsePlanList(implicitDraftPlan.existing_files_json):[];
@@ -1275,12 +1280,12 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       'OBJETIVO: '+String(implicitDraftPlan.objective||''),
       String(implicitDraftPlan.architecture_summary||'')?'ARQUITETURA: '+String(implicitDraftPlan.architecture_summary||''):'',
       String(implicitDraftPlan.scope_in||'')?'ESCOPO: '+String(implicitDraftPlan.scope_in||''):'',
-      implicitPlanTargets.length?'ARQUIVOS PLANEJADOS:\\n- '+implicitPlanTargets.join('\\n- '):'',
-      implicitPlanRequirements.length?'REQUISITOS:\\n'+implicitPlanRequirements.map((item:any)=>'- '+String(item.id||'')+': '+String(item.title||item.description||'')).join('\\n'):'',
-      implicitPlanTasks.length?'TAREFAS:\\n'+implicitPlanTasks.map((item:any)=>'- '+String(item.id||'')+': '+String(item.title||'')).join('\\n'):'',
-      implicitPlanAcceptance.length?'CRITÉRIOS DE ACEITE:\\n- '+implicitPlanAcceptance.join('\\n- '):'',
+      implicitPlanTargets.length?'ARQUIVOS PLANEJADOS:\n- '+implicitPlanTargets.join('\n- '):'',
+      implicitPlanRequirements.length?'REQUISITOS:\n'+implicitPlanRequirements.map((item:any)=>'- '+String(item.id||'')+': '+String(item.title||item.description||'')).join('\n'):'',
+      implicitPlanTasks.length?'TAREFAS:\n'+implicitPlanTasks.map((item:any)=>'- '+String(item.id||'')+': '+String(item.title||'')).join('\n'):'',
+      implicitPlanAcceptance.length?'CRITÉRIOS DE ACEITE:\n- '+implicitPlanAcceptance.join('\n- '):'',
       'O usuário pediu execução agora; não peça aprovação intermediária.',
-    ].filter(Boolean).join('\\n\\n'):'';
+    ].filter(Boolean).join('\n\n'):'';
 
     // O modo Automático continua visível como Automático; resolvedMode é decisão interna do agente.
     const conversationMode=selectedMode==='auto'?'auto':resolvedMode;
@@ -1429,10 +1434,20 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
           conversationHistory:history,userId:req.user!.id,signal:controller.signal,
         })
       : !agentEngineEnabled
-        ? await LLMAdapterService.executePrompt({
-            prompt:effectivePrompt,mode:resolvedMode,projectId,providerKey,modelId,existingFiles,appliedSkills,
-            conversationHistory:history,userId:req.user!.id,signal:controller.signal,
-          })
+        ? (implicitDraftPlan&&resolvedMode==='build'
+          ? await LLMAdapterService.buildApprovedPlanReliably({
+              projectId,providerKey,modelId,userId:req.user!.id,existingFiles,
+              requestedFiles:implicitPlanTargets,
+              objective:String(implicitDraftPlan.objective||userContent),
+              scopeIn:[String(implicitDraftPlan.architecture_summary||''),String(implicitDraftPlan.scope_in||''),implicitPlanContext].filter(Boolean).join('\n\n'),
+              scopeOut:String(implicitDraftPlan.scope_out||''),
+              acceptanceCriteria:implicitPlanAcceptance,
+              signal:controller.signal,
+            })
+          : await LLMAdapterService.executePrompt({
+              prompt:effectivePrompt,mode:resolvedMode,projectId,providerKey,modelId,existingFiles,appliedSkills,
+              conversationHistory:history,userId:req.user!.id,signal:controller.signal,
+            }))
         : await AgentWorkflowEngine.executeWorkflow({
             prompt:effectivePrompt,mode:resolvedMode,projectId,existingFiles,appliedSkills,conversationHistory:history,
             userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal,
