@@ -46,6 +46,22 @@ test('budget governor keeps benchmark daily limits explicit without silently cap
     else process.env.FORGE_DAILY_AI_BUDGET_USD=previous;
   }
 });
+test('mode-aware run budgets allow bounded BASE to EXPERT escalation without removing hard caps',()=>{
+  const rows=db.prepare("SELECT profile_key,max_cost_usd FROM model_profiles WHERE user_id=? AND profile_key IN ('BASE_FREE','EXPERT_PAID')").all(a) as any[];
+  const previous=new Map(rows.map(row=>[row.profile_key,Number(row.max_cost_usd||0)]));
+  try{
+    db.prepare("UPDATE model_profiles SET max_cost_usd=.5 WHERE user_id=? AND profile_key='BASE_FREE'").run(a);
+    db.prepare("UPDATE model_profiles SET max_cost_usd=.25 WHERE user_id=? AND profile_key='EXPERT_PAID'").run(a);
+    assert.equal(ModelRouter.recommendedRunBudget(a,'plan'),1.5);
+    assert.equal(ModelRouter.recommendedRunBudget(a,'review'),1.5);
+    assert.equal(ModelRouter.recommendedRunBudget(a,'build'),2);
+    assert.equal(ModelRouter.recommendedRunBudget(a,'auto'),2);
+    assert.equal(ModelRouter.recommendedRunBudget(a,'publish'),0.75);
+  }finally{
+    for(const [key,value] of previous)db.prepare('UPDATE model_profiles SET max_cost_usd=? WHERE user_id=? AND profile_key=?').run(value,a,key);
+  }
+});
+
 test('budget guard failures cannot leave a candidate quarantined when no provider call happened',()=>{
   const candidate=ModelRouter.listProfiles(a)[0].candidates[0] as any;
   ModelRouter.recordCandidateResult(candidate.id,false,'incompatible');

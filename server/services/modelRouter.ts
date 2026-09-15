@@ -77,6 +77,28 @@ export class ModelRouter {
       :db.prepare('SELECT COALESCE(SUM(budget_cost_usd),0) total FROM model_invocations WHERE user_id=? AND created_at>=?').get(userId,since)) as any;
     return Number(r?.total||0);
   }
+  static recommendedRunBudget(userId:string,mode:string){
+    const profiles=this.listProfiles(userId);
+    const profileMax=(key:ProfileKey)=>{
+      const profile=profiles.find((item:any)=>item.profile_key===key&&Number(item.enabled)!==0);
+      if(!profile)return 0;
+      const enabled=(profile.candidates||[]).filter((candidate:any)=>Number(candidate.enabled)!==0);
+      if(!enabled.length)return 0;
+      return Math.max(0,Number(profile.max_cost_usd||0));
+    };
+    const routeReserve=Math.max(0.05,profileMax('BASE_FREE')+profileMax('EXPERT_PAID'));
+    const normalized=String(mode||'auto').toLowerCase();
+    const policy:Record<string,{calls:number;floor:number;cap:number}>={
+      plan:{calls:2,floor:.75,cap:1.5},
+      review:{calls:2,floor:.75,cap:1.5},
+      publish:{calls:1,floor:.5,cap:1},
+      build:{calls:4,floor:1,cap:2},
+      auto:{calls:5,floor:1.5,cap:2},
+    };
+    const rule=policy[normalized]||policy.auto;
+    return Math.round(Math.min(rule.cap,Math.max(rule.floor,routeReserve*rule.calls))*1000)/1000;
+  }
+
   static assertBudget(userId:string,max:number,o:{runId?:string;runLimit?:number;dailyLimit?:number}={}){
     const configuredDailyLimit=(()=>{
       if(o.dailyLimit!==undefined)return Number(o.dailyLimit);

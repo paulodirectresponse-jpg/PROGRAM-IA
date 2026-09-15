@@ -780,7 +780,7 @@ test('agent planning returns 202 before a slow SCOUT finishes and persists the p
 test('block8 full-flow regression: clothing cashflow PLAN survives fallback, ledger sync, background handoff and truthful cost telemetry',async(t)=>{
   const previousFlag=process.env.AGENT_ENGINE_ENABLED;
   process.env.AGENT_ENGINE_ENABLED='true';
-  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto',0.01);
+  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto',0.5);
   configureLifecycleProfile(userA,'EXPERT_PAID','cheaper_inference','gpt-5.6-luna',0.25);
   db.prepare("UPDATE providers SET is_active=CASE WHEN provider_key='omniroute' THEN 1 ELSE 0 END,is_configured=1,connection_status='connected' WHERE user_id=? AND provider_key IN ('omniroute','cheaper_inference')").run(userA);
 
@@ -914,8 +914,9 @@ test('block8 full-flow regression: clothing cashflow PLAN survives fallback, led
     assert.equal(finalRun.status,'completed');
     assert.equal(Number(finalRun.known_cost_usd),0);
     assert.equal(Number(finalRun.unknown_cost_calls),2);
-    assert.equal(Number(finalRun.budget_accounted_usd),0.26);
-    assert.equal(Number(finalRun.spent_usd),0.26);
+    assert.equal(Number(finalRun.budget_usd),1.5);
+    assert.equal(Number(finalRun.budget_accounted_usd),0.75);
+    assert.equal(Number(finalRun.spent_usd),0.75);
 
     const invocations=(finalRun.trace||[]).flatMap((step:any)=>step.invocations||[]);
     assert.equal(invocations.length,2);
