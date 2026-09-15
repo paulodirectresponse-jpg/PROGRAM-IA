@@ -578,7 +578,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
       </div>
 
       {/* Input Form with Skills Picker */}
-      <form onSubmit={handleSubmit} className="p-3 border-t border-slate-800/80 bg-slate-900/40 space-y-2">
+      <form onSubmit={handleSubmit} className="relative p-3 border-t border-slate-800/80 bg-slate-900/40 space-y-2">
         {/* Selected skills pills */}
         {selectedSkills.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-1">
@@ -680,7 +680,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
             disabled={!canSend}
             placeholder={canSend ? 'Digite seu pedido... (Ex: crie uma tela de login, explique a arquitetura)' : 'Crie ou selecione um projeto para iniciar a conversa'}
             rows={2}
-            className="w-full pl-3 pr-20 py-2 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-600 resize-none"
+            className="w-full pl-3 pr-32 py-2 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-600 resize-none"
           />
 
           <div className="absolute right-2 bottom-2.5 flex items-center gap-1">
