@@ -105,7 +105,7 @@ function publicCase(row:any){
     id:row.id,benchmarkRunId:row.benchmark_run_id,caseId:row.case_id,order:Number(row.case_order),category:row.category,
     mode:row.mode,agentKey:row.agent_key,status:row.status,score:Number(row.score||0),passed:Boolean(row.passed),
     profileKey:row.profile_key||null,providerKey:row.provider_key||null,modelId:row.model_id||null,
-    providerReal:Boolean(row.provider_real),costUsd:Number(row.cost_usd||0),latencyMs:Number(row.latency_ms||0),
+    providerReal:Boolean(row.provider_real),costUsd:Number(row.cost_usd||0),budgetCostUsd:Number(row.budget_cost_usd||0),unknownCostCalls:Number(row.unknown_cost_calls||0),latencyMs:Number(row.latency_ms||0),
     inputTokens:Number(row.input_tokens||0),outputTokens:Number(row.output_tokens||0),attempts:Number(row.attempts||0),
     repairs:Number(row.repairs||0),expertEscalations:Number(row.expert_escalations||0),validatorStatus:row.validator_status||null,
     browserStatus:row.browser_status||null,failureReason:row.failure_reason||null,evidence:parseJson(row.evidence_json,{}),
@@ -194,15 +194,19 @@ function aggregate(runId:string):BenchmarkRunSummary{
     return Number(row.passed)===1;
   });
   const totalCost=rows.reduce((sum,row)=>sum+Number(row.cost_usd||0),0);
+  const budgetCost=rows.reduce((sum,row)=>sum+Number(row.budget_cost_usd||0),0);
+  const unknownCostCalls=rows.reduce((sum,row)=>sum+Number(row.unknown_cost_calls||0),0);
   const avgScore=completed.length?completed.reduce((sum,row)=>sum+Number(row.score||0),0)/completed.length:0;
   const avgLatency=completed.length?completed.reduce((sum,row)=>sum+Number(row.latency_ms||0),0)/completed.length:0;
   const providerBreakdown:BenchmarkRunSummary['providerBreakdown']={};
   const categoryBreakdown:BenchmarkRunSummary['categoryBreakdown']={};
   for(const row of completed){
     const provider=String(row.provider_key||'unknown');
-    providerBreakdown[provider]||={cases:0,costUsd:0,passed:0};
+    providerBreakdown[provider]||={cases:0,costUsd:0,budgetCostUsd:0,unknownCostCalls:0,passed:0};
     providerBreakdown[provider].cases++;
     providerBreakdown[provider].costUsd=roundMoney(providerBreakdown[provider].costUsd+Number(row.cost_usd||0));
+    providerBreakdown[provider].budgetCostUsd=roundMoney(providerBreakdown[provider].budgetCostUsd+Number(row.budget_cost_usd||0));
+    providerBreakdown[provider].unknownCostCalls+=Number(row.unknown_cost_calls||0);
     if(Number(row.passed)===1)providerBreakdown[provider].passed++;
     const category=String(row.category);
     categoryBreakdown[category]||={cases:0,passed:0,averageScore:0};
@@ -219,7 +223,7 @@ function aggregate(runId:string):BenchmarkRunSummary{
     expertEscalationRate:completed.length?expert.length/completed.length:0,
     repairRate:completed.length?repaired.length/completed.length:0,
     verifiedRate:completed.length?verified.length/completed.length:0,
-    totalCostUsd:roundMoney(totalCost),averageLatencyMs:Math.round(avgLatency),providerBreakdown,categoryBreakdown,
+    totalCostUsd:roundMoney(totalCost),budgetCostUsd:roundMoney(budgetCost),unknownCostCalls,averageLatencyMs:Math.round(avgLatency),providerBreakdown,categoryBreakdown,
   };
 }
 
@@ -228,10 +232,10 @@ function updateRunSummary(runId:string,status?:BenchmarkStatus){
   const finished=status&&['completed','failed','interrupted','cancelled','budget_exhausted'].includes(status)?now():null;
   if(status){
     db.prepare(`UPDATE benchmark_runs SET status=?,completed_cases=?,passed_cases=?,failed_cases=?,spent_usd=?,summary_json=?,finished_at=COALESCE(?,finished_at) WHERE id=?`)
-      .run(status,summary.completedCases,summary.passedCases,summary.failedCases,summary.totalCostUsd,JSON.stringify(summary),finished,runId);
+      .run(status,summary.completedCases,summary.passedCases,summary.failedCases,summary.budgetCostUsd,JSON.stringify(summary),finished,runId);
   }else{
     db.prepare(`UPDATE benchmark_runs SET completed_cases=?,passed_cases=?,failed_cases=?,spent_usd=?,summary_json=? WHERE id=?`)
-      .run(summary.completedCases,summary.passedCases,summary.failedCases,summary.totalCostUsd,JSON.stringify(summary),runId);
+      .run(summary.completedCases,summary.passedCases,summary.failedCases,summary.budgetCostUsd,JSON.stringify(summary),runId);
   }
   return summary;
 }
@@ -245,6 +249,8 @@ function invocationMetrics(agentRunId:string){
     providerReal:successes.length>0,
     profileKey:provider?.profile_key||null,providerKey:provider?.provider_key||null,modelId:provider?.model_id||null,
     costUsd:roundMoney(invocations.reduce((sum,row)=>sum+Number(row.cost_usd||0),0)),
+    budgetCostUsd:roundMoney(invocations.reduce((sum,row)=>sum+Number(row.budget_cost_usd||0),0)),
+    unknownCostCalls:invocations.filter(row=>['unknown','partial'].includes(String(row.cost_status||''))).length,
     latencyMs:invocations.reduce((sum,row)=>sum+Number(row.latency_ms||0),0),
     inputTokens:invocations.reduce((sum,row)=>sum+Number(row.input_tokens||0),0),
     outputTokens:invocations.reduce((sum,row)=>sum+Number(row.output_tokens||0),0),
@@ -254,7 +260,7 @@ function invocationMetrics(agentRunId:string){
     invocationEvidence:invocations.map(row=>({
       agentKey:row.agent_key,profileKey:row.profile_key,providerKey:row.provider_key,modelId:row.model_id,status:row.status,
       errorCode:row.error_code,retryIndex:Number(row.retry_index||0),latencyMs:Number(row.latency_ms||0),
-      costUsd:Number(row.cost_usd||0),contextPackId:row.context_pack_id,contextScope:row.context_scope,
+      costUsd:row.cost_usd===null?null:Number(row.cost_usd||0),budgetCostUsd:Number(row.budget_cost_usd||0),costStatus:row.cost_status||null,contextPackId:row.context_pack_id,contextScope:row.context_scope,
       contextTokens:Number(row.context_tokens||0),omittedFiles:Number(row.context_omitted_files_count||0),
     })),
   };
@@ -273,7 +279,7 @@ async function executeCase(runRow:any,caseRow:any,definition:BenchmarkCaseDefini
     projectId=createEphemeralProject(userId,benchmarkRunId,definition);
     db.prepare('UPDATE benchmark_case_runs SET project_id=? WHERE id=?').run(projectId,caseRow.id);
 
-    const currentSpent=aggregate(benchmarkRunId).totalCostUsd;
+    const currentSpent=aggregate(benchmarkRunId).budgetCostUsd;
     const remaining=Math.max(0,Number(runRow.max_cost_usd)-currentSpent);
     const reserve=reserveForNextCase(userId,Boolean(runRow.allow_expert));
     if(remaining+1e-9<reserve){
@@ -358,20 +364,20 @@ async function executeCase(runRow:any,caseRow:any,definition:BenchmarkCaseDefini
     };
 
     db.prepare(`UPDATE benchmark_case_runs SET status=?,score=?,passed=?,provider_real=?,profile_key=?,provider_key=?,model_id=?,
-      cost_usd=?,latency_ms=?,input_tokens=?,output_tokens=?,attempts=?,repairs=?,expert_escalations=?,validator_status=?,browser_status=?,
+      cost_usd=?,budget_cost_usd=?,unknown_cost_calls=?,latency_ms=?,input_tokens=?,output_tokens=?,attempts=?,repairs=?,expert_escalations=?,validator_status=?,browser_status=?,
       failure_reason=?,evidence_json=?,finished_at=? WHERE id=?`).run(
       scored.passed?'passed':'failed',scored.score,scored.passed?1:0,metrics.providerReal?1:0,metrics.profileKey,metrics.providerKey,metrics.modelId,
-      metrics.costUsd,Date.now()-started,metrics.inputTokens,metrics.outputTokens,metrics.attempts,metrics.repairs,metrics.expertEscalations,
+      metrics.costUsd,metrics.budgetCostUsd,metrics.unknownCostCalls,Date.now()-started,metrics.inputTokens,metrics.outputTokens,metrics.attempts,metrics.repairs,metrics.expertEscalations,
       apply?.validation?.status||null,apply?.browserQuality?.status||null,failureReason,JSON.stringify(evidence),now(),caseRow.id
     );
     return {budgetExhausted:false};
   }catch(error:any){
     const aborted=signal.aborted||error?.name==='AbortError';
-    let metrics:any={providerReal:false,profileKey:null,providerKey:null,modelId:null,costUsd:0,inputTokens:0,outputTokens:0,attempts:0,repairs:0,expertEscalations:0,invocationEvidence:[]};
+    let metrics:any={providerReal:false,profileKey:null,providerKey:null,modelId:null,costUsd:0,budgetCostUsd:0,unknownCostCalls:0,inputTokens:0,outputTokens:0,attempts:0,repairs:0,expertEscalations:0,invocationEvidence:[]};
     if(agentRunId){try{metrics=invocationMetrics(agentRunId);}catch{}}
-    db.prepare(`UPDATE benchmark_case_runs SET status=?,provider_real=?,profile_key=?,provider_key=?,model_id=?,cost_usd=?,latency_ms=?,
+    db.prepare(`UPDATE benchmark_case_runs SET status=?,provider_real=?,profile_key=?,provider_key=?,model_id=?,cost_usd=?,budget_cost_usd=?,unknown_cost_calls=?,latency_ms=?,
       input_tokens=?,output_tokens=?,attempts=?,repairs=?,expert_escalations=?,failure_reason=?,evidence_json=?,finished_at=? WHERE id=?`).run(
-      aborted?'interrupted':'failed',metrics.providerReal?1:0,metrics.profileKey,metrics.providerKey,metrics.modelId,metrics.costUsd,Date.now()-started,
+      aborted?'interrupted':'failed',metrics.providerReal?1:0,metrics.profileKey,metrics.providerKey,metrics.modelId,metrics.costUsd,metrics.budgetCostUsd,metrics.unknownCostCalls,Date.now()-started,
       metrics.inputTokens,metrics.outputTokens,metrics.attempts,metrics.repairs,metrics.expertEscalations,
       String(error?.message||error).slice(0,1000),JSON.stringify({errorCode:error?.code||error?.kind||null,invocations:metrics.invocationEvidence}),now(),caseRow.id
     );
@@ -517,7 +523,7 @@ export class BenchmarkService {
         if(!definition)continue;
         const outcome=await executeCase(current,row,definition,controller.signal);
         const summary=updateRunSummary(id);
-        if(outcome.budgetExhausted||summary.totalCostUsd>=Number(current.max_cost_usd)){
+        if(outcome.budgetExhausted||summary.budgetCostUsd>=Number(current.max_cost_usd)){
           const pending=db.prepare("SELECT id FROM benchmark_case_runs WHERE benchmark_run_id=? AND status='pending'").all(id) as Array<{id:string}>;
           for(const item of pending)db.prepare("UPDATE benchmark_case_runs SET status='budget_exhausted',failure_reason='benchmark_budget_exhausted',finished_at=? WHERE id=?").run(now(),item.id);
           updateRunSummary(id,'budget_exhausted');
