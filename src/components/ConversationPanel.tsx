@@ -319,7 +319,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
           const rawMeta = msg.metadata && typeof msg.metadata === 'object' ? msg.metadata : parsedMetadata;
           const meta = rawMeta && typeof rawMeta === 'object' ? rawMeta : {};
           const errorMessage = typeof meta.errorMessage === 'string' ? meta.errorMessage : '';
-          const isBudgetError = ['AI_DAILY_BUDGET_EXCEEDED','AI_RUN_BUDGET_EXCEEDED'].includes(String(meta.errorCode||''))
+          const isBudgetError = ['AI_DAILY_BUDGET_EXCEEDED','AI_RUN_BUDGET_EXCEEDED'].includes(String((meta as any).errorCode||''))
             || /Limite diário de IA atingido|Orçamento desta execução seria excedido/i.test(errorMessage);
           const rawProposal = meta.proposal && typeof meta.proposal === 'object' ? meta.proposal as ChangeProposal : undefined;
           const proposal = rawProposal && Array.isArray(rawProposal.files) ? rawProposal : undefined;
