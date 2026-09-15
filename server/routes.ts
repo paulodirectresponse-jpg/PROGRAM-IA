@@ -1256,12 +1256,43 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     });
     conversationalOnly=selectedMode==='auto'&&resolvedMode==='auto';
 
+    const parsePlanList=(value:unknown):string[]=>{
+      if(Array.isArray(value))return value.map(item=>String(item)).filter(Boolean);
+      if(typeof value!=='string'||!value.trim())return[];
+      try{const parsed=JSON.parse(value);return Array.isArray(parsed)?parsed.map(item=>String(item)).filter(Boolean):[];}catch{return[];}
+    };
+    const implicitDraftPlan=resolvedMode==='build'
+      ? db.prepare("SELECT * FROM plans WHERE project_id=? AND status='draft' ORDER BY created_at DESC LIMIT 1").get(projectId) as any
+      : null;
+    const implicitPlanExisting=implicitDraftPlan?parsePlanList(implicitDraftPlan.existing_files_json):[];
+    const implicitPlanNew=implicitDraftPlan?parsePlanList(implicitDraftPlan.new_files_json):[];
+    const implicitPlanTargets=[...new Set([...implicitPlanExisting,...implicitPlanNew])];
+    const implicitPlanAcceptance=implicitDraftPlan?parsePlanList(implicitDraftPlan.acceptance_criteria_json):[];
+    const implicitPlanRequirements=implicitDraftPlan?(()=>{try{return JSON.parse(implicitDraftPlan.requirements_json||'[]')}catch{return[]}})():[];
+    const implicitPlanTasks=implicitDraftPlan?(()=>{try{return JSON.parse(implicitDraftPlan.task_graph_json||'[]')}catch{return[]}})():[];
+    const implicitPlanContext=implicitDraftPlan?[
+      'PLANO TÉCNICO JÁ DEFINIDO NA CONVERSA — use como contrato da implementação atual:',
+      'OBJETIVO: '+String(implicitDraftPlan.objective||''),
+      String(implicitDraftPlan.architecture_summary||'')?'ARQUITETURA: '+String(implicitDraftPlan.architecture_summary||''):'',
+      String(implicitDraftPlan.scope_in||'')?'ESCOPO: '+String(implicitDraftPlan.scope_in||''):'',
+      implicitPlanTargets.length?'ARQUIVOS PLANEJADOS:\\n- '+implicitPlanTargets.join('\\n- '):'',
+      implicitPlanRequirements.length?'REQUISITOS:\\n'+implicitPlanRequirements.map((item:any)=>'- '+String(item.id||'')+': '+String(item.title||item.description||'')).join('\\n'):'',
+      implicitPlanTasks.length?'TAREFAS:\\n'+implicitPlanTasks.map((item:any)=>'- '+String(item.id||'')+': '+String(item.title||'')).join('\\n'):'',
+      implicitPlanAcceptance.length?'CRITÉRIOS DE ACEITE:\\n- '+implicitPlanAcceptance.join('\\n- '):'',
+      'O usuário pediu execução agora; não peça aprovação intermediária.',
+    ].filter(Boolean).join('\\n\\n'):'';
+
     // O modo Automático continua visível como Automático; resolvedMode é decisão interna do agente.
     const conversationMode=selectedMode==='auto'?'auto':resolvedMode;
     db.prepare('UPDATE conversations SET mode=?,updated_at=? WHERE id=?').run(conversationMode,now,conv.id);
 
     const agentEngineEnabled=process.env.AGENT_ENGINE_ENABLED==='true';
-    if(agentEngineEnabled&&!conversationalOnly)execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,.5);
+    if(agentEngineEnabled&&!conversationalOnly){
+      execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,.5);
+      if(implicitDraftPlan?.id){
+        RequirementLedgerService.attachRun(projectId,implicitDraftPlan.id,execution.runId);
+      }
+    }
 
     const userMsgId='msg-user-'+Date.now();
     const inlineMentions=projectFiles
@@ -1298,12 +1329,13 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
         })()
       : '';
     const requestContext=[attachmentContext,mentionedFileContext].filter(Boolean).join('\n\n');
-    const effectivePrompt=[userContent,requestContext].filter(Boolean).join('\n\n');
+    const effectivePrompt=[userContent,implicitPlanContext,requestContext].filter(Boolean).join('\n\n');
 
     const userMetadata={
       mode:selectedMode,resolvedMode,appliedSkills,
       mentionedFiles:validMentionedFiles,
       attachments:processedAttachments.map(item=>({id:item.id,name:item.name,mimeType:item.mimeType,size:item.size,kind:item.kind})),
+      implicitPlanId:implicitDraftPlan?.id||undefined,
     };
     db.prepare(`
       INSERT INTO messages (id,conversation_id,sender,content,metadata_json,created_at)
@@ -1405,6 +1437,18 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
             prompt:effectivePrompt,mode:resolvedMode,projectId,existingFiles,appliedSkills,conversationHistory:history,
             userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal,
             focusPaths:validMentionedFiles,
+            requirementIds:implicitDraftPlan?.id?workflowRequirementIds(projectId,execution!.runId,implicitDraftPlan.id):undefined,
+            reliableBuild:implicitDraftPlan?{
+              requestedFiles:implicitPlanTargets,
+              objective:String(implicitDraftPlan.objective||userContent),
+              scopeIn:[
+                String(implicitDraftPlan.architecture_summary||'')?'ARQUITETURA: '+String(implicitDraftPlan.architecture_summary||''):'',
+                String(implicitDraftPlan.scope_in||''),
+                implicitPlanContext,
+              ].filter(Boolean).join('\n\n'),
+              scopeOut:String(implicitDraftPlan.scope_out||''),
+              acceptanceCriteria:implicitPlanAcceptance,
+            }:undefined,
           });
     controller.signal.throwIfAborted();
 
@@ -1540,6 +1584,10 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
         throw Object.assign(new Error(applyResult.error||'A implementação não passou pela revisão final.'),{code:'AUTO_APPLY_FAILED',applyResult});
       }
       result.proposal.status='applied';
+      if(implicitDraftPlan?.id){
+        db.prepare("UPDATE plans SET status='approved',updated_at=? WHERE id=? AND project_id=? AND status='draft'")
+          .run(new Date().toISOString(),implicitDraftPlan.id,projectId);
+      }
       checkpointCreatedId=applyResult.checkpointId||null;
       validation=applyResult.validation||validation;
       browserQuality=applyResult.browserQuality||null;
@@ -1555,6 +1603,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const agentMsgId='msg-agent-'+Date.now();
     const metadata:any={
       mode:selectedMode,resolvedMode,appliedSkills,isDemonstrativeFallback:result.isDemonstrativeFallback,
+      implicitPlanId:implicitDraftPlan?.id||undefined,
       providerUsed:result.providerUsed,modelUsed:result.modelUsed,planId:savedPlanId,checkpointId:checkpointCreatedId,
       filesAffected:applyResult?.changedFiles||result.build?.files?.map((item:any)=>item.path)||result.plan?.files_affected||[],
       decisionType:result.decisionType,proposal:result.proposal,hasErrors:Boolean(result.hasErrors),invalidResponse:Boolean(result.invalidResponse),
