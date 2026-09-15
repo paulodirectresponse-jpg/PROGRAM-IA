@@ -10,6 +10,7 @@ import { CloudSyncService } from './server/services/cloudSyncService.js';
 import { RuntimeManager } from './server/services/runtimeManager.js';
 import { Phase2RecoveryService } from './server/tooling/phase2RecoveryService.js';
 import { BenchmarkService } from './server/benchmark/benchmarkService.js';
+import { BenchmarkSmokeBootstrap } from './server/benchmark/smokeBootstrap.js';
 
 dotenv.config();
 
@@ -109,6 +110,11 @@ async function startServer() {
     console.log(
       `Forge Agent full-stack server running on http://0.0.0.0:${PORT}`
     );
+    queueMicrotask(()=>{
+      void BenchmarkSmokeBootstrap.maybeStartFromEnv().catch(error=>{
+        console.error('Phase 4 server-side smoke bootstrap failed:', error);
+      });
+    });
   });
 
   const shutdown = async () => {
