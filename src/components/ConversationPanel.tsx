@@ -3,6 +3,12 @@ import {
   Send,
   Sparkles,
   FileCode2,
+  Paperclip,
+  AtSign,
+  FileText,
+  Image as ImageIcon,
+  Film,
+  Music,
   CheckCircle2,
   AlertTriangle,
   RotateCcw,
@@ -16,7 +22,7 @@ import {
   Code2,
   CheckCheck,
 } from 'lucide-react';
-import { Message, AgentMode, Skill, Plan, ChangeProposal, FileChangeProposal } from '../types';
+import { Message, AgentMode, Skill, Plan, ChangeProposal, FileChangeProposal, ProjectFileItem, ChatAttachmentInput } from '../types';
 import { PlanResponseCard, parsePlanForDisplay } from './PlanResponseCard';
 import { ChatMarkdown } from './ChatMarkdown';
 
@@ -24,7 +30,7 @@ interface ConversationPanelProps {
   messages: Message[];
   activeMode: AgentMode;
   onChangeMode: (m: AgentMode) => void;
-  onSendMessage: (text: string, skills: string[]) => void;
+  onSendMessage: (text: string, skills: string[], mentionedFiles: string[], attachments: ChatAttachmentInput[]) => void;
   onApprovePlan: (planId: string) => void;
   onApplyProposal?: (proposal: ChangeProposal) => void;
   onRejectProposal?: (proposal: ChangeProposal) => void;
@@ -36,6 +42,7 @@ interface ConversationPanelProps {
   onContinueRun?: () => void;
   onAbort: () => void;
   availableSkills: Skill[];
+  workspaceFiles: ProjectFileItem[];
   canSend: boolean;
   sidebarCollapsed?: boolean;
 }
@@ -56,12 +63,17 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onContinueRun,
   onAbort,
   availableSkills,
+  workspaceFiles,
   canSend,
   sidebarCollapsed = false,
 }) => {
   const [inputText, setInputText] = useState('');
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [showSkillPicker, setShowSkillPicker] = useState(false);
+  const [showFilePicker,setShowFilePicker]=useState(false);
+  const [mentionedFiles,setMentionedFiles]=useState<string[]>([]);
+  const [attachments,setAttachments]=useState<ChatAttachmentInput[]>([]);
+  const attachmentInputRef=useRef<HTMLInputElement>(null);
   const [showAdvancedModes, setShowAdvancedModes] = useState(false);
   const [expandedDiffs, setExpandedDiffs] = useState<Record<string, boolean>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -117,9 +129,55 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
     stickToBottomRef.current=distanceFromBottom<72;
   };
 
+  const mentionMatch=inputText.match(/(?:^|\s)@([^\s@]*)$/);
+  const mentionQuery=(mentionMatch?.[1]||'').toLowerCase();
+  const visibleWorkspaceFiles=workspaceFiles
+    .filter(file=>!mentionQuery||file.path.toLowerCase().includes(mentionQuery))
+    .slice(0,40);
+
+  const selectWorkspaceFile=(filePath:string)=>{
+    setMentionedFiles(prev=>prev.includes(filePath)?prev:[...prev,filePath].slice(0,12));
+    setInputText(prev=>{
+      const match=prev.match(/(?:^|\s)@([^\s@]*)$/);
+      if(!match)return (prev+(prev&& !prev.endsWith(' ')?' ':'')+`@${filePath} `);
+      const start=match.index??prev.length;
+      const prefix=prev.slice(0,start);
+      const lead=match[0].startsWith(' ')?' ':'';
+      return prefix+lead+`@${filePath} `;
+    });
+    setShowFilePicker(false);
+  };
+
+  const fileToAttachment=(file:File)=>new Promise<ChatAttachmentInput>((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onerror=()=>reject(reader.error||new Error('Falha ao ler arquivo.'));
+    reader.onload=()=>{
+      const data=String(reader.result||'');
+      const base64=data.includes(',')?data.slice(data.indexOf(',')+1):data;
+      resolve({name:file.name,mimeType:file.type||'application/octet-stream',size:file.size,dataBase64:base64});
+    };
+    reader.readAsDataURL(file);
+  });
+
+  const handleAttachmentFiles=async(files:FileList|null)=>{
+    if(!files?.length)return;
+    const currentTotal=attachments.reduce((sum,item)=>sum+item.size,0);
+    const selected=[...Array.from(files)].slice(0,Math.max(0,6-attachments.length));
+    let runningTotal=currentTotal;
+    const next:ChatAttachmentInput[]=[];
+    for(const file of selected){
+      if(file.size>20*1024*1024)continue;
+      if(runningTotal+file.size>35*1024*1024)break;
+      runningTotal+=file.size;
+      try{next.push(await fileToAttachment(file));}catch{}
+    }
+    if(next.length)setAttachments(prev=>[...prev,...next].slice(0,6));
+    if(attachmentInputRef.current)attachmentInputRef.current.value='';
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputText.trim() || executionBusy || !canSend) return;
+    if ((!inputText.trim()&&!attachments.length&&!mentionedFiles.length) || executionBusy || !canSend) return;
 
     // Detect @skill mentions in message
     const mentionedSkills: string[] = [...selectedSkills];
@@ -329,6 +387,16 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
 
                 {!(meta.hasErrors && meta.decisionType !== 'explanation') && (
                   shouldRenderPlanCard ? <PlanResponseCard content={msg.content} /> : <ChatMarkdown content={msg.content} />
+                )}
+                {isUser&&Array.isArray(meta.attachments)&&meta.attachments.length>0&&(
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {meta.attachments.map((item:any)=><span key={item.id||item.name} className="inline-flex items-center gap-1 rounded-md border border-cyan-800/40 bg-cyan-950/30 px-2 py-1 text-[10px] text-cyan-200"><Paperclip size={10}/>{item.name}</span>)}
+                  </div>
+                )}
+                {isUser&&Array.isArray(meta.mentionedFiles)&&meta.mentionedFiles.length>0&&(
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {meta.mentionedFiles.map((filePath:string)=><span key={filePath} className="inline-flex items-center gap-1 rounded-md bg-violet-950/40 px-1.5 py-0.5 text-[9px] text-violet-300"><AtSign size={9}/>{filePath}</span>)}
+                  </div>
                 )}
 
                 {meta.validation?.status === 'failed' && (
@@ -557,11 +625,52 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
           </div>
         )}
 
+        {mentionedFiles.length>0&&(
+          <div className="flex flex-wrap gap-1">
+            {mentionedFiles.map(filePath=><span key={filePath} className="inline-flex max-w-full items-center gap-1 rounded-md border border-violet-800/60 bg-violet-950/50 px-2 py-1 text-[10px] text-violet-200">
+              <AtSign size={10}/><span className="truncate">{filePath}</span>
+              <button type="button" onClick={()=>setMentionedFiles(prev=>prev.filter(item=>item!==filePath))} className="text-violet-400 hover:text-violet-100"><X size={10}/></button>
+            </span>)}
+          </div>
+        )}
+
+        {attachments.length>0&&(
+          <div className="flex flex-wrap gap-1">
+            {attachments.map((item,index)=>{
+              const Icon=item.mimeType.startsWith('image/')?ImageIcon:item.mimeType.startsWith('video/')?Film:item.mimeType.startsWith('audio/')?Music:FileText;
+              return <span key={item.name+'-'+index} className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[10px] text-slate-300">
+                <Icon size={11} className="text-cyan-400"/><span className="max-w-44 truncate">{item.name}</span><span className="text-slate-600">{Math.max(1,Math.round(item.size/1024))} KB</span>
+                <button type="button" onClick={()=>setAttachments(prev=>prev.filter((_,i)=>i!==index))} className="text-slate-500 hover:text-rose-300"><X size={10}/></button>
+              </span>;
+            })}
+          </div>
+        )}
+
+        {showFilePicker&&(
+          <div className="absolute bottom-[76px] left-3 right-3 z-30 max-h-64 overflow-y-auto rounded-xl border border-slate-700 bg-slate-950 p-2 shadow-2xl custom-scrollbar">
+            <div className="mb-1 flex items-center gap-2 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500"><AtSign size={12}/> Mencionar arquivo do projeto</div>
+            {visibleWorkspaceFiles.length?visibleWorkspaceFiles.map(file=><button
+              key={file.path}
+              type="button"
+              onClick={()=>selectWorkspaceFile(file.path)}
+              className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[11px] text-slate-300 hover:bg-slate-900 hover:text-cyan-300"
+            ><FileCode2 size={13} className="shrink-0"/><span className="truncate">{file.path}</span></button>):(
+              <div className="px-2 py-3 text-[11px] text-slate-500">Nenhum arquivo encontrado.</div>
+            )}
+          </div>
+        )}
+
+        <input ref={attachmentInputRef} type="file" multiple className="hidden" onChange={e=>void handleAttachmentFiles(e.target.files)}/>
+
         <div className="relative flex items-center">
           <textarea
             id="chat-input-textarea"
             value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            onChange={(e) => {
+              const value=e.target.value;
+              setInputText(value);
+              if(/(?:^|\s)@[^\s@]*$/.test(value))setShowFilePicker(true);
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -577,6 +686,18 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
           <div className="absolute right-2 bottom-2.5 flex items-center gap-1">
             <button
               type="button"
+              onClick={()=>attachmentInputRef.current?.click()}
+              className="p-1 text-slate-400 hover:text-cyan-400 rounded transition cursor-pointer"
+              title="Anexar imagem, vídeo, áudio, PDF ou outro arquivo"
+            ><Paperclip size={14}/></button>
+            <button
+              type="button"
+              onClick={()=>setShowFilePicker(value=>!value)}
+              className="p-1 text-slate-400 hover:text-violet-300 rounded transition cursor-pointer"
+              title="Mencionar arquivo do projeto"
+            ><AtSign size={14}/></button>
+            <button
+              type="button"
               id="btn-toggle-skills-picker"
               onClick={() => setShowSkillPicker(!showSkillPicker)}
               className="p-1 text-slate-400 hover:text-cyan-400 rounded transition cursor-pointer"
@@ -587,7 +708,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
             <button
               type="submit"
               id="btn-send-message"
-              disabled={!inputText.trim() || executionBusy || !canSend}
+              disabled={(!inputText.trim()&&!attachments.length&&!mentionedFiles.length) || executionBusy || !canSend}
               className="p-1.5 rounded bg-cyan-600 hover:bg-cyan-500 disabled:opacity-30 disabled:pointer-events-none text-slate-950 font-bold transition cursor-pointer"
             >
               <Send size={13} />
