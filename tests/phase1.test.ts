@@ -499,6 +499,7 @@ test('phase1 source has no hidden context caps and real route call-sites recover
   assert.equal(agent.includes("fragment_task'?8:12"),false);
   assert.ok(routes.includes('executionRequirementIds = workflowRequirementIds'));
   assert.ok(routes.includes('continuedRequirementIds = workflowRequirementIds'));
+  assert.ok(routes.includes("ModelRouter.recommendedRunBudget(req.user!.id,'build')"));
 });
 
 test('phase1 content budget reflects real text length instead of metadata only', () => {
