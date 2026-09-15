@@ -275,7 +275,7 @@ test('SCOUT planning trace preserves model and architecture stage evidence after
       integrations:[],
       risks:[],
       acceptance_criteria:['Navegação funcional'],
-      requirements:[{id:'REQ-001',title:'Fluxo de caixa'}],
+      requirements:[{id:'REQ-001',title:'Fluxo de caixa',description:'Registrar movimentações',priority:'critical',verification:['criar entrada e saída']}],
       task_graph:[{id:'TASK-001',title:'Dashboard',requirement_ids:['REQ-001'],depends_on:[]}]
     },
     usage:{inputTokens:10,outputTokens:20,billedCostUsd:0}
@@ -454,7 +454,7 @@ test('manual plan and review modes are owned by SCOUT and SENTINEL instead of FO
             existing_files_to_modify:['index.html'],
             new_files_to_create:['src/main.tsx','src/App.tsx','src/router.tsx','src/pages/Dashboard.tsx','src/styles.css'],
             files_to_delete:[],files_affected:['index.html','src/main.tsx','src/App.tsx','src/router.tsx','src/pages/Dashboard.tsx','src/styles.css'],
-            integrations:[],risks:[],acceptance_criteria:['Navegação funcional'],requirements:[],task_graph:[]
+            integrations:[],risks:[],acceptance_criteria:['Navegação funcional'],requirements:[{id:'REQ-001',title:'Dashboard funcional',description:'Painel navegável',priority:'high',verification:['dashboard renderiza e navega']}],task_graph:[{id:'TASK-001',title:'Construir dashboard',requirement_ids:['REQ-001'],depends_on:[]}]
           },
           usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}
         } as any;
