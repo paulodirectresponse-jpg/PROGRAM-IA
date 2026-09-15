@@ -1,7 +1,7 @@
 import { LLMAdapterService, type AgentMode, type LLMExecutionResult, type PlanOutput } from '../services/llmAdapter.js';
 import { ModelRouter, type FailureKind, type ProfileKey } from '../services/modelRouter.js';
 import { RunService } from '../services/runService.js';
-import { ProgressRetryController, type AttemptEvidence } from '../services/progressRetryController.js';
+import { ProgressRetryController, type AttemptEvidence, type RetryDecision } from '../services/progressRetryController.js';
 import { contractPrompt } from './agentContracts.js';
 import { selectAgent } from './agentRegistry.js';
 import { ContextEngineV2, type ContextAgentKey, type ContextPack, type ContextScope } from '../context-engine/contextEngine.js';
@@ -782,7 +782,7 @@ export class AgentEngine {
     for (let i = 0; i < maxAttempts; i++) {
       x.signal?.throwIfAborted();
       RunService.recordAttempt(x.stepId);
-      const candidateIndex=retryStrategy==='next_candidate' ? Math.min(i,available.length-1) : i % available.length;
+      const candidateIndex:number=retryStrategy==='next_candidate' ? Math.min(i,available.length-1) : i % available.length;
       const candidate = available[candidateIndex];
       const started = Date.now();
       RunService.recordStage(x.stepId,'context.compile','started',{profile,agentKey,attempt:i,retryStrategy,providerKey:candidate.provider_key,modelId:candidate.model_id});
@@ -1074,7 +1074,7 @@ export class AgentEngine {
         if(terminalModelMismatch){
           throw Object.assign(e,{kind:'incompatible',reason:'candidate_incompatible',terminalCandidate:true});
         }
-        const decision=e?.structuredRepairAttempted
+        const decision:RetryDecision=e?.structuredRepairAttempted
           ? {
               retryAllowed:false,
               escalateAllowed:Boolean(options.allowExpertEscalation&&profile==='BASE_FREE'),
