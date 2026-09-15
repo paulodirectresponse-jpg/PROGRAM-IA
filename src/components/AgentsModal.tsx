@@ -23,7 +23,9 @@ const stageLabel=(stage?:string)=>({
   'profile.escalation':'Escalonamento de perfil',
   'planning.model_result':'Resultado do planejamento',
   'planning.architecture_validation':'Validação da arquitetura',
+  'planning.deterministic_repair':'Reparo estrutural local',
   'planning.architecture_repair':'Reparo da arquitetura',
+  'paid_call.guard':'Controle de chamada paga',
 }[String(stage||'')]||String(stage||'Etapa'));
 
 const stageTone=(status?:string)=>status==='completed'?'text-emerald-400':status==='failed'?'text-rose-400':status==='started'?'text-cyan-400':'text-amber-400';
