@@ -48,10 +48,15 @@ const parseJsonCandidate=(content:string)=>{
 export const parsePlanForDisplay=(content:string):PresentablePlan|null=>{
   const parsed:any=parseJsonCandidate(content);
   if(!parsed)return null;
-  const root=parsed.plan&&typeof parsed.plan==='object'?parsed.plan:parsed;
-  const existingFiles=asList(root.existing_files_to_modify??root.existingFilesToModify);
-  const newFiles=asList(root.new_files_to_create??root.newFilesToCreate);
-  const deleteFiles=asList(root.files_to_delete??root.filesToDelete);
+  const root=parsed.plan&&typeof parsed.plan==='object'
+    ? parsed.plan
+    : parsed.architecture_brief&&typeof parsed.architecture_brief==='object'
+      ? parsed.architecture_brief
+      : parsed;
+  const filePlan=root.file_plan&&typeof root.file_plan==='object'?root.file_plan:{};
+  const existingFiles=asList(root.existing_files_to_modify??root.existingFilesToModify??filePlan.modify);
+  const newFiles=asList(root.new_files_to_create??root.newFilesToCreate??filePlan.create);
+  const deleteFiles=asList(root.files_to_delete??root.filesToDelete??filePlan.delete);
   const legacy=asList(root.files_affected??root.filesAffected??root.arquivos);
   const requirements:Requirement[]=Array.isArray(root.requirements)?root.requirements.map((r:any,index:number)=>({
     id:String(r?.id||`REQ-${String(index+1).padStart(3,'0')}`),
@@ -60,7 +65,8 @@ export const parsePlanForDisplay=(content:string):PresentablePlan|null=>{
     priority:r?.priority?String(r.priority):undefined,
     verification:asList(r?.verification??r?.verification_steps??r?.acceptance_criteria),
   })):[];
-  const tasks:PlanTask[]=Array.isArray(root.task_graph)?root.task_graph.map((t:any,index:number)=>({
+  const rawTasks=Array.isArray(root.task_graph)?root.task_graph:Array.isArray(root.tasks)?root.tasks:[];
+  const tasks:PlanTask[]=rawTasks.map((t:any,index:number)=>({
     id:String(t?.id||`TASK-${String(index+1).padStart(3,'0')}`),
     title:String(t?.title||t?.name||t?.description||`Tarefa ${index+1}`),
     requirementIds:asList(t?.requirement_ids??t?.requirements),
