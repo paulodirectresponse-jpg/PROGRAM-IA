@@ -41,14 +41,56 @@ export class ModelRouter {
       :db.prepare('SELECT COALESCE(SUM(budget_cost_usd),0) total FROM model_invocations WHERE user_id=? AND created_at>=?').get(userId,since)) as any;
     return Number(r?.total||0);
   }
+
+  static recommendedRunBudget(userId:string,mode:string){
+    const profiles=this.listProfiles(userId);
+    const profileMax=(key:ProfileKey)=>{
+      const profile=profiles.find((item:any)=>item.profile_key===key&&Number(item.enabled)!==0);
+      if(!profile)return 0;
+      const enabled=(profile.candidates||[]).filter((candidate:any)=>Number(candidate.enabled)!==0);
+      if(!enabled.length)return 0;
+      return Math.max(0,Number(profile.max_cost_usd||0));
+    };
+    const routeReserve=Math.max(0.05,profileMax('BASE_FREE')+profileMax('EXPERT_PAID'));
+    const normalized=String(mode||'auto').toLowerCase();
+    const policy:Record<string,{calls:number;floor:number;cap:number}>={
+      plan:{calls:2,floor:.75,cap:1.5},
+      review:{calls:2,floor:.75,cap:1.5},
+      publish:{calls:1,floor:.5,cap:1},
+      build:{calls:4,floor:1,cap:2},
+      auto:{calls:5,floor:1.5,cap:2},
+    };
+    const rule=policy[normalized]||policy.auto;
+    return Math.round(Math.min(rule.cap,Math.max(rule.floor,routeReserve*rule.calls))*1000)/1000;
+  }
+
   static assertBudget(userId:string,max:number,o:{runId?:string;runLimit?:number;dailyLimit?:number}={}){
-    const d=new Date();d.setHours(0,0,0,0);
-    if(this.spent(userId,d.toISOString())+max>(o.dailyLimit??3))throw Error('Limite diário de IA atingido.');
+    const configuredDailyLimit=(()=>{
+      if(o.dailyLimit!==undefined)return Number(o.dailyLimit);
+      const raw=String(process.env.FORGE_DAILY_AI_BUDGET_USD||'').trim();
+      if(!raw)return null;
+      const parsed=Number(raw);
+      return Number.isFinite(parsed)&&parsed>=0?parsed:null;
+    })();
+    if(configuredDailyLimit!==null){
+      const d=new Date();d.setHours(0,0,0,0);
+      if(this.spent(userId,d.toISOString())+max>configuredDailyLimit){
+        throw Object.assign(new Error('Limite diário de IA atingido.'),{
+          code:'AI_DAILY_BUDGET_EXCEEDED',
+          budget:{scope:'daily',limit:configuredDailyLimit,spent:this.spent(userId,d.toISOString()),requested:max},
+        });
+      }
+    }
     if(o.runId){
       const run=db.prepare('SELECT budget_usd,spent_usd FROM agent_runs WHERE id=? AND user_id=?').get(o.runId,userId) as any;
       const limit=Number(o.runLimit??run?.budget_usd??.5);
       const spent=Number(run?.spent_usd??this.spent(userId,'',o.runId));
-      if(spent+max>limit)throw Error('Orçamento desta execução seria excedido.');
+      if(spent+max>limit){
+        throw Object.assign(new Error('Orçamento desta execução seria excedido.'),{
+          code:'AI_RUN_BUDGET_EXCEEDED',
+          budget:{scope:'run',limit,spent,requested:max,remaining:Math.max(0,limit-spent)},
+        });
+      }
     }
   }
   static recordInvocation(x:{
