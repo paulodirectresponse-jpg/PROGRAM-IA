@@ -902,7 +902,7 @@ export class AgentWorkflowEngine extends AgentEngine {
     let order = RunService.nextOrderIndex(x.runId);
 
     let studioGuidance = '';
-    if (needsStudio(x.prompt, x.mode)) {
+    if (needsStudio([x.prompt,scoutBrief].join('\n'), x.mode)) {
       const deterministicStudio = [
         'Critérios do STUDIO para esta implementação:',
         '- preservar hierarquia visual clara e consistência entre seções',
@@ -938,8 +938,9 @@ export class AgentWorkflowEngine extends AgentEngine {
             mode: 'review',
             prompt: [
               contractPrompt('STUDIO'),
-              'Transforme o pedido visual e o briefing do SCOUT em critérios objetivos para o FORGE.',
-              'Foque em composição, hierarquia, responsividade, estados, consistência e regressões visuais prováveis.',
+              'Transforme o pedido e a arquitetura do SCOUT em um contrato de experiência objetivo para o FORGE.',
+              'Defina navegação, hierarquia, responsividade, estados, interações, empty/loading/error states e comportamento dos controles.',
+              'Para sistemas, confirme que cada rota/tela necessária tem propósito claro e que menus, botões, filtros, favoritos, carrinhos, cadastros e ações não ficam decorativos.',
               'Não gere código. Não altere arquivos. Não responda ao usuário final.',
               '',
               'PEDIDO:',
@@ -950,13 +951,18 @@ export class AgentWorkflowEngine extends AgentEngine {
             ].join('\n'),
             stepId: studio,
           },
-          { profile: 'BASE_FREE', forcedAgentKey: 'STUDIO', allowExpertEscalation: false }
+          { profile: 'BASE_FREE', forcedAgentKey: 'STUDIO', allowExpertEscalation: true, requireModelWork:complexRequest }
         );
         if (!studioResult.hasErrors && !studioResult.isDemonstrativeFallback && studioResult.replyText?.trim()) {
           studioGuidance = studioResult.replyText.trim();
           studioSource = 'model';
         }
-      } catch {}
+      } catch(error:any) {
+        if(complexRequest){
+          RunService.finishStep(studio,x.signal?.aborted?'aborted':'failed',{error:String(error?.message||error),source:'model_required'});
+          throw error;
+        }
+      }
       recordContextCommitFromStep({ ...x, stepId: studio }, 'STUDIO', 'LOCAL', 'Direção visual definida', { decisions: [studioGuidance], nextState: { next: 'FORGE' } });
       RunService.finishStep(studio, 'completed', {
         guidance: studioGuidance,
@@ -985,11 +991,14 @@ export class AgentWorkflowEngine extends AgentEngine {
       'BRIEF INTERNO DO SCOUT:\n' + scoutBrief,
       studioGuidance ? 'CRITÉRIOS INTERNOS DO STUDIO:\n' + studioGuidance : '',
     ].filter(Boolean).join('\n\n');
-    const inferredTargets=buildTargetsFromBrief(
-      x.existingFiles,
-      [x.prompt,scoutBrief,studioGuidance],
-      x.focusPaths || []
-    );
+    const inferredTargets=[...new Set([
+      ...architectureTargets,
+      ...buildTargetsFromBrief(
+        x.existingFiles,
+        [x.prompt,scoutBrief,studioGuidance],
+        x.focusPaths || []
+      )
+    ])];
     const reliableBuild = x.reliableBuild
       ? {
           ...x.reliableBuild,
@@ -1004,6 +1013,12 @@ export class AgentWorkflowEngine extends AgentEngine {
             'Atender exatamente à alteração solicitada',
             'Preservar funcionalidades existentes fora do escopo',
             'Manter compatibilidade entre os arquivos alterados',
+            ...(complexRequest?[
+              'Todas as páginas/rotas necessárias são alcançáveis pela navegação',
+              'Controles interativos possuem comportamento real e estados coerentes',
+              'A arquitetura é modular o suficiente para as capacidades pedidas',
+              'Nenhuma capacidade central é representada apenas por placeholder visual',
+            ]:[]),
           ],
         };
 
@@ -1011,9 +1026,22 @@ export class AgentWorkflowEngine extends AgentEngine {
     try {
       result = await AgentEngine.execute(
         { ...x, prompt: forgePrompt, reliableBuild, stepId: forge },
-        { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true }
+        { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true, requireModelWork:true }
       );
       const proposalFiles=result.proposal?.files || result.build?.files || [];
+      if(architectureCritical){
+        const produced=new Set(proposalFiles.map(file=>file.path.replace(/\\/g,'/')));
+        const required=[...new Set(architectureTargets.map(path=>path.replace(/\\/g,'/')))];
+        const missing=required.filter(path=>!produced.has(path));
+        const failedTargets=Array.isArray((result.diagnostics as any)?.failures)?(result.diagnostics as any).failures:[];
+        const onlySingleIndex=proposalFiles.length===1&&proposalFiles[0]?.path==='index.html';
+        if(missing.length||failedTargets.length||proposalFiles.length<4||onlySingleIndex){
+          throw Object.assign(
+            new Error(`O FORGE gerou uma implementação arquitetural incompleta. Faltando: ${missing.join(', ')||'estrutura mínima/arquivos completos'}.`),
+            {kind:'incompatible',reason:'incomplete_architecture_build',missingTargets:missing,failedTargets}
+          );
+        }
+      }
       if(!result.hasErrors && proposalFiles.length && WorkspaceManager.verifyProjectOwnership(x.projectId,x.userId)){
         if(!result.proposal){
           result.proposal={
