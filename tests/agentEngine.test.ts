@@ -21,6 +21,14 @@ function seedRealWorkflowModel(userId:string, suffix:string){
     .run(`candidate-${suffix}`,`profile-${suffix}`,'omniroute','auto',0,1,now,now);
   SecretService.saveSecret(userId,'omniroute','secret-for-'+suffix);
 }
+function seedExpertWorkflowModel(userId:string,suffix:string){
+  const now=new Date().toISOString();
+  db.prepare('INSERT INTO model_profiles(id,user_id,profile_key,level,max_attempts,max_cost_usd,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(`expert-profile-${suffix}`,userId,'EXPERT_PAID',1,1,0.25,1,now,now);
+  db.prepare('INSERT INTO model_candidates(id,profile_id,provider_key,model_id,priority,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+    .run(`expert-candidate-${suffix}`,`expert-profile-${suffix}`,'omniroute','expert-test',0,1,now,now);
+}
+
 function cleanupWorkflowModel(userId:string){
   db.prepare('DELETE FROM model_candidates WHERE profile_id IN (SELECT id FROM model_profiles WHERE user_id=?)').run(userId);
   db.prepare('DELETE FROM model_profiles WHERE user_id=?').run(userId);
@@ -59,6 +67,126 @@ test('SCOUT architecture_brief file_plan is normalized into executable PLAN targ
   }));
   assert.ok(wrapped);
   assert.deepEqual(wrapped!.new_files_to_create,['app.js','styles.css']);
+});
+
+test('paid SCOUT success with only structural gaps is repaired deterministically without a second paid call', async (t) => {
+  const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
+  const userId=`agent-paid-guard-user-${unique}`;
+  const projectId=`agent-paid-guard-project-${unique}`;
+  const conversationId=`agent-paid-guard-conv-${unique}`;
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'plan',0.5);
+  seedRealWorkflowModel(userId,unique);
+  seedExpertWorkflowModel(userId,unique);
+  let calls=0;
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    calls++;
+    if(calls===1){
+      return {
+        replyText:'invalid',mode:'plan',decisionType:'invalid_response',isDemonstrativeFallback:false,
+        providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:true,invalidResponse:true,
+        errorReason:'incompatible_response',errorMessage:'Resposta incompatível',
+      } as any;
+    }
+    assert.equal(options.modelId,'expert-test');
+    return {
+      replyText:'plano expert com lacuna estrutural',
+      mode:'plan',decisionType:'plan',isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute',modelUsed:'expert-test',hasErrors:false,
+      plan:{
+        objective:'Administrar fluxo de caixa da loja',
+        scope_in:'Dashboard e movimentações',scope_out:'',
+        architecture_summary:'Aplicação modular com estado e persistência',
+        existing_files_to_modify:['index.html'],
+        new_files_to_create:['app.js','styles.css'],
+        files_to_delete:[],files_affected:['index.html','app.js','styles.css'],
+        integrations:[],risks:[],acceptance_criteria:['Registrar entradas e saídas'],
+        requirements:[{id:'REQ-001',title:'Fluxo de caixa',description:'Registrar movimentações',priority:'critical',verification:['registrar entrada e saída']}],
+        task_graph:[]
+      },
+      usage:{inputTokens:10,outputTokens:20,billedCostUsd:0.02}
+    } as any;
+  });
+  try{
+    const result=await AgentWorkflowEngine.executeWorkflow({
+      prompt:'planeja um site para ajudar a administrar todo o fluxo de caixa da minha loja de roupa',
+      mode:'plan',projectId,existingFiles:{'index.html':'<html></html>'},appliedSkills:[],conversationHistory:[],
+      userId,runId,stepId
+    });
+    assert.equal(calls,2);
+    assert.equal(result.workflow.status,'completed');
+    assert.equal(result.plan?.task_graph.length,1);
+    const invocations=db.prepare('SELECT profile_key,status FROM model_invocations WHERE run_id=? ORDER BY created_at').all(runId) as any[];
+    assert.equal(invocations.filter(row=>row.profile_key==='EXPERT_PAID'&&row.status==='success').length,1);
+    const trace=RunService.trace(runId);
+    const events=(trace[0]?.context?.events||[]).filter((event:any)=>event.type==='agent_stage');
+    const guard=events.find((event:any)=>event.stage==='paid_call.guard'&&event.action==='avoided_second_paid_call');
+    assert.ok(guard);
+    assert.ok(events.some((event:any)=>event.stage==='planning.deterministic_repair'&&event.status==='completed'));
+    assert.equal(events.some((event:any)=>event.stage==='planning.architecture_repair'&&event.status==='started'),false);
+  }finally{
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    cleanupWorkflowModel(userId);
+  }
+});
+
+test('a second paid SCOUT call is allowed only when semantic architecture gaps remain', async (t) => {
+  const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
+  const userId=`agent-paid-semantic-user-${unique}`;
+  const projectId=`agent-paid-semantic-project-${unique}`;
+  const conversationId=`agent-paid-semantic-conv-${unique}`;
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'plan',0.5);
+  seedRealWorkflowModel(userId,unique);
+  seedExpertWorkflowModel(userId,unique);
+  let calls=0;
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>{
+    calls++;
+    if(calls===1){
+      return {
+        replyText:'invalid',mode:'plan',decisionType:'invalid_response',isDemonstrativeFallback:false,
+        providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:true,invalidResponse:true,
+        errorReason:'incompatible_response',errorMessage:'Resposta incompatível',
+      } as any;
+    }
+    const valid=calls===3;
+    return {
+      replyText:valid?'plano reparado':'plano expert sem arquitetura de arquivos',
+      mode:'plan',decisionType:'plan',isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute',modelUsed:'expert-test',hasErrors:false,
+      plan:{
+        objective:'Administrar fluxo de caixa da loja',
+        scope_in:'Dashboard e movimentações',scope_out:'',
+        architecture_summary:'Aplicação modular',
+        existing_files_to_modify:valid?['index.html']:[],
+        new_files_to_create:valid?['app.js','styles.css']:[],
+        files_to_delete:[],files_affected:valid?['index.html','app.js','styles.css']:[],
+        integrations:[],risks:[],acceptance_criteria:['Registrar entradas e saídas'],
+        requirements:[{id:'REQ-001',title:'Fluxo de caixa',description:'Registrar movimentações',priority:'critical',verification:['registrar entrada e saída']}],
+        task_graph:[{id:'TASK-001',title:'Implementar fluxo',requirement_ids:['REQ-001'],depends_on:[]}]
+      },
+      usage:{inputTokens:10,outputTokens:20,billedCostUsd:0.02}
+    } as any;
+  });
+  try{
+    const result=await AgentWorkflowEngine.executeWorkflow({
+      prompt:'planeja um site para ajudar a administrar todo o fluxo de caixa da minha loja de roupa',
+      mode:'plan',projectId,existingFiles:{'index.html':'<html></html>'},appliedSkills:[],conversationHistory:[],
+      userId,runId,stepId
+    });
+    assert.equal(calls,3);
+    assert.equal(result.workflow.status,'completed');
+    const trace=RunService.trace(runId);
+    const events=(trace[0]?.context?.events||[]).filter((event:any)=>event.type==='agent_stage');
+    const guard=events.find((event:any)=>event.stage==='paid_call.guard'&&event.action==='authorized_second_paid_call');
+    assert.ok(guard);
+    assert.ok(Array.isArray(guard.remainingReasons)&&guard.remainingReasons.includes('missing_file_plan'));
+  }finally{
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    cleanupWorkflowModel(userId);
+  }
 });
 
 test('complex PLAN accepts a complete three-file architecture without redundant expert repair', async (t) => {
