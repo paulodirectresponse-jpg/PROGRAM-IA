@@ -1249,6 +1249,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
 
     const priorHistory=db.prepare('SELECT sender,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20').all(conv.id).reverse() as any[];
     const existingFiles=WorkspaceManager.getAllFilesContent(projectId);
+    const projectFiles=WorkspaceManager.getFiles(projectId);
     const resolvedMode=LLMAdapterService.resolveRequestedMode(userContent,selectedMode,{
       conversationHistory:priorHistory,
       existingFiles:Object.keys(existingFiles),
@@ -1263,9 +1264,12 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     if(agentEngineEnabled&&!conversationalOnly)execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,.5);
 
     const userMsgId='msg-user-'+Date.now();
-    const validMentionedFiles=[...new Set(requestedMentionedFiles)].filter(filePath=>
+    const inlineMentions=projectFiles
+      .map(file=>file.path)
+      .filter(filePath=>userContent.includes('@'+filePath));
+    const validMentionedFiles=[...new Set([...requestedMentionedFiles,...inlineMentions])].filter(filePath=>
       Object.prototype.hasOwnProperty.call(existingFiles,filePath) ||
-      WorkspaceManager.getFiles(projectId).some(file=>file.path===filePath)
+      projectFiles.some(file=>file.path===filePath)
     ).slice(0,12);
 
     const processedAttachments=await AttachmentService.ingest({
@@ -1281,7 +1285,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
           ...validMentionedFiles.map(filePath=>{
             const text=existingFiles[filePath];
             if(typeof text==='string')return `### ${filePath}\n${text.slice(0,50000)}`;
-            const info=WorkspaceManager.getFiles(projectId).find(file=>file.path===filePath);
+            const info=projectFiles.find(file=>file.path===filePath);
             return `### ${filePath}\n[arquivo binário do workspace, ${info?.size||0} bytes]`;
           })
         ].join('\n\n')
