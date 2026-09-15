@@ -1775,6 +1775,15 @@ router.post('/agent-runs/:runId/continue', requireAuth, async (req: Request, res
   const scoutBrief=String(scout.context.brief||'').trim();
   const studioGuidance=String(studio?.context?.guidance||'').trim();
 
+  const resumedBudget=Math.max(
+    Number(run.budget_usd||0),
+    ModelRouter.recommendedRunBudget(req.user!.id,'build')
+  );
+  if(resumedBudget>Number(run.budget_usd||0)){
+    db.prepare('UPDATE agent_runs SET budget_usd=? WHERE id=? AND user_id=?').run(resumedBudget,run.id,req.user!.id);
+    run.budget_usd=resumedBudget;
+  }
+
   activeProjects.add(run.project_id);
   const controller=new AbortController();
   activeProjectControllers.set(run.project_id,controller);
