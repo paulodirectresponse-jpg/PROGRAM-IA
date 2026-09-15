@@ -114,25 +114,45 @@ export function initializeDatabase() {
 
   ensureColumn('model_invocations', 'cost_status', "TEXT NOT NULL DEFAULT 'legacy'");
   ensureColumn('model_invocations', 'budget_cost_usd', 'REAL NOT NULL DEFAULT 0');
-  db.prepare("UPDATE model_invocations SET cost_status=CASE WHEN cost_status IS NULL OR cost_status='' OR cost_status='legacy' THEN CASE WHEN COALESCE(cost_usd,0)>0 THEN 'reported' ELSE 'unknown' END ELSE cost_status END").run();
-  db.prepare(`UPDATE model_invocations
-    SET budget_cost_usd=CASE
-      WHEN budget_cost_usd IS NOT NULL AND budget_cost_usd>0 THEN budget_cost_usd
-      WHEN cost_status IN ('reported','known_zero') THEN COALESCE(cost_usd,0)
-      ELSE COALESCE((
-        SELECT max_cost_usd FROM model_profiles p
-        WHERE p.user_id=model_invocations.user_id AND p.profile_key=model_invocations.profile_key
-        LIMIT 1
-      ),COALESCE(cost_usd,0))
-    END`).run();
-  db.prepare('UPDATE agent_runs SET spent_usd=COALESCE((SELECT SUM(mi.budget_cost_usd) FROM model_invocations mi WHERE mi.run_id=agent_runs.id),0)').run();
 
-  const migration8Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 8').get() as { version: number } | undefined;
+  const migration8Row = db.prepare('SELECT version,applied_at FROM schema_migrations WHERE version = 8').get() as { version: number; applied_at?:string } | undefined;
   if (!migration8Row) {
+    db.prepare("UPDATE model_invocations SET cost_status=CASE WHEN cost_status IS NULL OR cost_status='' OR cost_status='legacy' THEN CASE WHEN COALESCE(cost_usd,0)>0 THEN 'reported' ELSE 'unknown' END ELSE cost_status END").run();
+    db.prepare(`UPDATE model_invocations
+      SET budget_cost_usd=CASE
+        WHEN budget_cost_usd IS NOT NULL AND budget_cost_usd>0 THEN budget_cost_usd
+        WHEN cost_status IN ('reported','known_zero') THEN COALESCE(cost_usd,0)
+        ELSE COALESCE((
+          SELECT max_cost_usd FROM model_profiles p
+          WHERE p.user_id=model_invocations.user_id AND p.profile_key=model_invocations.profile_key
+          LIMIT 1
+        ),COALESCE(cost_usd,0))
+      END`).run();
+    db.prepare('UPDATE agent_runs SET spent_usd=COALESCE((SELECT SUM(mi.budget_cost_usd) FROM model_invocations mi WHERE mi.run_id=agent_runs.id),0)').run();
     db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
       8,
       '008_cost_telemetry_truthfulness',
       new Date().toISOString()
+    );
+  }
+
+  // Migration 013: undo conservative reservations that were retroactively assigned
+  // to pre-telemetry legacy rows. Conservative reservation remains mandatory for
+  // every unknown invocation created after migration 008.
+  const migration13Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 13').get() as { version:number } | undefined;
+  if (!migration13Row) {
+    const migration8 = db.prepare('SELECT applied_at FROM schema_migrations WHERE version = 8').get() as { applied_at?:string } | undefined;
+    const cutoff=String(migration8?.applied_at||'');
+    if(cutoff){
+      db.prepare(`UPDATE model_invocations
+        SET budget_cost_usd=0,cost_status='legacy'
+        WHERE created_at<=?
+          AND cost_status='unknown'
+          AND COALESCE(cost_usd,0)=0`).run(cutoff);
+      db.prepare('UPDATE agent_runs SET spent_usd=COALESCE((SELECT SUM(mi.budget_cost_usd) FROM model_invocations mi WHERE mi.run_id=agent_runs.id),0)').run();
+    }
+    db.prepare('INSERT INTO schema_migrations (version,name,applied_at) VALUES(?,?,?)').run(
+      13,'013_repair_legacy_cost_reservations',new Date().toISOString()
     );
   }
 
