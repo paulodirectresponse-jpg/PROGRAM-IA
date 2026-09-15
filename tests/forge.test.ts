@@ -989,7 +989,7 @@ Criar API segura
 
 test('7.1: Central de Agentes exposes operational tabs and keeps raw diagnostics behind advanced mode', () => {
   const source=readFileSync(new URL('../src/components/AgentsModal.tsx',import.meta.url),'utf8');
-  for(const label of ['Central de Agentes','Visão geral','Execuções','Requisitos','Modelos & Roteamento','Básico','Avançado']){
+  for(const label of ['Central de Agentes','Visão geral','Execuções','Requisitos','Modelos & Roteamento','Benchmark & Release','Básico','Avançado']){
     assert.match(source,new RegExp(label));
   }
   assert.match(source,/Continuar do progresso salvo/);
