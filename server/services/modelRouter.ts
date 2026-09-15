@@ -42,13 +42,26 @@ export class ModelRouter {
     return Number(r?.total||0);
   }
   static assertBudget(userId:string,max:number,o:{runId?:string;runLimit?:number;dailyLimit?:number}={}){
-    const d=new Date();d.setHours(0,0,0,0);
-    if(this.spent(userId,d.toISOString())+max>(o.dailyLimit??3))throw Error('Limite diário de IA atingido.');
+    const configuredDailyLimit=(()=>{
+      if(o.dailyLimit!==undefined)return Number(o.dailyLimit);
+      const raw=String(process.env.FORGE_DAILY_AI_BUDGET_USD||'').trim();
+      if(!raw)return null;
+      const parsed=Number(raw);
+      return Number.isFinite(parsed)&&parsed>=0?parsed:null;
+    })();
+    if(configuredDailyLimit!==null){
+      const d=new Date();d.setHours(0,0,0,0);
+      if(this.spent(userId,d.toISOString())+max>configuredDailyLimit){
+        throw Object.assign(new Error('Limite diário de IA atingido.'),{code:'AI_DAILY_BUDGET_EXCEEDED'});
+      }
+    }
     if(o.runId){
       const run=db.prepare('SELECT budget_usd,spent_usd FROM agent_runs WHERE id=? AND user_id=?').get(o.runId,userId) as any;
       const limit=Number(o.runLimit??run?.budget_usd??.5);
       const spent=Number(run?.spent_usd??this.spent(userId,'',o.runId));
-      if(spent+max>limit)throw Error('Orçamento desta execução seria excedido.');
+      if(spent+max>limit){
+        throw Object.assign(new Error('Orçamento desta execução seria excedido.'),{code:'AI_RUN_BUDGET_EXCEEDED'});
+      }
     }
   }
   static recordInvocation(x:{
