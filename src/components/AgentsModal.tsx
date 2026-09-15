@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, ArrowDown, ArrowUp, Bot, Plus, StopCircle, Trash2, X } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowDown, ArrowUp, Bot, CheckCircle2, CircleDollarSign, Gauge, ListChecks, Network, Plus, RefreshCcw, Route, ShieldCheck, StopCircle, Trash2, X } from 'lucide-react';
 
 type Candidate={id:string;provider_key:string;model_id:string;priority:number;enabled:number;health_state:string};
 type Profile={id:string;profile_key:string;name:string;max_attempts:number;max_cost_usd:number;candidates:Candidate[]};
@@ -9,6 +9,9 @@ type AgentStageEvent={type?:string;stage?:string;status?:string;at?:string;error
 type TraceStep={id:string;agent_key:string;title:string;status:string;attempt_count:number;invocations:Invocation[];context?:{events?:AgentStageEvent[]}|null};
 type AgentRun={id:string;project_id:string;mode:string;status:string;spent_usd:number;budget_usd:number;known_cost_usd?:number;budget_accounted_usd?:number;unknown_cost_calls?:number;created_at:string;trace:TraceStep[]};
 type Requirement={id:string;requirement_key:string;title:string;priority:string;status:string;verification:string[];files:string[];evidence:any[]};
+type TabKey='overview'|'runs'|'requirements'|'routing';
+type DetailMode='basic'|'advanced';
+type RunFilter='all'|'running'|'failed'|'completed';
 
 const stageLabel=(stage?:string)=>({
   'agent.selected':'Agente selecionado',
@@ -40,9 +43,22 @@ const invocationCostLabel=(inv:Invocation)=>{
   return 'custo legado';
 };
 
+const runStatusLabel=(status?:string)=>({
+  running:'Em execução',completed:'Concluída',failed:'Falhou',aborted:'Interrompida',
+  rejected:'Rejeitada',waiting_approval:'Aguardando aprovação',needs_verification:'Requer verificação',
+}[String(status||'')]||String(status||'Desconhecido'));
+
+const runEvents=(run:AgentRun)=>(run.trace||[]).flatMap(step=>
+  (step.context?.events||[]).filter(event=>event.type==='agent_stage').map(event=>({...event,agentKey:step.agent_key}))
+);
+const runFailure=(run:AgentRun)=>[...runEvents(run)].reverse().find(event=>event.status==='failed')||null;
+const runLatest=(run:AgentRun)=>[...runEvents(run)].reverse()[0]||null;
+
+
 export function AgentsModal({isOpen,onClose,projectId}:{isOpen:boolean;onClose:()=>void;projectId?:string|null}){
   const [agents,setAgents]=useState<Agent[]>([]),[profiles,setProfiles]=useState<Profile[]>([]),[runs,setRuns]=useState<AgentRun[]>([]),[requirements,setRequirements]=useState<Requirement[]>([]),[providerKey,setProviderKey]=useState('omniroute'),[modelId,setModelId]=useState('auto'),[profileKey,setProfileKey]=useState('BASE_FREE'),[error,setError]=useState(''),[engineEnabled,setEngineEnabled]=useState<boolean|null>(null);
-  const load=async()=>{
+  const [tab,setTab]=useState<TabKey>('overview'),[detailMode,setDetailMode]=useState<DetailMode>('basic'),[runFilter,setRunFilter]=useState<RunFilter>('all'),[refreshing,setRefreshing]=useState(false);
+  const load=async(silent=false)=>{if(!silent)setRefreshing(true);
     const [a,p,v,runsData,requirementsData]=await Promise.allSettled([
       fetch('/api/agents').then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.error||'Falha ao carregar agentes');return d}),
       fetch('/api/model-profiles').then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.error||'Falha ao carregar perfis');return d}),
@@ -59,8 +75,9 @@ export function AgentsModal({isOpen,onClose,projectId}:{isOpen:boolean;onClose:(
     if(runsData.status==='fulfilled')setRuns(runsData.value.runs||[]);else failures.push('execuções');
     if(requirementsData.status==='fulfilled')setRequirements(requirementsData.value.requirements||[]);else failures.push('requisitos');
     setError(failures.length?`Falha parcial ao carregar: ${failures.join(', ')}.`:'');
+    setRefreshing(false);
   };
-  useEffect(()=>{if(!isOpen)return;load().catch(()=>setError('Não foi possível carregar agentes e perfis.'));const timer=setInterval(()=>load().catch(()=>{}),2000);return()=>clearInterval(timer)},[isOpen,projectId]);
+  useEffect(()=>{if(!isOpen)return;load().catch(()=>{setRefreshing(false);setError('Não foi possível carregar a Central de Agentes.')});const timer=setInterval(()=>load(true).catch(()=>{}),2000);return()=>clearInterval(timer)},[isOpen,projectId]);
   const mutate=async(url:string,method:string,body?:unknown)=>{setError('');const r=await fetch(url,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const data=await r.json();if(!r.ok)throw Error(data.error||'Operação falhou.');setProfiles(data.profiles||[])};
   const cancelRun=async(run:AgentRun)=>{
     setError('');
@@ -80,6 +97,16 @@ export function AgentsModal({isOpen,onClose,projectId}:{isOpen:boolean;onClose:(
       await load();
     }catch(e:any){setError(e?.message||'Não foi possível continuar a execução.')}
   };
+  const terminalRuns=runs.filter(run=>['completed','failed','aborted','rejected','needs_verification'].includes(run.status));
+  const completedRuns=runs.filter(run=>run.status==='completed').length;
+  const failedRuns=runs.filter(run=>['failed','aborted'].includes(run.status)).length;
+  const activeRuns=runs.filter(run=>run.status==='running');
+  const successRate=terminalRuns.length?Math.round((completedRuns/terminalRuns.length)*100):0;
+  const verifiedRequirements=requirements.filter(req=>req.status==='verified').length;
+  const requirementRate=requirements.length?Math.round((verifiedRequirements/requirements.length)*100):0;
+  const knownCost=runs.reduce((sum,run)=>sum+Number(run.known_cost_usd||0),0);
+  const accountedCost=runs.reduce((sum,run)=>sum+Number(run.budget_accounted_usd??run.spent_usd??0),0);
+  const unknownCostCalls=runs.reduce((sum,run)=>sum+Number(run.unknown_cost_calls||0),0);
   if(!isOpen)return null;
   return <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-5"><div className="w-full max-w-5xl max-h-[88vh] overflow-auto rounded-2xl border border-slate-700/80 bg-slate-950 shadow-2xl">
     <header className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/95 backdrop-blur"><div><h2 className="text-lg font-semibold text-white flex items-center gap-2"><Bot size={19} className="text-cyan-400"/>Agentes e roteamento</h2><p className="text-xs text-slate-400 mt-1">Papéis fixos, modelos substituíveis, custo e saúde observáveis.</p></div><button onClick={onClose} className="p-2 text-slate-400 hover:text-white"><X size={18}/></button></header>
