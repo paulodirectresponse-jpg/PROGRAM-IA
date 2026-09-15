@@ -11,11 +11,18 @@ import { RuntimeManager } from './server/services/runtimeManager.js';
 import { Phase2RecoveryService } from './server/tooling/phase2RecoveryService.js';
 import { BenchmarkService } from './server/benchmark/benchmarkService.js';
 import { BenchmarkSmokeBootstrap } from './server/benchmark/smokeBootstrap.js';
+import { ModelRouter } from './server/services/modelRouter.js';
 
 dotenv.config();
 
 // Initialize SQLite database and run migrations
 initializeDatabase();
+try {
+  const repairedBudgetQuarantines=ModelRouter.repairFalseBudgetQuarantines();
+  if(repairedBudgetQuarantines>0)console.log('Recovered false budget candidate quarantines:', repairedBudgetQuarantines);
+} catch (error) {
+  console.error('Budget quarantine recovery failed:', error);
+}
 try {
   Phase2RecoveryService.recoverStartup();
 } catch (error) {

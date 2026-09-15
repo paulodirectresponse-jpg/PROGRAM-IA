@@ -1106,6 +1106,17 @@ export class AgentEngine {
           profile,agentKey,attempt:i,retryStrategy,providerKey:candidate.provider_key,modelId:candidate.model_id,
           error:message,reason:e?.reason||null,declaredKind:e?.kind||null
         });
+        if(!providerCallStarted){
+          if(['AI_DAILY_BUDGET_EXCEEDED','AI_RUN_BUDGET_EXCEEDED'].includes(String(e?.code||''))){
+            RunService.recordStage(x.stepId,'budget.guard','failed',{
+              profile,agentKey,attempt:i,providerKey:candidate.provider_key,modelId:candidate.model_id,
+              code:e?.code,message
+            });
+          }
+          // Pre-provider guards (budget/context preparation) must never poison
+          // provider/model health because no provider call was attempted.
+          throw e;
+        }
         const declaredKind=['operational','incompatible','capacity'].includes(String(e?.kind)) ? e.kind as FailureKind : null;
         const operational = /429|5\d\d|timeout|fetch|network|indispon/i.test(message);
         const terminalModelMismatch=/invalid[_ -]?model|model[^\n]{0,40}(?:not found|unsupported|does not support)|unsupported[^\n]{0,30}model|incompatible[^\n]{0,30}(?:model|provider)/i.test(message);
