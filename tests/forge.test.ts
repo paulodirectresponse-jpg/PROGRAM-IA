@@ -1,6 +1,7 @@
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { db, initializeDatabase } from '../server/db/index.js';
 import { AuthService } from '../server/services/authService.js';
 import { SecretService } from '../server/services/secretService.js';
@@ -985,3 +986,16 @@ Criar API segura
     });
   });
 });
+
+test('7.1: Central de Agentes exposes operational tabs and keeps raw diagnostics behind advanced mode', () => {
+  const source=readFileSync(new URL('../src/components/AgentsModal.tsx',import.meta.url),'utf8');
+  for(const label of ['Central de Agentes','Visão geral','Execuções','Requisitos','Modelos & Roteamento','Básico','Avançado']){
+    assert.match(source,new RegExp(label));
+  }
+  assert.match(source,/Continuar do progresso salvo/);
+  assert.match(source,/detailMode==='advanced'.*step\.invocations/s);
+  assert.match(source,/runFailure\(run\)/);
+  assert.match(source,/unknownCostCalls/);
+  assert.doesNotMatch(source,/Agentes e roteamento/);
+});
+
