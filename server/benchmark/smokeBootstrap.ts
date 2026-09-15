@@ -143,6 +143,7 @@ export class BenchmarkSmokeBootstrap {
         allowExpert:false,
         caseIds:config.caseIds,
       });
+      if(!run)throw Object.assign(new Error('BenchmarkService.start não retornou a execução criada.'),{code:'benchmark_start_missing_run'});
 
       db.prepare("UPDATE benchmark_smoke_requests SET status='running',benchmark_run_id=? WHERE request_id=?")
         .run(run.id,config.requestId);
