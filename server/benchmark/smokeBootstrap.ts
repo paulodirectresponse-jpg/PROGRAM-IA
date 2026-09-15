@@ -69,6 +69,16 @@ export class BenchmarkSmokeBootstrap {
 
     const existing=db.prepare('SELECT * FROM benchmark_smoke_requests WHERE request_id=?').get(config.requestId) as any;
     if(existing){
+      if(existing.benchmark_run_id&&existing.user_id){
+        const current=BenchmarkService.get(existing.benchmark_run_id,existing.user_id);
+        if(current&&TERMINAL.has(String(current.status))){
+          const report=sanitizedReport(current);
+          db.prepare("UPDATE benchmark_smoke_requests SET status=?,report_json=?,finished_at=COALESCE(finished_at,?) WHERE request_id=?")
+            .run(String(current.status),JSON.stringify(report),now(),config.requestId);
+          console.log('FORGE_BENCHMARK_SMOKE_REPORT '+JSON.stringify({requestId:config.requestId,recovered:true,...report}));
+          return {enabled:true,skipped:true,status:current.status,benchmarkRunId:existing.benchmark_run_id,report};
+        }
+      }
       console.log('FORGE_BENCHMARK_SMOKE_SKIP '+JSON.stringify({
         requestId:config.requestId,status:existing.status,benchmarkRunId:existing.benchmark_run_id||null,
       }));
