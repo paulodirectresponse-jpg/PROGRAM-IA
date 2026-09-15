@@ -9,15 +9,18 @@ import { BenchmarkService } from '../server/benchmark/benchmarkService.js';
 initializeDatabase();
 
 test('phase4 migration and canonical benchmark catalog exist',()=>{
-  const migration8=db.prepare('SELECT name FROM schema_migrations WHERE version=11').get() as any;
-  const migration9=db.prepare('SELECT name FROM schema_migrations WHERE version=11').get() as any;
-  const migration10=db.prepare('SELECT name FROM schema_migrations WHERE version=11').get() as any;
-  assert.equal(migration8?.name,'009_phase4_benchmark_framework');
-  assert.equal(migration9?.name,'010_phase4_benchmark_invocation_provenance');
-  assert.equal(migration10?.name,'011_phase4_single_active_benchmark_per_user');
+  const migration9=db.prepare('SELECT name FROM schema_migrations WHERE version=9').get() as any;
+  const migration10=db.prepare('SELECT name FROM schema_migrations WHERE version=10').get() as any;
+  const migration11=db.prepare('SELECT name FROM schema_migrations WHERE version=11').get() as any;
+  assert.equal(migration9?.name,'009_phase4_benchmark_framework');
+  assert.equal(migration10?.name,'010_phase4_benchmark_invocation_provenance');
+  assert.equal(migration11?.name,'011_phase4_single_active_benchmark_per_user');
   const invocationColumns=new Set((db.prepare('PRAGMA table_info(model_invocations)').all() as any[]).map(row=>row.name));
   assert.ok(invocationColumns.has('benchmark_run_id'));
   assert.ok(invocationColumns.has('benchmark_case_id'));
+  const caseColumns=new Set((db.prepare('PRAGMA table_info(benchmark_case_runs)').all() as any[]).map(row=>row.name));
+  assert.ok(caseColumns.has('budget_cost_usd'));
+  assert.ok(caseColumns.has('unknown_cost_calls'));
   const benchmarkIndexes=(db.prepare("PRAGMA index_list('benchmark_runs')").all() as any[]).map(row=>row.name);
   assert.ok(benchmarkIndexes.includes('benchmark_runs_one_active_user'));
   assert.equal(PHASE4_SUITE_KEY,'phase4-v1-30');
@@ -153,8 +156,8 @@ test('phase4 release gate only approves a complete thirty-case real-provider run
   }
   const summary={
     totalCases:30,completedCases:30,passedCases:30,failedCases:0,passRate:1,averageScore:100,
-    firstPassRate:1,expertEscalationRate:0,repairRate:0,verifiedRate:1,totalCostUsd:.5,averageLatencyMs:100,
-    providerBreakdown:{real:{cases:30,costUsd:.5,passed:30}},categoryBreakdown,
+    firstPassRate:1,expertEscalationRate:0,repairRate:0,verifiedRate:1,totalCostUsd:.5,budgetCostUsd:.5,unknownCostCalls:0,averageLatencyMs:100,
+    providerBreakdown:{real:{cases:30,costUsd:.5,budgetCostUsd:.5,unknownCostCalls:0,passed:30}},categoryBreakdown,
   };
   try{
     db.prepare(`INSERT INTO benchmark_runs(id,user_id,suite_key,status,total_cases,completed_cases,passed_cases,failed_cases,max_cost_usd,spent_usd,allow_expert,config_json,summary_json,created_at,started_at,finished_at)
