@@ -30,6 +30,144 @@ function cleanupWorkflowModel(userId:string){
 
 
 
+test('SCOUT architecture_brief file_plan is normalized into executable PLAN targets', () => {
+  const parsed=LLMAdapterService.extractPlan(JSON.stringify({
+    type:'architecture_brief',
+    objective:'Administrar fluxo de caixa da loja',
+    architecture_summary:'Aplicação web modular com estado e persistência',
+    file_plan:{modify:['index.html'],create:['app.js','styles.css'],delete:[]},
+    requirements:[{id:'REQ-001',description:'Fluxo de caixa funcional',verification:['registrar entrada e saída']}],
+    task_graph:[{id:'TASK-001',title:'Implementar caixa',requirement_ids:['REQ-001'],depends_on:[]}],
+    acceptance_criteria:['Entradas e saídas persistem']
+  }));
+  assert.ok(parsed);
+  assert.deepEqual(parsed!.existing_files_to_modify,['index.html']);
+  assert.deepEqual(parsed!.new_files_to_create,['app.js','styles.css']);
+  assert.deepEqual(parsed!.files_affected,['index.html','app.js','styles.css']);
+  assert.equal(parsed!.requirements.length,1);
+  assert.equal(parsed!.task_graph.length,1);
+});
+
+test('complex PLAN accepts a complete three-file architecture without redundant expert repair', async (t) => {
+  const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
+  const userId=`agent-semantic-plan-user-${unique}`;
+  const projectId=`agent-semantic-plan-project-${unique}`;
+  const conversationId=`agent-semantic-plan-conv-${unique}`;
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'plan',0.5);
+  seedRealWorkflowModel(userId,unique);
+  let calls=0;
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>{
+    calls++;
+    return {
+      replyText:'plano válido',
+      mode:'plan',
+      decisionType:'plan',
+      isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute',
+      modelUsed:'auto',
+      hasErrors:false,
+      plan:{
+        objective:'Administrar fluxo de caixa da loja',
+        scope_in:'Dashboard e movimentações',
+        scope_out:'',
+        architecture_summary:'Aplicação web modular com estado e persistência local',
+        existing_files_to_modify:['index.html'],
+        new_files_to_create:['app.js','styles.css'],
+        files_to_delete:[],
+        files_affected:['index.html','app.js','styles.css'],
+        integrations:[],
+        risks:[],
+        acceptance_criteria:['Entradas e saídas funcionam'],
+        requirements:[{id:'REQ-001',title:'Fluxo de caixa',description:'Registrar movimentações',priority:'critical',verification:['criar entrada e saída']}],
+        task_graph:[{id:'TASK-001',title:'Implementar fluxo',requirement_ids:['REQ-001'],depends_on:[]}]
+      },
+      usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}
+    } as any;
+  });
+  try{
+    const result=await AgentWorkflowEngine.executeWorkflow({
+      prompt:'planeja um site para ajudar a administrar todo o fluxo de caixa da minha loja de roupa',
+      mode:'plan',projectId,existingFiles:{'index.html':'<html></html>'},appliedSkills:[],conversationHistory:[],
+      userId,runId,stepId
+    });
+    assert.equal(calls,1);
+    assert.equal(result.workflow.status,'completed');
+    assert.deepEqual(result.plan?.new_files_to_create,['app.js','styles.css']);
+    const trace=RunService.trace(runId);
+    const events=(trace[0]?.context?.events||[]).filter((event:any)=>event.type==='agent_stage');
+    assert.ok(events.some((event:any)=>event.stage==='planning.architecture_validation'&&event.status==='completed'));
+    assert.equal(events.some((event:any)=>event.stage==='planning.architecture_repair'),false);
+  }finally{
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    cleanupWorkflowModel(userId);
+  }
+});
+
+test('complex PLAN repairs only contract gaps and accepts repaired architecture', async (t) => {
+  const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
+  const userId=`agent-plan-repair-user-${unique}`;
+  const projectId=`agent-plan-repair-project-${unique}`;
+  const conversationId=`agent-plan-repair-conv-${unique}`;
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'plan',0.5);
+  seedRealWorkflowModel(userId,unique);
+  let calls=0;
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>{
+    calls++;
+    const base={
+      replyText:calls===1?'plano sem tarefas':'plano reparado',
+      mode:'plan',
+      decisionType:'plan',
+      isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute',
+      modelUsed:'auto',
+      hasErrors:false,
+      usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}
+    };
+    return {
+      ...base,
+      plan:{
+        objective:'Administrar fluxo de caixa da loja',
+        scope_in:'Dashboard e movimentações',
+        scope_out:'',
+        architecture_summary:'Aplicação web modular com estado e persistência local',
+        existing_files_to_modify:['index.html'],
+        new_files_to_create:['app.js','styles.css'],
+        files_to_delete:[],
+        files_affected:['index.html','app.js','styles.css'],
+        integrations:[],
+        risks:[],
+        acceptance_criteria:['Entradas e saídas funcionam'],
+        requirements:[{id:'REQ-001',title:'Fluxo de caixa',description:'Registrar movimentações',priority:'critical',verification:['criar entrada e saída']}],
+        task_graph:calls===1?[]:[{id:'TASK-001',title:'Implementar fluxo',requirement_ids:['REQ-001'],depends_on:[]}]
+      }
+    } as any;
+  });
+  try{
+    const result=await AgentWorkflowEngine.executeWorkflow({
+      prompt:'planeja um site para ajudar a administrar todo o fluxo de caixa da minha loja de roupa',
+      mode:'plan',projectId,existingFiles:{'index.html':'<html></html>'},appliedSkills:[],conversationHistory:[],
+      userId,runId,stepId
+    });
+    assert.equal(calls,2);
+    assert.equal(result.workflow.status,'completed');
+    assert.equal(result.plan?.task_graph.length,1);
+    const trace=RunService.trace(runId);
+    const events=(trace[0]?.context?.events||[]).filter((event:any)=>event.type==='agent_stage');
+    const initialFailure=events.find((event:any)=>event.stage==='planning.architecture_validation'&&event.status==='failed'&&event.phase==='initial');
+    assert.ok(initialFailure);
+    assert.ok(Array.isArray(initialFailure.reasons)&&initialFailure.reasons.includes('missing_task_graph'));
+    assert.ok(events.some((event:any)=>event.stage==='planning.architecture_repair'&&event.status==='completed'));
+    assert.ok(events.some((event:any)=>event.stage==='planning.architecture_validation'&&event.status==='completed'&&event.phase==='final'));
+  }finally{
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    cleanupWorkflowModel(userId);
+  }
+});
+
 test('SCOUT planning trace preserves model and architecture stage evidence after finishStep', async (mock) => {
   const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
   const userId=`agent-trace-user-${unique}`;
