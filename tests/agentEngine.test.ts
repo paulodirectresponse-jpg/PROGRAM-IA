@@ -195,6 +195,51 @@ test('SCOUT uses one context-free micro model repair when PLAN formatting cannot
   }
 });
 
+test('PLAN derives verifiable requirements from task semantics instead of completing with zero requirements', async (t) => {
+  const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
+  const userId=`agent-ledger-user-${unique}`;
+  const projectId=`agent-ledger-project-${unique}`;
+  const conversationId=`agent-ledger-conv-${unique}`;
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'plan',0.5);
+  seedRealWorkflowModel(userId,unique);
+  let calls=0;
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>{
+    calls++;
+    return {
+      replyText:'plan',
+      mode:'plan',decisionType:'plan',isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,
+      plan:{
+        objective:'Alterar a tela de cadastro',scope_in:'Ajustar cadastro',scope_out:'',
+        architecture_summary:'Atualização localizada da tela',
+        existing_files_to_modify:['src/Cadastro.tsx'],new_files_to_create:[],files_to_delete:[],
+        files_affected:['src/Cadastro.tsx'],integrations:[],risks:[],acceptance_criteria:[],
+        requirements:[],
+        task_graph:[{id:'TASK-001',title:'Adicionar validação visual ao cadastro',requirement_ids:[],depends_on:[]}]
+      },
+      usage:{inputTokens:10,outputTokens:20,billedCostUsd:0}
+    } as any;
+  });
+  try{
+    const result=await AgentWorkflowEngine.executeWorkflow({
+      prompt:'Planeje uma pequena melhoria na tela de cadastro',
+      mode:'plan',projectId,existingFiles:{'src/Cadastro.tsx':'export default function Cadastro(){return null}'},
+      appliedSkills:[],conversationHistory:[],userId,runId,stepId
+    });
+    assert.equal(calls,1);
+    assert.equal(result.workflow.status,'completed');
+    assert.equal(result.plan?.requirements.length,1);
+    assert.equal(result.plan?.requirements[0].title,'Adicionar validação visual ao cadastro');
+    assert.ok((result.plan?.requirements[0].verification||[]).length>0);
+    assert.deepEqual(result.plan?.task_graph[0].requirement_ids,[result.plan?.requirements[0].id]);
+  }finally{
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    cleanupWorkflowModel(userId);
+  }
+});
+
 test('paid SCOUT success with only structural gaps is repaired deterministically without a second paid call', async (t) => {
   const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
   const userId=`agent-paid-guard-user-${unique}`;
