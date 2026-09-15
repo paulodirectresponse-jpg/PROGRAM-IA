@@ -1,4 +1,4 @@
-import { LLMAdapterService, type AgentMode, type LLMExecutionResult } from '../services/llmAdapter.js';
+import { LLMAdapterService, type AgentMode, type LLMExecutionResult, type PlanOutput } from '../services/llmAdapter.js';
 import { ModelRouter, type FailureKind, type ProfileKey } from '../services/modelRouter.js';
 import { RunService } from '../services/runService.js';
 import { ProgressRetryController, type AttemptEvidence } from '../services/progressRetryController.js';
@@ -381,6 +381,65 @@ function isComplexProductRequest(x:Pick<Input,'prompt'|'mode'|'conversationHisto
     'relatorios','financeiro','pdv','autenticacao','login','permissoes','dashboard','cadastro','historico'
   ].filter(term=>text.includes(term)).length;
   return product && (!simpleLanding || capabilities>=2);
+}
+
+type PlanArchitectureAssessment={
+  valid:boolean;
+  reasons:string[];
+  targets:string[];
+  requirementCount:number;
+  taskCount:number;
+  referencedRequirementCount:number;
+};
+
+function normalizePlanTarget(path:string){
+  return String(path||'').replace(/\\/g,'/').replace(/^\.\//,'').trim();
+}
+
+function assessPlanArchitecture(plan:PlanOutput|undefined,complex:boolean):PlanArchitectureAssessment{
+  const reasons:string[]=[];
+  if(!plan){
+    return{valid:false,reasons:['missing_plan'],targets:[],requirementCount:0,taskCount:0,referencedRequirementCount:0};
+  }
+  const targets=[...new Set([
+    ...(plan.existing_files_to_modify||[]),
+    ...(plan.new_files_to_create||[]),
+    ...(plan.files_to_delete||[]),
+  ].map(normalizePlanTarget).filter(Boolean))];
+  const unsafeTargets=targets.filter(path=>path.includes('..')||path.startsWith('/')||path.startsWith('\\'));
+  const requirements=Array.isArray(plan.requirements)?plan.requirements:[];
+  const tasks=Array.isArray(plan.task_graph)?plan.task_graph:[];
+  const requirementIds=new Set(requirements.map(req=>String(req.id||'').toUpperCase()).filter(Boolean));
+  const referencedRequirementIds=new Set(
+    tasks.flatMap(task=>Array.isArray(task.requirement_ids)?task.requirement_ids:[])
+      .map(id=>String(id||'').toUpperCase())
+      .filter(Boolean)
+  );
+  const unknownRequirementIds=[...referencedRequirementIds].filter(id=>!requirementIds.has(id));
+  const unreferencedRequirementIds=[...requirementIds].filter(id=>!referencedRequirementIds.has(id));
+
+  if(!String(plan.objective||'').trim())reasons.push('missing_objective');
+  if(!String(plan.architecture_summary||'').trim())reasons.push('missing_architecture_summary');
+  if(!targets.length)reasons.push('missing_file_plan');
+  if(unsafeTargets.length)reasons.push('unsafe_file_targets');
+  if(complex&&targets.length===1&&targets[0].toLowerCase()==='index.html')reasons.push('single_index_only');
+  if(!requirements.length)reasons.push('missing_requirements');
+  if(requirements.some(req=>!Array.isArray(req.verification)||req.verification.filter(Boolean).length===0)){
+    reasons.push('requirements_without_verification');
+  }
+  if(!tasks.length)reasons.push('missing_task_graph');
+  if(unknownRequirementIds.length)reasons.push('task_unknown_requirements');
+  if(unreferencedRequirementIds.length)reasons.push('unreferenced_requirements');
+  if(!(plan.acceptance_criteria||[]).filter(Boolean).length)reasons.push('missing_acceptance_criteria');
+
+  return{
+    valid:reasons.length===0,
+    reasons,
+    targets,
+    requirementCount:requirements.length,
+    taskCount:tasks.length,
+    referencedRequirementCount:referencedRequirementIds.size,
+  };
 }
 
 function isUnderArchitectedWorkspace(files:Record<string,string>){
@@ -798,21 +857,21 @@ export class AgentWorkflowEngine extends AgentEngine {
           requirementCount:result.plan?.requirements?.length||0,taskCount:result.plan?.task_graph?.length||0
         });
         if(complexPlan){
-          const initialTargets=[
-            ...(result.plan?.existing_files_to_modify||[]),
-            ...(result.plan?.new_files_to_create||[]),
-          ];
+          const initialAssessment=assessPlanArchitecture(result.plan,true);
           RunService.recordStage(x.stepId,'planning.architecture_validation','started',{
-            phase:'initial',targetCount:initialTargets.length,targets:initialTargets.slice(0,40),
-            requirementCount:result.plan?.requirements?.length||0,taskCount:result.plan?.task_graph?.length||0
+            phase:'initial',targetCount:initialAssessment.targets.length,targets:initialAssessment.targets.slice(0,40),
+            requirementCount:initialAssessment.requirementCount,taskCount:initialAssessment.taskCount,
+            referencedRequirementCount:initialAssessment.referencedRequirementCount
           });
-          const weakPlan=initialTargets.length<4 || (initialTargets.length===1&&initialTargets[0]==='index.html');
-          if(weakPlan){
+          if(!initialAssessment.valid){
             RunService.recordStage(x.stepId,'planning.architecture_validation','failed',{
-              phase:'initial',reason:'weak_architecture',targetCount:initialTargets.length,targets:initialTargets.slice(0,40)
+              phase:'initial',reason:'plan_contract_incomplete',reasons:initialAssessment.reasons,
+              targetCount:initialAssessment.targets.length,targets:initialAssessment.targets.slice(0,40),
+              requirementCount:initialAssessment.requirementCount,taskCount:initialAssessment.taskCount
             });
             RunService.recordStage(x.stepId,'planning.architecture_repair','started',{
-              reason:'weak_architecture',fromProfile:result.profileKey,toProfile:'EXPERT_PAID'
+              reason:'plan_contract_incomplete',reasons:initialAssessment.reasons,
+              fromProfile:result.profileKey,toProfile:'EXPERT_PAID'
             });
             const repaired=await AgentEngine.execute(
               {
@@ -820,42 +879,51 @@ export class AgentWorkflowEngine extends AgentEngine {
                 mode:'plan',
                 prompt:[
                   contractPrompt('SCOUT'),
-                  'CORREÇÃO OBRIGATÓRIA DE ARQUITETURA: o plano anterior ficou subdimensionado.',
-                  'Refaça o plano no schema PLAN. Derive páginas/rotas, módulos e arquivos concretos de todas as capacidades pedidas.',
-                  'Não existe limite artificial de páginas ou arquivos. Use exatamente o necessário.',
-                  'Um sistema com múltiplas funções não pode ser entregue como um único index.html.',
+                  'CORREÇÃO OBRIGATÓRIA DO PLANO: o plano anterior não satisfez o contrato estrutural.',
+                  'Corrija SOMENTE as falhas listadas abaixo e devolva novamente o schema PLAN completo.',
+                  'Não existe quantidade mínima artificial de arquivos. A arquitetura deve ter exatamente os arquivos necessários.',
+                  'Um sistema não trivial não pode ser reduzido a um único index.html.',
+                  'Requirements devem ter verification e cada requirement deve estar ligado a pelo menos uma task.',
+                  'Cada task só pode referenciar IDs de requirements existentes.',
+                  '',
+                  'FALHAS DETECTADAS:',
+                  initialAssessment.reasons.map(reason=>'- '+reason).join('\n'),
                   '',
                   'PEDIDO ORIGINAL:',
                   x.prompt,
                   '',
-                  'PLANO INSUFICIENTE:',
+                  'PLANO ANTERIOR:',
                   result.replyText,
                 ].join('\n\n'),
                 stepId:x.stepId,
               },
               { profile:'EXPERT_PAID',forcedAgentKey:'SCOUT',allowExpertEscalation:false,requireModelWork:true }
             );
-            RunService.recordStage(x.stepId,'planning.architecture_repair','completed',{
+            const repairedAssessment=assessPlanArchitecture(repaired.plan,true);
+            RunService.recordStage(x.stepId,'planning.architecture_repair',repairedAssessment.valid?'completed':'failed',{
               profileKey:repaired.profileKey,decisionType:repaired.decisionType,
-              targetCount:(repaired.plan?.existing_files_to_modify?.length||0)+(repaired.plan?.new_files_to_create?.length||0),
-              requirementCount:repaired.plan?.requirements?.length||0,taskCount:repaired.plan?.task_graph?.length||0
+              targetCount:repairedAssessment.targets.length,requirementCount:repairedAssessment.requirementCount,
+              taskCount:repairedAssessment.taskCount,reasons:repairedAssessment.reasons
             });
             if(repaired.plan)result=repaired;
           }
-          const finalTargets=[
-            ...(result.plan?.existing_files_to_modify||[]),
-            ...(result.plan?.new_files_to_create||[]),
-          ];
-          if(finalTargets.length<4 || (finalTargets.length===1&&finalTargets[0]==='index.html')){
+          const finalAssessment=assessPlanArchitecture(result.plan,true);
+          if(!finalAssessment.valid){
             RunService.recordStage(x.stepId,'planning.architecture_validation','failed',{
-              phase:'final',reason:'architecture_plan_incomplete',targetCount:finalTargets.length,targets:finalTargets.slice(0,40),
-              requirementCount:result.plan?.requirements?.length||0,taskCount:result.plan?.task_graph?.length||0
+              phase:'final',reason:'architecture_plan_incomplete',reasons:finalAssessment.reasons,
+              targetCount:finalAssessment.targets.length,targets:finalAssessment.targets.slice(0,40),
+              requirementCount:finalAssessment.requirementCount,taskCount:finalAssessment.taskCount,
+              referencedRequirementCount:finalAssessment.referencedRequirementCount
             });
-            throw Object.assign(new Error('O SCOUT não conseguiu produzir uma arquitetura suficientemente completa para este sistema.'),{kind:'incompatible',reason:'architecture_plan_incomplete'});
+            throw Object.assign(
+              new Error('O SCOUT não conseguiu produzir um plano executável completo: '+finalAssessment.reasons.join(', ')+'.'),
+              {kind:'incompatible',reason:'architecture_plan_incomplete',planReasons:finalAssessment.reasons}
+            );
           }
           RunService.recordStage(x.stepId,'planning.architecture_validation','completed',{
-            phase:'final',targetCount:finalTargets.length,targets:finalTargets.slice(0,40),
-            requirementCount:result.plan?.requirements?.length||0,taskCount:result.plan?.task_graph?.length||0
+            phase:'final',targetCount:finalAssessment.targets.length,targets:finalAssessment.targets.slice(0,40),
+            requirementCount:finalAssessment.requirementCount,taskCount:finalAssessment.taskCount,
+            referencedRequirementCount:finalAssessment.referencedRequirementCount
           });
         }
 
