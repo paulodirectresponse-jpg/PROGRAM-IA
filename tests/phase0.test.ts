@@ -6,6 +6,7 @@ import { ProgressRetryController } from '../server/services/progressRetryControl
 import { RequirementLedgerService } from '../server/services/requirementLedgerService.js';
 import { RunService } from '../server/services/runService.js';
 import { AGENT_CONTRACTS } from '../server/agent-engine/agentContracts.js';
+import { ModelRouter } from '../server/services/modelRouter.js';
 
 initializeDatabase();
 
@@ -185,6 +186,56 @@ test('phase0 requirement ledger mirrors normalized plan requirements exactly', (
   }finally{
     db.prepare('DELETE FROM requirements WHERE project_id=?').run(projectId);
   }
+});
+
+test('phase0 cost telemetry distinguishes unknown, explicit zero and reported cost', () => {
+  const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
+  const userId=`cost-user-${unique}`;
+  const projectId=`cost-project-${unique}`;
+  const conversationId=`cost-conv-${unique}`;
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'plan',0.5);
+  try{
+    ModelRouter.recordInvocation({
+      userId,projectId,runId,stepId,agentKey:'SCOUT',profileKey:'EXPERT_PAID',
+      providerKey:'paid',modelId:'model',latencyMs:100,status:'success',
+      costStatus:'unknown',budgetCostUsd:0.25,
+    });
+    const unknown=db.prepare('SELECT cost_usd,cost_status,budget_cost_usd FROM model_invocations WHERE run_id=? ORDER BY created_at LIMIT 1').get(runId) as any;
+    assert.equal(unknown.cost_usd,null);
+    assert.equal(unknown.cost_status,'unknown');
+    assert.equal(Number(unknown.budget_cost_usd),0.25);
+    assert.equal(Number((db.prepare('SELECT spent_usd FROM agent_runs WHERE id=?').get(runId) as any).spent_usd),0.25);
+
+    ModelRouter.recordInvocation({
+      userId,projectId,runId,stepId,agentKey:'SCOUT',profileKey:'EXPERT_PAID',
+      providerKey:'paid',modelId:'model',latencyMs:100,status:'success',
+      costUsd:0,costStatus:'known_zero',budgetCostUsd:0.25,
+    });
+    ModelRouter.recordInvocation({
+      userId,projectId,runId,stepId,agentKey:'SCOUT',profileKey:'EXPERT_PAID',
+      providerKey:'paid',modelId:'model',latencyMs:100,status:'success',
+      costUsd:0.02,costStatus:'reported',budgetCostUsd:0.25,
+    });
+    const rows=db.prepare('SELECT cost_usd,cost_status,budget_cost_usd FROM model_invocations WHERE run_id=? ORDER BY created_at').all(runId) as any[];
+    assert.equal(rows[1].cost_status,'known_zero');
+    assert.equal(Number(rows[1].budget_cost_usd),0);
+    assert.equal(rows[2].cost_status,'reported');
+    assert.equal(Number(rows[2].budget_cost_usd),0.02);
+    assert.equal(Number((db.prepare('SELECT spent_usd FROM agent_runs WHERE id=?').get(runId) as any).spent_usd),0.27);
+    assert.throws(()=>ModelRouter.assertBudget(userId,0.24,{runId}),/Orçamento/i);
+  }finally{
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+  }
+});
+
+test('phase0 database exposes truthful cost telemetry migration', () => {
+  const migration=db.prepare('SELECT name FROM schema_migrations WHERE version=8').get() as any;
+  assert.equal(migration?.name,'008_cost_telemetry_truthfulness');
+  const cols=new Set((db.prepare('PRAGMA table_info(model_invocations)').all() as any[]).map(row=>row.name));
+  assert.ok(cols.has('cost_status'));
+  assert.ok(cols.has('budget_cost_usd'));
 });
 
 test('phase0 waiting approval and resume cannot leave stale running steps behind', () => {
