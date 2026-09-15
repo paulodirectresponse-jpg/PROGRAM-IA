@@ -230,9 +230,11 @@ test('phase0 cost telemetry distinguishes unknown, explicit zero and reported co
   }
 });
 
-test('phase0 database exposes truthful cost telemetry migration', () => {
-  const migration=db.prepare('SELECT name FROM schema_migrations WHERE version=8').get() as any;
-  assert.equal(migration?.name,'008_cost_telemetry_truthfulness');
+test('phase0 database exposes truthful cost telemetry migrations', () => {
+  const migration8=db.prepare('SELECT name FROM schema_migrations WHERE version=8').get() as any;
+  const migration13=db.prepare('SELECT name FROM schema_migrations WHERE version=13').get() as any;
+  assert.equal(migration8?.name,'008_cost_telemetry_truthfulness');
+  assert.equal(migration13?.name,'013_repair_legacy_cost_reservations');
   const cols=new Set((db.prepare('PRAGMA table_info(model_invocations)').all() as any[]).map(row=>row.name));
   assert.ok(cols.has('cost_status'));
   assert.ok(cols.has('budget_cost_usd'));
