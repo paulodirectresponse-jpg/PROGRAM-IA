@@ -71,7 +71,7 @@ export const parsePlanForDisplay=(content:string):PresentablePlan|null=>{
     title:String(t?.title||t?.name||t?.description||`Tarefa ${index+1}`),
     requirementIds:asList(t?.requirement_ids??t?.requirements),
     dependsOn:asList(t?.depends_on??t?.dependencies),
-  })):[];
+  }));
   const plan:PresentablePlan={
     objective:String(root.objective??root.objetivo??'').trim(),
     architecture:String(root.architecture_summary??root.architecture??'').trim(),
