@@ -741,14 +741,27 @@ export class LLMAdapterService {
 
   private static normalizePlanOutput(value: unknown): PlanOutput {
     const plan = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
-    const existingFiles = this.normalizePlanList(plan.existing_files_to_modify);
-    const newFiles = this.normalizePlanList(plan.new_files_to_create);
-    const filesToDelete = this.normalizePlanList(plan.files_to_delete);
-    const legacyFiles = this.normalizePlanList(plan.files_affected);
+    const filePlan = plan.file_plan && typeof plan.file_plan === 'object'
+      ? plan.file_plan as Record<string, unknown>
+      : {};
+    const existingFiles = this.normalizePlanList(
+      plan.existing_files_to_modify ?? plan.existingFilesToModify ?? filePlan.modify
+    );
+    const newFiles = this.normalizePlanList(
+      plan.new_files_to_create ?? plan.newFilesToCreate ?? filePlan.create
+    );
+    const filesToDelete = this.normalizePlanList(
+      plan.files_to_delete ?? plan.filesToDelete ?? filePlan.delete
+    );
+    const legacyFiles = this.normalizePlanList(plan.files_affected ?? plan.filesAffected);
     const union = [...new Set([...existingFiles, ...newFiles, ...filesToDelete, ...legacyFiles])];
 
-    const rawRequirements = Array.isArray(plan.requirements) ? plan.requirements : [];
-    const criteria = this.normalizePlanList(plan.acceptance_criteria);
+    const rawRequirements = Array.isArray(plan.requirements)
+      ? plan.requirements
+      : Array.isArray(plan.requirement_list)
+        ? plan.requirement_list
+        : [];
+    const criteria = this.normalizePlanList(plan.acceptance_criteria ?? plan.acceptanceCriteria);
     const requirements: PlanRequirement[] = rawRequirements.length
       ? rawRequirements.map((item: any, index: number) => ({
           id: String(item?.id || `REQ-${String(index + 1).padStart(3, '0')}`).toUpperCase(),
@@ -767,7 +780,11 @@ export class LLMAdapterService {
           verification: [criterion],
         }));
 
-    const rawTasks = Array.isArray(plan.task_graph) ? plan.task_graph : [];
+    const rawTasks = Array.isArray(plan.task_graph)
+      ? plan.task_graph
+      : Array.isArray(plan.tasks)
+        ? plan.tasks
+        : [];
     const taskGraph: PlanTask[] = rawTasks.map((item: any, index: number) => ({
       id: String(item?.id || `TASK-${String(index + 1).padStart(3, '0')}`).toUpperCase(),
       title: this.normalizePlanText(item?.title || item?.name || item?.description || `Tarefa ${index + 1}`),
@@ -776,10 +793,10 @@ export class LLMAdapterService {
     }));
 
     return {
-      objective: this.normalizePlanText(plan.objective),
-      scope_in: this.normalizePlanText(plan.scope_in),
-      scope_out: this.normalizePlanText(plan.scope_out),
-      architecture_summary: this.normalizePlanText(plan.architecture_summary || plan.architecture),
+      objective: this.normalizePlanText(plan.objective ?? plan.objetivo),
+      scope_in: this.normalizePlanText(plan.scope_in ?? plan.scopeIn ?? plan.scope),
+      scope_out: this.normalizePlanText(plan.scope_out ?? plan.scopeOut),
+      architecture_summary: this.normalizePlanText(plan.architecture_summary ?? plan.architecture),
       existing_files_to_modify: existingFiles,
       new_files_to_create: newFiles,
       files_to_delete: filesToDelete,
