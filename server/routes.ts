@@ -1378,7 +1378,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
           userContent,
           requestContext?'CONTEXTO DE ARQUIVOS E ANEXOS:\n'+requestContext:'',
         ].filter(Boolean).join('\n')
-      : String(content);
+      : effectivePrompt;
 
     let result=conversationalOnly
       ? await LLMAdapterService.executePrompt({
@@ -1444,7 +1444,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       );
     if(recoverableBuildFailure){
       result=await LLMAdapterService.buildApprovedPlanReliably({
-        projectId,providerKey,modelId,userId:req.user!.id,existingFiles,requestedFiles:[],objective:String(content),
+        projectId,providerKey,modelId,userId:req.user!.id,existingFiles,requestedFiles:validMentionedFiles,objective:effectivePrompt,
         acceptanceCriteria:['Atender integralmente ao pedido do usuário','Preservar compatibilidade com o projeto existente'],
         signal:controller.signal,
       });
@@ -1465,7 +1465,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     if(result.build?.files?.length&&!result.proposal&&!result.isDemonstrativeFallback&&!result.hasErrors){
       result.proposal={
         id:`proposal-${crypto.randomUUID()}`,
-        summary:result.build.summary||String(content).slice(0,100),
+        summary:result.build.summary||userContent.slice(0,100),
         requiresConfirmation:false,
         files:result.build.files,
         status:'pending',
@@ -1522,7 +1522,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     if(result.proposal?.files?.length&&resolvedMode==='build'){
       applyResult=await SandboxProposalApplyService.apply({
         userId:req.user!.id,projectId,proposal:result.proposal,runId:execution?.runId||null,planId:savedPlanId,
-        summary:result.proposal.summary||String(content).slice(0,100),originalRequest:String(content),
+        summary:result.proposal.summary||userContent.slice(0,100),originalRequest:userContent,
         shipRequested:Boolean((result as any).workflow?.shipRequested),signal:controller.signal,
       });
       if(!applyResult.success){
@@ -1553,7 +1553,9 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       validation,browserQuality,browserRepair,sentinelReview,buildDiagnostics:result.diagnostics,
       technicalReply:result.replyText,
       autoApplied:Boolean(applyResult),
-      originalRequest:String(content),
+      originalRequest:userContent,
+      mentionedFiles:validMentionedFiles,
+      attachments:userMetadata.attachments,
     };
 
     db.prepare(`
