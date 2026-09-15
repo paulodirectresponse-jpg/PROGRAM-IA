@@ -25,6 +25,7 @@ const stageLabel=(stage?:string)=>({
   'planning.architecture_validation':'Validação da arquitetura',
   'planning.deterministic_repair':'Reparo estrutural local',
   'planning.architecture_repair':'Reparo da arquitetura',
+  'requirements.persistence':'Persistência dos requisitos',
   'paid_call.guard':'Controle de chamada paga',
 }[String(stage||'')]||String(stage||'Etapa'));
 
