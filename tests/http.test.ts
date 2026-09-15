@@ -293,17 +293,54 @@ test('agent-engine plan approval returns quickly while build, review and apply c
   const previousFlag=process.env.AGENT_ENGINE_ENABLED;process.env.AGENT_ENGINE_ENABLED='true';
   const originalReliable=(LLMAdapterService as any).buildApprovedPlanReliably;
   const originalExecutePrompt=(LLMAdapterService as any).executePrompt;
-  (LLMAdapterService as any).executePrompt=async(options:any)=>({
-    replyText:options.mode==='review'?'{"verdict":"pass","summary":"revisado","issues":[]}':'ok',
-    mode:options.mode,decisionType:options.mode==='review'?'review':'change',isDemonstrativeFallback:false,
-    providerUsed:'OmniRoute (Free Pool)',modelUsed:'auto',hasErrors:false,usage:{inputTokens:3,outputTokens:4,billedCostUsd:0}
-  } as any);
+  const architectureTargets=['index.html','styles.css','app.js','store.js'];
+  const architectureBrief=JSON.stringify({
+    type:'architecture_brief',
+    objective:'Criar painel completo',
+    complexity:'complex',
+    architecture_summary:'Aplicação modular de gestão com dashboard, estoque e vendas.',
+    routes:[{path:'/',purpose:'Dashboard'},{path:'/estoque',purpose:'Estoque'},{path:'/vendas',purpose:'Vendas'}],
+    modules:[{name:'dashboard',responsibility:'indicadores'},{name:'estoque',responsibility:'produtos'},{name:'vendas',responsibility:'operações'}],
+    data_entities:['Produto','Venda','Movimentacao'],
+    file_plan:{create:['styles.css','app.js','store.js'],modify:['index.html'],delete:[]},
+    requirements:[{id:'REQ-001',description:'Fluxo funcional',verification:['navegação e estado funcionam']}],
+    task_graph:[{id:'TASK-001',title:'Construir aplicação',requirement_ids:['REQ-001'],depends_on:[]}],
+    risks:[],acceptance_criteria:['Fluxo funcional']
+  });
+  (LLMAdapterService as any).executePrompt=async(options:any)=>{
+    const prompt=String(options.prompt||'');
+    if(prompt.includes('PAPEL INTERNO: SCOUT'))return {
+      replyText:architectureBrief,mode:'review',decisionType:'review',isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute (Free Pool)',modelUsed:'auto',hasErrors:false,usage:{inputTokens:3,outputTokens:4,billedCostUsd:0}
+    } as any;
+    if(prompt.includes('PAPEL INTERNO: STUDIO'))return {
+      replyText:'Navegação clara entre dashboard, estoque e vendas; ações e estados precisam ser funcionais.',mode:'review',decisionType:'review',isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute (Free Pool)',modelUsed:'auto',hasErrors:false,usage:{inputTokens:3,outputTokens:4,billedCostUsd:0}
+    } as any;
+    return {
+      replyText:'{"verdict":"pass","summary":"revisado","issues":[]}',mode:options.mode,decisionType:'review',isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute (Free Pool)',modelUsed:'auto',hasErrors:false,usage:{inputTokens:3,outputTokens:4,billedCostUsd:0}
+    } as any;
+  };
   let reliableCalls=0;
   (LLMAdapterService as any).buildApprovedPlanReliably=async(options:any)=>{
-    reliableCalls++;assert.equal(options.providerKey,'omniroute');assert.equal(options.objective,'Criar painel completo');assert.deepEqual(options.requestedFiles,['index.html']);
-    return {replyText:'Implementação atômica gerada.',mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'OmniRoute (Free Pool)',modelUsed:'auto',hasErrors:false,
-      build:{summary:'Painel completo',explanation:'Construção atômica',files:[{path:'index.html',action:'modify',content:'<html><body>AGENT_ENGINE_PROPOSAL</body></html>'}]},
-      usage:{inputTokens:10,outputTokens:20,billedCostUsd:0},diagnostics:{strategy:'atomic_file_build',attempts:1,targets:['index.html'],failures:[]}} as any;
+    reliableCalls++;
+    assert.equal(options.providerKey,'omniroute');
+    assert.equal(options.objective,'Criar painel completo');
+    for(const target of architectureTargets)assert.ok(options.requestedFiles.includes(target),`missing architecture target ${target}`);
+    const files=[
+      {path:'index.html',action:'modify',content:'<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><main id="app">AGENT_ENGINE_PROPOSAL</main><script src="store.js"></script><script src="app.js"></script></body></html>'},
+      {path:'styles.css',action:'create',content:'body{font-family:system-ui;margin:0} main{padding:24px}'},
+      {path:'store.js',action:'create',content:'window.appStore={products:[],sales:[],cash:[]};'},
+      {path:'app.js',action:'create',content:'document.getElementById("app")?.setAttribute("data-ready","true");'},
+    ];
+    return {
+      replyText:'Implementação atômica gerada.',mode:'build',decisionType:'change',isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute (Free Pool)',modelUsed:'auto',hasErrors:false,
+      build:{summary:'Painel completo',explanation:'Construção atômica multi-arquivo',files},
+      usage:{inputTokens:10,outputTokens:20,billedCostUsd:0},
+      diagnostics:{strategy:'atomic_file_build',attempts:files.length,targets:architectureTargets,failures:[]}
+    } as any;
   };
   try{
     const response=await fetch(`${base}/conversations/${id}/plan/approve`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify({planId})});

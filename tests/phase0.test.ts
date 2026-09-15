@@ -56,6 +56,8 @@ test('phase0 preview-only index is not treated as implicit application architect
   assert.deepEqual(targets,[]);
   const legacy=LLMAdapterService.resolveBuildTargets([],{'index.html':'<!doctype html><html><body>app real</body></html>'},'');
   assert.deepEqual(legacy,['index.html']);
+  const complexLegacy=LLMAdapterService.resolveBuildTargets([],{'index.html':'<!doctype html><html><body>app real</body></html>'},'construa um sistema de fluxo de caixa, estoque, vendas e fornecedores');
+  assert.deepEqual(complexLegacy,[]);
 });
 
 test('phase0 atomic builder emits live progress for every generated file', async (t) => {

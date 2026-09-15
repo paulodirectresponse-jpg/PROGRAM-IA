@@ -37,7 +37,7 @@ type Input = {
   };
 };
 
-type ExecuteOptions = { profile?: ProfileKey; forcedAgentKey?: string; allowExpertEscalation?: boolean; repair?: boolean };
+type ExecuteOptions = { profile?: ProfileKey; forcedAgentKey?: string; allowExpertEscalation?: boolean; repair?: boolean; requireModelWork?: boolean };
 type RetryStrategy = 'same_candidate'|'next_candidate'|'reduce_context'|'fragment_task'|'expert'|'stop';
 
 function relevantFiles(files: Record<string, string>, previewLimit: number) {
@@ -366,26 +366,109 @@ function recordContextCommitFromStep(x: Input, agentKey: string, scope: ContextS
   });
 }
 
-function buildTargetsFromBrief(existingFiles:Record<string,string>, texts:string[], focusPaths:string[]=[]){
+function normalizeIntentText(value:string){
+  return String(value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,' ');
+}
+
+function isComplexProductRequest(x:Pick<Input,'prompt'|'mode'|'conversationHistory'|'existingFiles'>){
+  if(!['auto','build','plan'].includes(x.mode))return false;
+  const recent=(x.conversationHistory||[]).slice(-8).map(item=>item.content).join('\n');
+  const text=normalizeIntentText([recent,x.prompt].join('\n'));
+  const simpleLanding=/\b(landing\s*page|pagina\s+de\s+venda|pagina\s+institucional|site\s+institucional|one\s*page)\b/.test(text);
+  const product=/\b(sistema|aplicativo|app|dashboard|painel|admin|administrativo|saas|erp|crm|e-?commerce|loja\s+virtual|gestao|gerenciamento|administrar|fluxo\s+de\s+caixa|pdv|estoque|vendas|compras|fornecedores|clientes|funcionarios|usuarios|relatorios|financeiro|autenticacao|login|permissoes)\b/.test(text);
+  const capabilities=[
+    'fluxo de caixa','estoque','vendas','compras','fornecedores','clientes','funcionarios','usuarios',
+    'relatorios','financeiro','pdv','autenticacao','login','permissoes','dashboard','cadastro','historico'
+  ].filter(term=>text.includes(term)).length;
+  return product && (!simpleLanding || capabilities>=2);
+}
+
+function isUnderArchitectedWorkspace(files:Record<string,string>){
+  const paths=Object.keys(files).map(path=>path.replace(/\\/g,'/'));
+  const meaningful=paths.filter(path=>!/^README(?:\.md)?$/i.test(path));
+  if(meaningful.length<=2&&meaningful.includes('index.html'))return true;
+  const code=meaningful.filter(path=>/\.(?:tsx?|jsx?|mjs|cjs|html?|css|vue|svelte|py|go|rs|java|kt|php)$/i.test(path));
+  return code.length<=2&&paths.includes('index.html');
+}
+
+function extractJsonObject(text:string):any|null{
+  const raw=String(text||'').trim();
+  const candidates=[raw,...[...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map(match=>String(match[1]||'').trim())];
+  for(const candidate of candidates){
+    try{return JSON.parse(candidate);}catch{}
+    const first=candidate.indexOf('{'),last=candidate.lastIndexOf('}');
+    if(first>=0&&last>first){try{return JSON.parse(candidate.slice(first,last+1));}catch{}}
+  }
+  return null;
+}
+
+function extractArchitectureTargets(existingFiles:Record<string,string>,brief:string,focusPaths:string[]=[]){
   const existing=new Set(Object.keys(existingFiles).map(path=>path.replace(/\\/g,'/').replace(/^\.\//,'')));
   const targets:string[]=[];
-  const add=(path:string)=>{
-    const normalized=String(path||'').replace(/\\/g,'/').replace(/^\.\//,'').replace(/[),.;:]+$/,'').trim();
+  const add=(value:unknown)=>{
+    const normalized=String(value||'').replace(/\\/g,'/').replace(/^\.\//,'').replace(/[),.;:]+$/,'').trim();
     if(!normalized||targets.includes(normalized))return;
-    if(existing.has(normalized))targets.push(normalized);
-    else if(/^[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*\.[a-zA-Z0-9]+$/.test(normalized))targets.push(normalized);
+    if(existing.has(normalized)||/^[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*\.(?:tsx?|jsx?|mjs|cjs|html?|css|json|ya?ml|toml|md|sql|env|vue|svelte)$/i.test(normalized)||/(^|\/)(?:Dockerfile|Procfile)$/i.test(normalized))targets.push(normalized);
   };
   for(const path of focusPaths)add(path);
-  const pathPattern=/\b([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*\.(?:tsx?|jsx?|mjs|cjs|html?|css|json|ya?ml|toml|md))\b/g;
-  for(const text of texts){
-    let match:RegExpExecArray|null;
-    while((match=pathPattern.exec(String(text||'')))!==null)add(match[1]);
+  const parsed=extractJsonObject(brief);
+  const visit=(value:any,key='')=>{
+    if(Array.isArray(value)){
+      const fileish=/file|arquivo|create|modify|target|path/i.test(key);
+      for(const item of value){
+        if(fileish&&typeof item==='string')add(item);
+        else visit(item,key);
+      }
+      return;
+    }
+    if(!value||typeof value!=='object')return;
+    for(const [childKey,child] of Object.entries(value)){
+      if(typeof child==='string'&&/^(path|file|filepath|filename)$/i.test(childKey))add(child);
+      else visit(child,childKey);
+    }
+  };
+  if(parsed)visit(parsed);
+  const pathPattern=/\b([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*\.(?:tsx?|jsx?|mjs|cjs|html?|css|json|ya?ml|toml|md|sql|vue|svelte))\b/g;
+  let match:RegExpExecArray|null;
+  while((match=pathPattern.exec(String(brief||'')))!==null)add(match[1]);
+  return targets;
+}
+
+function buildTargetsFromBrief(existingFiles:Record<string,string>, texts:string[], focusPaths:string[]=[]){
+  const targets:string[]=[];
+  const add=(path:string)=>{for(const item of extractArchitectureTargets(existingFiles,path,[]))if(!targets.includes(item))targets.push(item);};
+  for(const path of focusPaths){
+    const normalized=String(path||'').replace(/\\/g,'/').replace(/^\.\//,'').trim();
+    if(normalized&&!targets.includes(normalized))targets.push(normalized);
   }
-  return targets.slice(0,8);
+  for(const text of texts){
+    for(const item of extractArchitectureTargets(existingFiles,String(text||''),[]))if(!targets.includes(item))targets.push(item);
+  }
+  return targets;
+}
+
+function architectureScoutPrompt(x:Input,repair=false){
+  const context=(x.conversationHistory||[]).slice(-8).map(item=>`${item.sender.toUpperCase()}: ${item.content}`).join('\n');
+  return [
+    contractPrompt('SCOUT'),
+    repair
+      ? 'A arquitetura anterior ficou insuficiente. Refaça a análise e produza um contrato arquitetural completo antes de qualquer código.'
+      : 'Faça análise arquitetural real antes da implementação. Não apenas resuma o pedido.',
+    'Determine a complexidade do produto e calcule as páginas/rotas, módulos e arquivos pela necessidade real. Não há meta mínima ou máxima artificial: crie exatamente o necessário.',
+    'Sistemas, dashboards, painéis administrativos, SaaS, lojas e aplicações com múltiplas capacidades não podem ser reduzidos a um único index.html.',
+    'Cada capacidade pedida deve ser mapeada para rota/tela quando fizer sentido, módulo/domínio, estado/persistência e critério verificável.',
+    'Não proponha controles sem comportamento. Menus, botões, favoritos, carrinhos, filtros, cadastros e relatórios precisam ter fluxo/estado previsto.',
+    'O file_plan deve listar caminhos CONCRETOS de arquivos a criar/modificar. Se uma nova pasta ou módulo for necessário, inclua-o.',
+    'Retorne SOMENTE JSON válido neste formato:',
+    '{"type":"architecture_brief","objective":"...","complexity":"simple|medium|complex","architecture_summary":"...","routes":[{"path":"/...","purpose":"...","capabilities":["..."]}],"modules":[{"name":"...","responsibility":"..."}],"data_entities":["..."],"file_plan":{"create":["path.ext"],"modify":["path.ext"],"delete":[]},"requirements":[{"id":"REQ-001","description":"...","verification":["..."]}],"task_graph":[{"id":"TASK-001","title":"...","requirement_ids":["REQ-001"],"depends_on":[]}],"risks":["..."],"acceptance_criteria":["..."]}',
+    'Não gere código. Não responda ao usuário final.',
+    context?'CONTEXTO RECENTE DA CONVERSA:\n'+context:'',
+    'PEDIDO ATUAL:\n'+x.prompt,
+  ].filter(Boolean).join('\n\n');
 }
 
 function needsStudio(prompt: string, mode: AgentMode) {
-  return (mode === 'auto' || mode === 'build') && /interface|layout|design|visual|tela|css|responsiv|premium|ux|ui|dashboard|painel/i.test(prompt);
+  return (mode === 'auto' || mode === 'build') && /interface|layout|design|visual|tela|css|responsiv|premium|ux|ui|dashboard|painel|site|website|app|aplicativo|sistema|loja|e-?commerce|pagina|landing/i.test(prompt);
 }
 
 function needsShip(prompt: string, mode: AgentMode) {
@@ -432,6 +515,24 @@ export class AgentEngine {
         );
       }
       const contextual = withCompiledContext(x, agentKey, options);
+      if(options.requireModelWork){
+        const active=LLMAdapterService.getActiveProviderConfig(x.userId);
+        if(!active?.isConfigured){
+          throw Object.assign(new Error('Nenhum modelo real configurado para executar esta etapa crítica.'),{kind:'capacity',reason:'no_real_model'});
+        }
+        const result=await LLMAdapterService.executePrompt({
+          ...contextual,
+          providerKey:active.key,
+          modelId:active.modelId,
+          allowActiveFallback:false,
+          contextBrief:contextual.contextBrief,
+          contextPackId:contextual.contextPack?.id,
+        });
+        if(result.isDemonstrativeFallback||result.hasErrors||result.invalidResponse){
+          throw Object.assign(new Error(result.errorMessage||'O modelo real não concluiu a etapa crítica.'),{kind:'operational',reason:result.errorReason||'critical_agent_failed'});
+        }
+        return { ...result, agentKey, profileKey: profile };
+      }
       const fallback = await LLMAdapterService.executePrompt({ ...contextual, providerKey: undefined, allowActiveFallback: false });
       return { ...fallback, agentKey, profileKey: profile };
     }
@@ -595,20 +696,76 @@ export class AgentWorkflowEngine extends AgentEngine {
     const steps: string[] = [x.stepId];
 
     // Forced modes map to the agent that actually owns that job.
-    // This prevents PLAN/REVIEW/PUBLISH from being mislabeled as FORGE work.
+    // Planning is real model work: a complex product is not allowed to leave SCOUT
+    // with a generic paragraph and no file architecture.
     if (x.mode === 'plan' || x.mode === 'review' || x.mode === 'publish') {
       const owner = x.mode === 'plan' ? 'SCOUT' : x.mode === 'review' ? 'SENTINEL' : 'SHIP';
+      const complexPlan=x.mode==='plan'&&isComplexProductRequest(x);
       RunService.assignAgent(x.stepId, owner);
       try {
-        const result = await AgentEngine.execute(
-          { ...x, stepId: x.stepId },
-          { profile: 'BASE_FREE', forcedAgentKey: owner, allowExpertEscalation: true }
+        const planningPrompt=x.mode==='plan'
+          ? [
+              contractPrompt('SCOUT'),
+              'Produza um PLANO técnico executável no schema PLAN exigido pelo sistema.',
+              'Calcule páginas/rotas, módulos, estado, persistência e arquivos pela necessidade real do produto.',
+              'new_files_to_create precisa conter caminhos concretos suficientes para a arquitetura. Não reduza sistemas não triviais a index.html.',
+              'Cada funcionalidade importante deve aparecer em requisito verificável e em uma tarefa do task_graph.',
+              'Não gere código nesta etapa.',
+              '',
+              'PEDIDO DO USUÁRIO:',
+              x.prompt,
+            ].join('\n')
+          : x.prompt;
+        let result = await AgentEngine.execute(
+          { ...x, prompt:planningPrompt, stepId: x.stepId },
+          { profile: 'BASE_FREE', forcedAgentKey: owner, allowExpertEscalation: true, requireModelWork:x.mode==='plan' }
         );
+
+        if(complexPlan){
+          const initialTargets=[
+            ...(result.plan?.existing_files_to_modify||[]),
+            ...(result.plan?.new_files_to_create||[]),
+          ];
+          const weakPlan=initialTargets.length<4 || (initialTargets.length===1&&initialTargets[0]==='index.html');
+          if(weakPlan){
+            const repaired=await AgentEngine.execute(
+              {
+                ...x,
+                mode:'plan',
+                prompt:[
+                  contractPrompt('SCOUT'),
+                  'CORREÇÃO OBRIGATÓRIA DE ARQUITETURA: o plano anterior ficou subdimensionado.',
+                  'Refaça o plano no schema PLAN. Derive páginas/rotas, módulos e arquivos concretos de todas as capacidades pedidas.',
+                  'Não existe limite artificial de páginas ou arquivos. Use exatamente o necessário.',
+                  'Um sistema com múltiplas funções não pode ser entregue como um único index.html.',
+                  '',
+                  'PEDIDO ORIGINAL:',
+                  x.prompt,
+                  '',
+                  'PLANO INSUFICIENTE:',
+                  result.replyText,
+                ].join('\n\n'),
+                stepId:x.stepId,
+              },
+              { profile:'EXPERT_PAID',forcedAgentKey:'SCOUT',allowExpertEscalation:false,requireModelWork:true }
+            );
+            if(repaired.plan)result=repaired;
+          }
+          const finalTargets=[
+            ...(result.plan?.existing_files_to_modify||[]),
+            ...(result.plan?.new_files_to_create||[]),
+          ];
+          if(finalTargets.length<4 || (finalTargets.length===1&&finalTargets[0]==='index.html')){
+            throw Object.assign(new Error('O SCOUT não conseguiu produzir uma arquitetura suficientemente completa para este sistema.'),{kind:'incompatible',reason:'architecture_plan_incomplete'});
+          }
+        }
+
         RunService.finishStep(x.stepId, result.hasErrors ? 'failed' : 'completed', {
           decisionType: result.decisionType,
           providerUsed: result.providerUsed,
           modelUsed: result.modelUsed,
           profileKey: result.profileKey,
+          source:'model',
         });
         return {
           ...result,
@@ -626,10 +783,14 @@ export class AgentWorkflowEngine extends AgentEngine {
       }
     }
 
-    // SCOUT analyzes the request before FORGE. It prefers a real BASE_FREE call,
-    // but falls back to deterministic context if no free model is usable.
+    const complexRequest=isComplexProductRequest(x);
+    const underArchitected=isUnderArchitectedWorkspace(x.existingFiles);
+    const architectureCritical=complexRequest&&underArchitected;
+
+    // SCOUT must do real analysis for non-trivial products. Silent deterministic
+    // fallbacks are allowed only for small/local edits where architecture is already known.
     RunService.assignAgent(x.stepId, 'SCOUT');
-    const visibleFiles = relevantFiles(x.existingFiles, 12);
+    const visibleFiles = relevantFiles(x.existingFiles, 18);
     const deterministicScout = [
       'Objetivo: ' + x.prompt,
       'Arquivos visíveis: ' + (visibleFiles.map(item => item.file).join(', ') || 'nenhum'),
@@ -637,30 +798,81 @@ export class AgentWorkflowEngine extends AgentEngine {
     ].join('\n');
     let scoutBrief = deterministicScout;
     let scoutSource = 'deterministic_fallback';
+    let scoutError:any=null;
     try {
       const scoutResult = await AgentEngine.execute(
         {
           ...x,
           mode: 'review',
-          prompt: [
-            contractPrompt('SCOUT'),
-            'Analise o pedido e o workspace e produza um briefing estruturado para o próximo agente.',
-            'Inclua: objetivo real, arquivos/áreas provavelmente relevantes, dependências, riscos e critérios de aceite.',
-            'Não gere código. Não altere arquivos. Não responda ao usuário final.',
-            '',
-            'PEDIDO:',
-            x.prompt,
-          ].join('\n'),
+          prompt: complexRequest
+            ? architectureScoutPrompt(x,false)
+            : [
+                contractPrompt('SCOUT'),
+                'Analise o pedido e o workspace e produza um briefing estruturado para o próximo agente.',
+                'Inclua: objetivo real, arquivos/áreas provavelmente relevantes, dependências, riscos e critérios de aceite.',
+                'Não gere código. Não altere arquivos. Não responda ao usuário final.',
+                '',
+                'PEDIDO:',
+                x.prompt,
+              ].join('\n'),
           stepId: x.stepId,
         },
-        { profile: 'BASE_FREE', forcedAgentKey: 'SCOUT', allowExpertEscalation: false }
+        { profile: 'BASE_FREE', forcedAgentKey: 'SCOUT', allowExpertEscalation: true, requireModelWork:complexRequest }
       );
       if (!scoutResult.hasErrors && !scoutResult.isDemonstrativeFallback && scoutResult.replyText?.trim()) {
         scoutBrief = scoutResult.replyText.trim();
         scoutSource = 'model';
       }
-    } catch {}
-    recordContextCommitFromStep(x, 'SCOUT', 'TASK', 'SCOUT briefing concluído', { decisions: [scoutBrief], nextState: { next: needsStudio(x.prompt, x.mode) ? 'STUDIO' : 'FORGE' } });
+    } catch(error:any) {
+      scoutError=error;
+      if(complexRequest){
+        RunService.finishStep(x.stepId,x.signal?.aborted?'aborted':'failed',{error:String(error?.message||error),source:'model_required'});
+        throw error;
+      }
+    }
+
+    let architectureTargets=extractArchitectureTargets(x.existingFiles,scoutBrief,x.focusPaths||[]);
+    if(architectureCritical&&(architectureTargets.length<4||(architectureTargets.length===1&&architectureTargets[0]==='index.html'))){
+      try{
+        const repaired=await AgentEngine.execute(
+          {
+            ...x,
+            mode:'review',
+            prompt:[
+              architectureScoutPrompt(x,true),
+              '',
+              'ANÁLISE ANTERIOR INSUFICIENTE:',
+              scoutBrief,
+              '',
+              'Obrigatório: devolva file_plan com caminhos concretos suficientes para construir o sistema completo.',
+            ].join('\n\n'),
+            stepId:x.stepId,
+          },
+          {profile:'EXPERT_PAID',forcedAgentKey:'SCOUT',allowExpertEscalation:false,requireModelWork:true}
+        );
+        if(!repaired.hasErrors&&!repaired.isDemonstrativeFallback&&repaired.replyText?.trim()){
+          scoutBrief=repaired.replyText.trim();
+          scoutSource='model_repaired';
+          architectureTargets=extractArchitectureTargets(x.existingFiles,scoutBrief,x.focusPaths||[]);
+        }
+      }catch(error:any){
+        scoutError=error;
+      }
+    }
+
+    if(architectureCritical&&(architectureTargets.length<4||(architectureTargets.length===1&&architectureTargets[0]==='index.html'))){
+      const error=Object.assign(
+        new Error('O SCOUT não conseguiu definir páginas, módulos e arquivos suficientes para este sistema; a construção foi bloqueada para evitar outro site incompleto.'),
+        {kind:'incompatible',reason:'architecture_brief_incomplete',cause:scoutError}
+      );
+      RunService.finishStep(x.stepId,'failed',{error:error.message,source:scoutSource,architectureTargets});
+      throw error;
+    }
+
+    recordContextCommitFromStep(x, 'SCOUT', complexRequest?'PROJECT':'TASK', 'SCOUT briefing concluído', {
+      decisions: [scoutBrief],
+      nextState: { next: needsStudio([x.prompt,scoutBrief].join('\n'), x.mode) ? 'STUDIO' : 'FORGE', architectureTargets }
+    });
     RunService.finishStep(x.stepId, 'completed', {
       ...RunService.context('task', {
         objective: x.prompt,
@@ -669,21 +881,28 @@ export class AgentWorkflowEngine extends AgentEngine {
           'Preservar o projeto existente',
           'Produzir alteração revisável antes da aplicação',
           'Rodar ValidatorEngine após aplicação real',
+          ...(complexRequest?[
+            'Arquitetura cobre todas as capacidades pedidas',
+            'Rotas/telas e módulos têm responsabilidade real',
+            'Controles interativos possuem comportamento verificável',
+          ]:[]),
         ],
         snippets: visibleFiles,
         constraints: [
           'Não publicar sem solicitação explícita',
           'Não escrever no workspace oficial antes de sandbox, quality gates e revisão final',
-          'Manter contexto limitado aos arquivos relevantes',
+          'Não usar o número atual de arquivos como limite arquitetural',
+          ...(complexRequest?['Não comprimir sistema não trivial em um único index.html']:[]),
         ],
       }),
       brief: scoutBrief,
       source: scoutSource,
+      architectureTargets,
     });
     let order = RunService.nextOrderIndex(x.runId);
 
     let studioGuidance = '';
-    if (needsStudio(x.prompt, x.mode)) {
+    if (needsStudio([x.prompt,scoutBrief].join('\n'), x.mode)) {
       const deterministicStudio = [
         'Critérios do STUDIO para esta implementação:',
         '- preservar hierarquia visual clara e consistência entre seções',
@@ -719,8 +938,9 @@ export class AgentWorkflowEngine extends AgentEngine {
             mode: 'review',
             prompt: [
               contractPrompt('STUDIO'),
-              'Transforme o pedido visual e o briefing do SCOUT em critérios objetivos para o FORGE.',
-              'Foque em composição, hierarquia, responsividade, estados, consistência e regressões visuais prováveis.',
+              'Transforme o pedido e a arquitetura do SCOUT em um contrato de experiência objetivo para o FORGE.',
+              'Defina navegação, hierarquia, responsividade, estados, interações, empty/loading/error states e comportamento dos controles.',
+              'Para sistemas, confirme que cada rota/tela necessária tem propósito claro e que menus, botões, filtros, favoritos, carrinhos, cadastros e ações não ficam decorativos.',
               'Não gere código. Não altere arquivos. Não responda ao usuário final.',
               '',
               'PEDIDO:',
@@ -731,13 +951,18 @@ export class AgentWorkflowEngine extends AgentEngine {
             ].join('\n'),
             stepId: studio,
           },
-          { profile: 'BASE_FREE', forcedAgentKey: 'STUDIO', allowExpertEscalation: false }
+          { profile: 'BASE_FREE', forcedAgentKey: 'STUDIO', allowExpertEscalation: true, requireModelWork:complexRequest }
         );
         if (!studioResult.hasErrors && !studioResult.isDemonstrativeFallback && studioResult.replyText?.trim()) {
           studioGuidance = studioResult.replyText.trim();
           studioSource = 'model';
         }
-      } catch {}
+      } catch(error:any) {
+        if(complexRequest){
+          RunService.finishStep(studio,x.signal?.aborted?'aborted':'failed',{error:String(error?.message||error),source:'model_required'});
+          throw error;
+        }
+      }
       recordContextCommitFromStep({ ...x, stepId: studio }, 'STUDIO', 'LOCAL', 'Direção visual definida', { decisions: [studioGuidance], nextState: { next: 'FORGE' } });
       RunService.finishStep(studio, 'completed', {
         guidance: studioGuidance,
@@ -766,11 +991,14 @@ export class AgentWorkflowEngine extends AgentEngine {
       'BRIEF INTERNO DO SCOUT:\n' + scoutBrief,
       studioGuidance ? 'CRITÉRIOS INTERNOS DO STUDIO:\n' + studioGuidance : '',
     ].filter(Boolean).join('\n\n');
-    const inferredTargets=buildTargetsFromBrief(
-      x.existingFiles,
-      [x.prompt,scoutBrief,studioGuidance],
-      x.focusPaths || []
-    );
+    const inferredTargets=[...new Set([
+      ...architectureTargets,
+      ...buildTargetsFromBrief(
+        x.existingFiles,
+        [x.prompt,scoutBrief,studioGuidance],
+        x.focusPaths || []
+      )
+    ])];
     const reliableBuild = x.reliableBuild
       ? {
           ...x.reliableBuild,
@@ -785,6 +1013,12 @@ export class AgentWorkflowEngine extends AgentEngine {
             'Atender exatamente à alteração solicitada',
             'Preservar funcionalidades existentes fora do escopo',
             'Manter compatibilidade entre os arquivos alterados',
+            ...(complexRequest?[
+              'Todas as páginas/rotas necessárias são alcançáveis pela navegação',
+              'Controles interativos possuem comportamento real e estados coerentes',
+              'A arquitetura é modular o suficiente para as capacidades pedidas',
+              'Nenhuma capacidade central é representada apenas por placeholder visual',
+            ]:[]),
           ],
         };
 
@@ -792,9 +1026,22 @@ export class AgentWorkflowEngine extends AgentEngine {
     try {
       result = await AgentEngine.execute(
         { ...x, prompt: forgePrompt, reliableBuild, stepId: forge },
-        { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true }
+        { profile: 'BASE_FREE', forcedAgentKey: 'FORGE', allowExpertEscalation: true, requireModelWork:true }
       );
       const proposalFiles=result.proposal?.files || result.build?.files || [];
+      if(architectureCritical){
+        const produced=new Set(proposalFiles.map(file=>file.path.replace(/\\/g,'/')));
+        const required=[...new Set(architectureTargets.map(path=>path.replace(/\\/g,'/')))];
+        const missing=required.filter(path=>!produced.has(path));
+        const failedTargets=Array.isArray((result.diagnostics as any)?.failures)?(result.diagnostics as any).failures:[];
+        const onlySingleIndex=proposalFiles.length===1&&proposalFiles[0]?.path==='index.html';
+        if(missing.length||failedTargets.length||proposalFiles.length<4||onlySingleIndex){
+          throw Object.assign(
+            new Error(`O FORGE gerou uma implementação arquitetural incompleta. Faltando: ${missing.join(', ')||'estrutura mínima/arquivos completos'}.`),
+            {kind:'incompatible',reason:'incomplete_architecture_build',missingTargets:missing,failedTargets}
+          );
+        }
+      }
       if(!result.hasErrors && proposalFiles.length && WorkspaceManager.verifyProjectOwnership(x.projectId,x.userId)){
         if(!result.proposal){
           result.proposal={

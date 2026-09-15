@@ -9,6 +9,26 @@ import { SecretService } from '../server/services/secretService.js';
 
 initializeDatabase();
 
+function seedRealWorkflowModel(userId:string, suffix:string){
+  const now=new Date().toISOString();
+  db.prepare('INSERT OR IGNORE INTO users(id,email,name,created_at) VALUES(?,?,?,?)')
+    .run(userId,`${userId}@example.test`,userId,now);
+  db.prepare("INSERT INTO providers(id,user_id,provider_key,name,base_url,model_id,is_configured,is_active,connection_status,context_limit,created_at) VALUES(?,?,?,?,?,?,1,1,'connected',128000,?)")
+    .run(`prov-${suffix}`,userId,'omniroute','OmniRoute','https://example.test/v1','auto',now);
+  db.prepare('INSERT INTO model_profiles(id,user_id,profile_key,level,max_attempts,max_cost_usd,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(`profile-${suffix}`,userId,'BASE_FREE',0,1,0.01,1,now,now);
+  db.prepare('INSERT INTO model_candidates(id,profile_id,provider_key,model_id,priority,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+    .run(`candidate-${suffix}`,`profile-${suffix}`,'omniroute','auto',0,1,now,now);
+  SecretService.saveSecret(userId,'omniroute','secret-for-'+suffix);
+}
+function cleanupWorkflowModel(userId:string){
+  db.prepare('DELETE FROM model_candidates WHERE profile_id IN (SELECT id FROM model_profiles WHERE user_id=?)').run(userId);
+  db.prepare('DELETE FROM model_profiles WHERE user_id=?').run(userId);
+  db.prepare('DELETE FROM providers WHERE user_id=?').run(userId);
+  db.prepare('DELETE FROM user_secrets WHERE user_id=?').run(userId);
+}
+
+
 test('agent profile without configured candidates stays blocked instead of escaping to active provider', async (t) => {
   let networkCalled = false;
   t.mock.method(globalThis, 'fetch', async () => {
@@ -74,12 +94,23 @@ test('agent run persists selected agent, attempts and accumulated spend', () => 
 });
 
 
-test('agent workflow persists SCOUT, STUDIO, FORGE and validation handoff for visual work', async () => {
+test('agent workflow persists SCOUT, STUDIO, FORGE and validation handoff for visual work', async (t) => {
   const unique = Date.now().toString(36) + Math.random().toString(36).slice(2);
   const userId = `agent-flow-user-${unique}`;
   const projectId = `agent-flow-project-${unique}`;
   const conversationId = `agent-flow-conv-${unique}`;
   const {runId,stepId}=RunService.start(userId,projectId,conversationId,'auto',0.5);
+  seedRealWorkflowModel(userId,unique);
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>({
+    replyText:String(options.prompt).includes('STUDIO')?'Direção visual revisada':'Brief de projeto revisado',
+    mode:options.mode,decisionType:'review',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,
+    usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}
+  } as any));
+  t.mock.method(LLMAdapterService,'buildApprovedPlanReliably',async()=>({
+    replyText:'Nenhuma mudança adicional necessária neste teste de orquestração.',
+    mode:'build',decisionType:'explanation',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,
+    usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}
+  } as any));
   try {
     const result = await AgentWorkflowEngine.executeWorkflow({
       prompt:'melhore o layout visual premium desta tela',
@@ -96,6 +127,7 @@ test('agent workflow persists SCOUT, STUDIO, FORGE and validation handoff for vi
     db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
     db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
     db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    cleanupWorkflowModel(userId);
   }
 });
 
@@ -123,7 +155,7 @@ test('agent workflow skips STUDIO for backend-only work and only adds SHIP when 
 });
 
 
-test('manual plan and review modes are owned by SCOUT and SENTINEL instead of FORGE', async () => {
+test('manual plan and review modes are owned by SCOUT and SENTINEL instead of FORGE', async (t) => {
   for (const scenario of [
     {mode:'plan' as const, agent:'SCOUT'},
     {mode:'review' as const, agent:'SENTINEL'},
@@ -133,6 +165,25 @@ test('manual plan and review modes are owned by SCOUT and SENTINEL instead of FO
     const projectId=`agent-role-project-${unique}`;
     const conversationId=`agent-role-conv-${unique}`;
     const {runId,stepId}=RunService.start(userId,projectId,conversationId,scenario.mode,0.5);
+    seedRealWorkflowModel(userId,unique);
+    t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+      if(scenario.mode==='plan'){
+        return {
+          replyText:'Plano arquitetural estruturado',mode:'plan',decisionType:'plan',isDemonstrativeFallback:false,
+          providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,
+          plan:{
+            objective:'Painel administrativo',scope_in:'Dashboard e gestão',scope_out:'',
+            architecture_summary:'App modular com rotas, componentes e estado',
+            existing_files_to_modify:['index.html'],
+            new_files_to_create:['src/main.tsx','src/App.tsx','src/router.tsx','src/pages/Dashboard.tsx','src/styles.css'],
+            files_to_delete:[],files_affected:['index.html','src/main.tsx','src/App.tsx','src/router.tsx','src/pages/Dashboard.tsx','src/styles.css'],
+            integrations:[],risks:[],acceptance_criteria:['Navegação funcional'],requirements:[],task_graph:[]
+          },
+          usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}
+        } as any;
+      }
+      return {replyText:'Revisão concluída',mode:'review',decisionType:'review',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any;
+    });
     try {
       const result=await AgentWorkflowEngine.executeWorkflow({
         prompt:scenario.mode==='plan'?'planeje um painel':'revise este código',
@@ -152,6 +203,7 @@ test('manual plan and review modes are owned by SCOUT and SENTINEL instead of FO
       db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
       db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
       db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+      cleanupWorkflowModel(userId);
     }
   }
 });
