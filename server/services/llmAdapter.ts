@@ -170,7 +170,7 @@ export class LLMAdapterService {
     const recentSoftware=softwarePattern.test(recent)||existingFiles.some(path=>/\.(?:tsx?|jsx?|html?|css|vue|svelte)$/i.test(path));
 
     const ideation=/\b(me\s+ajude|ajude|detalhe|detalhar|explique|explicar|o\s+que|como\s+(?:voce|eu|isso)|qual|quais|pense|pensar|sugira|sugerir|avalie|avaliar|opine|opinar|brainstorm|ideia|conceito|estrategia|roteiro|copy|texto|mensagem)\b/;
-    const executionAction=/\b(criar|crie|faca|monte|montar|implemente|implementar|construa|construir|programe|programar|codifique|codificar|gere|gerar|adicione|adicionar|inclua|incluir|altere|alterar|mude|mudar|edite|editar|substitua|substituir|remova|remover|exclua|excluir|corrija|corrigir|refatore|refatorar|melhore|melhorar)\b/;
+    const executionAction=/\b(criar|crie|faca|monte|montar|implemente|implementar|construa|construir|programe|programar|codifique|codificar|gere|gerar|adicione|adicionar|inclua|incluir|altere|alterar|mude|mudar|edite|editar|substitua|substituir|remova|remover|exclua|excluir|corrija|corrigir|refatore|refatorar|melhore|melhorar|aplique|aplicar|aplicando|coloque|colocar|incorpore|incorporar|execute|executar)\b/;
     const referential=/\b(isso|isto|essa|esse|essas|esses|aquilo|aqui|projeto|pagina|landing|layout|tela|site|sistema)\b/;
     const desire=/\b(quero|preciso|gostaria|vamos|pode)\b/;
     const explanation=/\b(entender|explicar|explique|duvida|pergunta|como\s+funciona|o\s+que\s+e|me\s+ajude)\b/;
@@ -182,9 +182,18 @@ export class LLMAdapterService {
 
     // A decisão usa o pedido atual + o contexto recente. Assim "faça isso" após
     // discutir uma landing page executa, enquanto "me ajude a detalhar isso" conversa.
+    const directApplication=/\b(?:aplique|aplicar|coloque|incorpore|execute)\b[\s\S]{0,80}\b(?:site|pagina|landing|layout|tela|projeto|workspace|sistema)\b/.test(text);
+    const contextualCommitment=
+      recentSoftware &&
+      !explanation.test(text) &&
+      !ideation.test(text) &&
+      /^(?:sim\b|pode\b|manda\b|vai\b|vamos\b|faca\b|faz\b|aplique\b|coloque\b|execute\b|quero\b|perfeito\b|agora\b|tudo\s+isso\b|isso\b)/.test(text);
+
     const contextualExecution=
+      directApplication ||
       executionAction.test(text)&&(currentSoftware||recentSoftware||referential.test(text))||
-      desire.test(text)&&currentSoftware&&!explanation.test(text);
+      desire.test(text)&&currentSoftware&&!explanation.test(text)||
+      contextualCommitment;
 
     if(contextualExecution)return 'build';
 
