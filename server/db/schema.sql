@@ -97,10 +97,12 @@ CREATE TABLE IF NOT EXISTS attachments (
   project_id TEXT NOT NULL,
   name TEXT NOT NULL,
   file_type TEXT NOT NULL,
+  mime_type TEXT,
   size_bytes INTEGER NOT NULL,
   hash TEXT,
   storage_path TEXT,
   status TEXT DEFAULT 'processed',
+  analysis_text TEXT,
   created_at TEXT NOT NULL
 );
 

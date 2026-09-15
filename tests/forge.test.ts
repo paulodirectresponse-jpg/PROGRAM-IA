@@ -503,6 +503,13 @@ Criar API segura
         LLMAdapterService.resolveRequestedMode('Adicione um botão de login nesta tela', 'auto'),
         'build'
       );
+      assert.equal(
+        LLMAdapterService.resolveRequestedMode('Use essa imagem para deixar o site igual à referência', 'auto', {
+          conversationHistory:[{sender:'user',content:'Enviei uma referência visual.'}],
+          existingFiles:['index.html','styles.css'],
+        }),
+        'build'
+      );
     });
 
     test('4.10: Build aceita aliases comuns de modelos gratuitos', () => {

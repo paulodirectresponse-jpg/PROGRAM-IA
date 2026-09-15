@@ -26,6 +26,7 @@ import { ToolExecutionJournal } from './tooling/toolExecutionJournal.js';
 import { SandboxManager } from './tooling/sandboxManager.js';
 import { BrowserQualityService } from './browser/browserQualityService.js';
 import { SandboxProposalApplyService } from './tooling/sandboxProposalApplyService.js';
+import { AttachmentService, type IncomingAttachment } from './services/attachmentService.js';
 
 export const router = express.Router();
 const activeProjects = new Set<string>();
@@ -1226,8 +1227,14 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
   let conversationalOnly=false;
 
   try{
-    const {content,mode='auto',appliedSkills=[]}=req.body;
-    if(!content||!String(content).trim())return res.status(400).json({error:'Conteúdo da mensagem obrigatório.'});
+    const {content,mode='auto',appliedSkills=[],attachments=[],mentionedFiles=[]}=req.body||{};
+    const rawContent=String(content||'').trim();
+    const incomingAttachments=Array.isArray(attachments)?attachments as IncomingAttachment[]:[];
+    const requestedMentionedFiles=Array.isArray(mentionedFiles)?mentionedFiles.map((item:any)=>String(item||'').replace(/\\/g,'/').trim()).filter(Boolean):[];
+    if(!rawContent&&!incomingAttachments.length&&!requestedMentionedFiles.length){
+      return res.status(400).json({error:'Digite uma mensagem, anexe um arquivo ou mencione um arquivo do projeto.'});
+    }
+    const userContent=rawContent||'Analise os arquivos enviados e use-os como contexto para me ajudar com este projeto.';
 
     const selectedMode=mode as AgentMode;
     const now=new Date().toISOString();
@@ -1242,7 +1249,8 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
 
     const priorHistory=db.prepare('SELECT sender,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20').all(conv.id).reverse() as any[];
     const existingFiles=WorkspaceManager.getAllFilesContent(projectId);
-    const resolvedMode=LLMAdapterService.resolveRequestedMode(String(content),selectedMode,{
+    const projectFiles=WorkspaceManager.getFiles(projectId);
+    const resolvedMode=LLMAdapterService.resolveRequestedMode(userContent,selectedMode,{
       conversationHistory:priorHistory,
       existingFiles:Object.keys(existingFiles),
     });
@@ -1256,15 +1264,56 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     if(agentEngineEnabled&&!conversationalOnly)execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,.5);
 
     const userMsgId='msg-user-'+Date.now();
+    const inlineMentions=projectFiles
+      .map(file=>file.path)
+      .filter(filePath=>userContent.includes('@'+filePath));
+    const validMentionedFiles=[...new Set([...requestedMentionedFiles,...inlineMentions])].filter(filePath=>
+      Object.prototype.hasOwnProperty.call(existingFiles,filePath) ||
+      projectFiles.some(file=>file.path===filePath)
+    ).slice(0,12);
+
+    const processedAttachments=await AttachmentService.ingest({
+      userId:req.user!.id,
+      projectId,
+      messageId:userMsgId,
+      attachments:incomingAttachments,
+    });
+    const attachmentContext=AttachmentService.formatContext(processedAttachments);
+    const mentionedFileContext=validMentionedFiles.length
+      ? (()=>{
+          const chunks=['ARQUIVOS DO WORKSPACE MENCIONADOS EXPLICITAMENTE PELO USUÁRIO — priorize estes arquivos:'];
+          let used=chunks[0].length;
+          for(const filePath of validMentionedFiles){
+            const text=existingFiles[filePath];
+            const info=projectFiles.find(file=>file.path===filePath);
+            const body=typeof text==='string'?text:`[arquivo binário do workspace, ${info?.size||0} bytes]`;
+            const head=`### ${filePath}\n`;
+            const remaining=Math.max(0,120000-used-head.length);
+            if(!remaining)break;
+            const chunk=head+body.slice(0,Math.min(50000,remaining));
+            chunks.push(chunk);
+            used+=chunk.length;
+          }
+          return chunks.join('\n\n');
+        })()
+      : '';
+    const requestContext=[attachmentContext,mentionedFileContext].filter(Boolean).join('\n\n');
+    const effectivePrompt=[userContent,requestContext].filter(Boolean).join('\n\n');
+
+    const userMetadata={
+      mode:selectedMode,resolvedMode,appliedSkills,
+      mentionedFiles:validMentionedFiles,
+      attachments:processedAttachments.map(item=>({id:item.id,name:item.name,mimeType:item.mimeType,size:item.size,kind:item.kind})),
+    };
     db.prepare(`
       INSERT INTO messages (id,conversation_id,sender,content,metadata_json,created_at)
       VALUES (?,?,'user',?,?,?)
-    `).run(userMsgId,conv.id,String(content),JSON.stringify({mode:selectedMode,resolvedMode,appliedSkills}),now);
+    `).run(userMsgId,conv.id,userContent,JSON.stringify(userMetadata),now);
 
-    const history=[...priorHistory,{sender:'user',content:String(content)}];
+    const history=[...priorHistory,{sender:'user',content:userContent}];
     const project=db.prepare('SELECT * FROM projects WHERE id=?').get(projectId) as any;
 
-    const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oó]rio|remoto)\b|\b(github|reposit[oó]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(String(content));
+    const requestsGitHubPublish=/\b(public(?:ar|a|e)|enviar|sincronizar|push)\b[\s\S]{0,80}\b(github|reposit[oó]rio|remoto)\b|\b(github|reposit[oó]rio|remoto)\b[\s\S]{0,80}\b(public(?:ar|a|e)|enviar|sincronizar|push)\b/i.test(userContent);
     if(requestsGitHubPublish){
       if(execution)RunService.assignAgent(execution.stepId,'SHIP');
       const repoContext=projectRepositoryContext(projectId,project);
@@ -1285,7 +1334,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       }
       const pushed=await GitHubService.pushFilesToRepo({
         userId:req.user!.id,owner:parsed.owner,repo:parsed.repo,branch:repoContext.branch,
-        commitMessage:`Forge Agent: ${String(content).trim().slice(0,72)}`,files:existingFiles,binaryFiles,
+        commitMessage:`Forge Agent: ${userContent.slice(0,72)}`,files:existingFiles,binaryFiles,
       });
       if(!pushed.success){
         if(execution)RunService.finish(execution.runId,execution.stepId,'failed');
@@ -1322,7 +1371,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       acceptedEarly=true;
       res.status(202).json({
         success:true,accepted:true,runId:execution?.runId,
-        userMessage:{id:userMsgId,conversation_id:conv.id,sender:'user',content:String(content),created_at:now},
+        userMessage:{id:userMsgId,conversation_id:conv.id,sender:'user',content:userContent,metadata:userMetadata,created_at:now},
       });
     }
 
@@ -1337,9 +1386,10 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
           'Se o usuário quiser construir algo depois, ele fará um novo pedido explícito.',
           '',
           'PEDIDO DO USUÁRIO:',
-          String(content),
-        ].join('\n')
-      : String(content);
+          userContent,
+          requestContext?'CONTEXTO DE ARQUIVOS E ANEXOS:\n'+requestContext:'',
+        ].filter(Boolean).join('\n')
+      : effectivePrompt;
 
     let result=conversationalOnly
       ? await LLMAdapterService.executePrompt({
@@ -1348,12 +1398,13 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
         })
       : !agentEngineEnabled
         ? await LLMAdapterService.executePrompt({
-            prompt:String(content),mode:resolvedMode,projectId,providerKey,modelId,existingFiles,appliedSkills,
+            prompt:effectivePrompt,mode:resolvedMode,projectId,providerKey,modelId,existingFiles,appliedSkills,
             conversationHistory:history,userId:req.user!.id,signal:controller.signal,
           })
         : await AgentWorkflowEngine.executeWorkflow({
-            prompt:String(content),mode:resolvedMode,projectId,existingFiles,appliedSkills,conversationHistory:history,
+            prompt:effectivePrompt,mode:resolvedMode,projectId,existingFiles,appliedSkills,conversationHistory:history,
             userId:req.user!.id,runId:execution!.runId,stepId:execution!.stepId,signal:controller.signal,
+            focusPaths:validMentionedFiles,
           });
     controller.signal.throwIfAborted();
 
@@ -1404,7 +1455,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       );
     if(recoverableBuildFailure){
       result=await LLMAdapterService.buildApprovedPlanReliably({
-        projectId,providerKey,modelId,userId:req.user!.id,existingFiles,requestedFiles:[],objective:String(content),
+        projectId,providerKey,modelId,userId:req.user!.id,existingFiles,requestedFiles:validMentionedFiles,objective:effectivePrompt,
         acceptanceCriteria:['Atender integralmente ao pedido do usuário','Preservar compatibilidade com o projeto existente'],
         signal:controller.signal,
       });
@@ -1425,7 +1476,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     if(result.build?.files?.length&&!result.proposal&&!result.isDemonstrativeFallback&&!result.hasErrors){
       result.proposal={
         id:`proposal-${crypto.randomUUID()}`,
-        summary:result.build.summary||String(content).slice(0,100),
+        summary:result.build.summary||userContent.slice(0,100),
         requiresConfirmation:false,
         files:result.build.files,
         status:'pending',
@@ -1482,7 +1533,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     if(result.proposal?.files?.length&&resolvedMode==='build'){
       applyResult=await SandboxProposalApplyService.apply({
         userId:req.user!.id,projectId,proposal:result.proposal,runId:execution?.runId||null,planId:savedPlanId,
-        summary:result.proposal.summary||String(content).slice(0,100),originalRequest:String(content),
+        summary:result.proposal.summary||userContent.slice(0,100),originalRequest:userContent,
         shipRequested:Boolean((result as any).workflow?.shipRequested),signal:controller.signal,
       });
       if(!applyResult.success){
@@ -1513,7 +1564,9 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
       validation,browserQuality,browserRepair,sentinelReview,buildDiagnostics:result.diagnostics,
       technicalReply:result.replyText,
       autoApplied:Boolean(applyResult),
-      originalRequest:String(content),
+      originalRequest:userContent,
+      mentionedFiles:validMentionedFiles,
+      attachments:userMetadata.attachments,
     };
 
     db.prepare(`

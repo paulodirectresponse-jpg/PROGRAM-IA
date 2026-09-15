@@ -621,6 +621,52 @@ test('automatic mode answers conversational requests without creating code or ag
   }
 });
 
+test('chat accepts text attachment and workspace file mention as model context',async(t)=>{
+  const previousFlag=process.env.AGENT_ENGINE_ENABLED;
+  process.env.AGENT_ENGINE_ENABLED='true';
+  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    assert.equal(options.mode,'auto');
+    assert.match(String(options.prompt),/brief do cliente/i);
+    assert.match(String(options.prompt),/ARQUIVOS DO WORKSPACE MENCIONADOS/i);
+    assert.match(String(options.prompt),/src\/notes\.md/);
+    return {replyText:'Entendi os arquivos enviados e consigo usá-los como contexto.',mode:'auto',decisionType:'explanation',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any;
+  });
+  const projectId=createLifecycleProject('chat-attachments');
+  WorkspaceManager.writeFile(projectId,'index.html','<html><body>Base</body></html>');
+  WorkspaceManager.writeFile(projectId,'src/notes.md','Notas internas do projeto');
+  try{
+    const payload={
+      content:'Analise estes materiais antes de sugerir a próxima alteração.',
+      mode:'auto',
+      mentionedFiles:['src/notes.md'],
+      attachments:[{
+        name:'brief.txt',
+        mimeType:'text/plain',
+        size:18,
+        dataBase64:Buffer.from('Brief do cliente: usar CTA forte.').toString('base64')
+      }]
+    };
+    const r=await fetch(`${base}/conversations/${projectId}/messages`,{method:'POST',headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    assert.equal(r.status,200);
+    const body=await r.json();
+    assert.match(body.agentMessage.content,/Entendi os arquivos enviados/i);
+    const conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+    const userMessage=db.prepare("SELECT metadata_json FROM messages WHERE conversation_id=? AND sender='user' ORDER BY created_at DESC LIMIT 1").get(conversation.id) as any;
+    const metadata=JSON.parse(userMessage.metadata_json);
+    assert.equal(metadata.attachments[0].name,'brief.txt');
+    assert.deepEqual(metadata.mentionedFiles,['src/notes.md']);
+    const stored=db.prepare('SELECT name,analysis_text FROM attachments WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+    assert.equal(stored.name,'brief.txt');
+    assert.match(stored.analysis_text,/CTA forte/);
+  }finally{
+    if(previousFlag===undefined)delete process.env.AGENT_ENGINE_ENABLED;else process.env.AGENT_ENGINE_ENABLED=previousFlag;
+    WorkspaceManager.deleteProject(projectId);
+    db.prepare('DELETE FROM attachments WHERE project_id=?').run(projectId);
+    db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
+  }
+});
+
 test('agent automatic lifecycle returns 202 then completes review and apply without user approval',async(t)=>{
   process.env.AGENT_ENGINE_ENABLED='true';configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
   t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
