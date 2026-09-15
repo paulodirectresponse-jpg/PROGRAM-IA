@@ -85,7 +85,7 @@ export function initializeDatabase() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS model_profiles (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,profile_key TEXT NOT NULL,level INTEGER NOT NULL,max_attempts INTEGER NOT NULL DEFAULT 1,max_cost_usd REAL NOT NULL DEFAULT 0,enabled INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(user_id,profile_key));
     CREATE TABLE IF NOT EXISTS model_candidates (id TEXT PRIMARY KEY,profile_id TEXT NOT NULL,provider_key TEXT NOT NULL,model_id TEXT NOT NULL,priority INTEGER NOT NULL DEFAULT 0,enabled INTEGER NOT NULL DEFAULT 1,health_state TEXT NOT NULL DEFAULT 'healthy',consecutive_failures INTEGER NOT NULL DEFAULT 0,circuit_open_until TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(profile_id,provider_key,model_id));
-    CREATE TABLE IF NOT EXISTS model_invocations (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,project_id TEXT,run_id TEXT,step_id TEXT,agent_key TEXT,profile_key TEXT,provider_key TEXT NOT NULL,model_id TEXT NOT NULL,input_tokens INTEGER DEFAULT 0,output_tokens INTEGER DEFAULT 0,cost_usd REAL DEFAULT 0,latency_ms INTEGER NOT NULL,status TEXT NOT NULL,error_code TEXT,retry_index INTEGER DEFAULT 0,context_pack_id TEXT,context_scope TEXT,project_hash TEXT,context_tokens INTEGER DEFAULT 0,context_selected_files_json TEXT NOT NULL DEFAULT '[]',context_omitted_files_count INTEGER DEFAULT 0,created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS model_invocations (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,project_id TEXT,run_id TEXT,step_id TEXT,agent_key TEXT,profile_key TEXT,provider_key TEXT NOT NULL,model_id TEXT NOT NULL,input_tokens INTEGER DEFAULT 0,output_tokens INTEGER DEFAULT 0,cost_usd REAL,cost_status TEXT NOT NULL DEFAULT 'legacy',budget_cost_usd REAL NOT NULL DEFAULT 0,latency_ms INTEGER NOT NULL,status TEXT NOT NULL,error_code TEXT,retry_index INTEGER DEFAULT 0,context_pack_id TEXT,context_scope TEXT,project_hash TEXT,context_tokens INTEGER DEFAULT 0,context_selected_files_json TEXT NOT NULL DEFAULT '[]',context_omitted_files_count INTEGER DEFAULT 0,created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS model_invocations_user_created ON model_invocations(user_id,created_at);
     CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,project_id TEXT NOT NULL,conversation_id TEXT NOT NULL,mode TEXT NOT NULL,status TEXT NOT NULL,budget_usd REAL NOT NULL DEFAULT .5,spent_usd REAL NOT NULL DEFAULT 0,created_at TEXT NOT NULL,finished_at TEXT);
     CREATE TABLE IF NOT EXISTS agent_steps (id TEXT PRIMARY KEY,run_id TEXT NOT NULL,agent_key TEXT NOT NULL,title TEXT NOT NULL,status TEXT NOT NULL,order_index INTEGER NOT NULL,scope_level TEXT NOT NULL DEFAULT 'task',attempt_count INTEGER NOT NULL DEFAULT 0,parent_step_id TEXT,acceptance_json TEXT NOT NULL DEFAULT '[]',context_json TEXT,created_at TEXT NOT NULL,finished_at TEXT);
@@ -111,6 +111,30 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS requirements_project_status ON requirements(project_id,status);
     CREATE INDEX IF NOT EXISTS requirements_run ON requirements(run_id);
   `);
+
+  ensureColumn('model_invocations', 'cost_status', "TEXT NOT NULL DEFAULT 'legacy'");
+  ensureColumn('model_invocations', 'budget_cost_usd', 'REAL NOT NULL DEFAULT 0');
+  db.prepare("UPDATE model_invocations SET cost_status=CASE WHEN cost_status IS NULL OR cost_status='' OR cost_status='legacy' THEN CASE WHEN COALESCE(cost_usd,0)>0 THEN 'reported' ELSE 'unknown' END ELSE cost_status END").run();
+  db.prepare(`UPDATE model_invocations
+    SET budget_cost_usd=CASE
+      WHEN budget_cost_usd IS NOT NULL AND budget_cost_usd>0 THEN budget_cost_usd
+      WHEN cost_status IN ('reported','known_zero') THEN COALESCE(cost_usd,0)
+      ELSE COALESCE((
+        SELECT max_cost_usd FROM model_profiles p
+        WHERE p.user_id=model_invocations.user_id AND p.profile_key=model_invocations.profile_key
+        LIMIT 1
+      ),COALESCE(cost_usd,0))
+    END`).run();
+  db.prepare('UPDATE agent_runs SET spent_usd=COALESCE((SELECT SUM(mi.budget_cost_usd) FROM model_invocations mi WHERE mi.run_id=agent_runs.id),0)').run();
+
+  const migration8Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 8').get() as { version: number } | undefined;
+  if (!migration8Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      8,
+      '008_cost_telemetry_truthfulness',
+      new Date().toISOString()
+    );
+  }
 
   ensureColumn('model_invocations', 'context_pack_id', 'TEXT');
   ensureColumn('model_invocations', 'context_scope', 'TEXT');

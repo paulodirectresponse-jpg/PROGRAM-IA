@@ -323,14 +323,29 @@ router.get('/model-profiles',requireAuth,(req,res)=>res.json({profiles:ModelRout
 router.put('/model-profiles/:profileKey/candidates',requireAuth,(req,res)=>{try{res.json({profiles:ModelRouter.saveCandidate(req.user!.id,req.params.profileKey as ProfileKey,req.body)});}catch(e:any){res.status(400).json({error:e.message});}});
 router.patch('/model-candidates/:id',requireAuth,(req,res)=>{try{res.json({profiles:ModelRouter.updateCandidate(req.user!.id,req.params.id,req.body)});}catch(e:any){res.status(400).json({error:e.message});}});
 router.delete('/model-candidates/:id',requireAuth,(req,res)=>{try{res.json({profiles:ModelRouter.deleteCandidate(req.user!.id,req.params.id)});}catch(e:any){res.status(400).json({error:e.message});}});
-router.get('/telemetry/summary',requireAuth,(req,res)=>{const since=String(req.query.since||new Date(Date.now()-2592000000).toISOString());const rows=db.prepare(`SELECT profile_key,provider_key,model_id,COUNT(*) calls,COALESCE(SUM(cost_usd),0) cost_usd,ROUND(AVG(latency_ms)) avg_latency_ms,SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) successes FROM model_invocations WHERE user_id=? AND created_at>=? GROUP BY profile_key,provider_key,model_id`).all(req.user!.id,since);res.json({since,rows});});
+router.get('/telemetry/summary',requireAuth,(req,res)=>{
+  const since=String(req.query.since||new Date(Date.now()-2592000000).toISOString());
+  const rows=db.prepare(`SELECT profile_key,provider_key,model_id,COUNT(*) calls,
+    COALESCE(SUM(cost_usd),0) cost_usd,
+    COALESCE(SUM(budget_cost_usd),0) budget_cost_usd,
+    SUM(CASE WHEN cost_status IN ('unknown','partial') THEN 1 ELSE 0 END) unknown_cost_calls,
+    ROUND(AVG(latency_ms)) avg_latency_ms,
+    SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) successes
+    FROM model_invocations WHERE user_id=? AND created_at>=?
+    GROUP BY profile_key,provider_key,model_id`).all(req.user!.id,since);
+  res.json({since,rows});
+});
 router.get('/agents',requireAuth,(req,res)=>{
-  const invocationMetrics=db.prepare(`SELECT agent_key,COUNT(*) calls,COALESCE(SUM(cost_usd),0) cost_usd,SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) successes
+  const invocationMetrics=db.prepare(`SELECT agent_key,COUNT(*) calls,
+    COALESCE(SUM(cost_usd),0) cost_usd,
+    COALESCE(SUM(budget_cost_usd),0) budget_cost_usd,
+    SUM(CASE WHEN cost_status IN ('unknown','partial') THEN 1 ELSE 0 END) unknown_cost_calls,
+    SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) successes
     FROM model_invocations WHERE user_id=? GROUP BY agent_key`).all(req.user!.id) as any[];
   const executionMetrics=db.prepare(`SELECT s.agent_key,COUNT(*) executions,SUM(CASE WHEN s.status='completed' THEN 1 ELSE 0 END) completed
     FROM agent_steps s JOIN agent_runs r ON r.id=s.run_id WHERE r.user_id=? GROUP BY s.agent_key`).all(req.user!.id) as any[];
   res.json({agents:Object.entries(AGENTS).map(([key,value])=>{
-    const inv=invocationMetrics.find(m=>m.agent_key===key)||{calls:0,cost_usd:0,successes:0};
+    const inv=invocationMetrics.find(m=>m.agent_key===key)||{calls:0,cost_usd:0,budget_cost_usd:0,unknown_cost_calls:0,successes:0};
     const exec=executionMetrics.find(m=>m.agent_key===key)||{executions:0,completed:0};
     return {key,label:value.role,profile:value.defaultProfile,tools:value.tools,metrics:{...inv,...exec}};
   })});
@@ -349,7 +364,20 @@ router.get('/agent-runs',requireAuth,(req,res)=>{
     }
   }
 
-  res.json({runs:runs.map(run=>({...run,trace:RunService.trace(run.id)}))});
+  const runIds=runs.map(run=>run.id);
+  const costRows=runIds.length
+    ? db.prepare(`SELECT run_id,
+        COALESCE(SUM(cost_usd),0) known_cost_usd,
+        COALESCE(SUM(budget_cost_usd),0) budget_accounted_usd,
+        SUM(CASE WHEN cost_status IN ('unknown','partial') THEN 1 ELSE 0 END) unknown_cost_calls
+      FROM model_invocations
+      WHERE user_id=? AND run_id IN (${runIds.map(()=>'?').join(',')})
+      GROUP BY run_id`).all(req.user!.id,...runIds) as any[]
+    : [];
+  res.json({runs:runs.map(run=>{
+    const cost=costRows.find(row=>row.run_id===run.id)||{known_cost_usd:0,budget_accounted_usd:Number(run.spent_usd||0),unknown_cost_calls:0};
+    return {...run,...cost,trace:RunService.trace(run.id)};
+  })});
 });
 
 router.get('/secrets', requireAuth, (req: Request, res: Response) => {

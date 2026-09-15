@@ -833,6 +833,7 @@ export class AgentEngine {
         estimatedTokens:contextBase.contextPack?.estimatedTokens,selectedFiles:contextBase.contextPack?.selectedFiles.length||0,
         omittedFiles:contextBase.contextPack?.omittedFiles.length||0
       });
+      let providerCallStarted=false;
       try {
         ModelRouter.assertBudget(x.userId, Number(candidate.max_cost_usd || 0), { runId: x.runId });
         const attemptInput = retryStrategy==='reduce_context' || retryStrategy==='fragment_task'
@@ -851,6 +852,7 @@ export class AgentEngine {
           profile,agentKey,attempt:i,retryStrategy,providerKey:candidate.provider_key,modelId:candidate.model_id
         });
         let primaryInvocationRecorded=false;
+        providerCallStarted=true;
         let result = attemptInput.reliableBuild && attemptInput.mode === 'build'
           ? await LLMAdapterService.buildApprovedPlanReliably({
               projectId: attemptInput.projectId,
@@ -909,7 +911,8 @@ export class AgentEngine {
               userId:x.userId,projectId:x.projectId,runId:x.runId,stepId:x.stepId,agentKey,
               profileKey:profile,providerKey:candidate.provider_key,modelId:candidate.model_id,
               inputTokens:result.usage?.inputTokens,outputTokens:result.usage?.outputTokens,
-              costUsd:result.usage?.billedCostUsd,latencyMs:initialLatency,status:'success',
+              costUsd:result.usage?.billedCostUsd,costStatus:result.usage?.costStatus,
+              budgetCostUsd:Number(candidate.max_cost_usd||0),latencyMs:initialLatency,status:'success',
               errorCode:'structured_output_invalid',retryIndex:i,
               contextPackId:attemptInput.contextPack?.id,contextScope:attemptInput.contextPack?.scope,
               projectHash:attemptInput.contextPack?.projectHash,contextTokens:attemptInput.contextPack?.estimatedTokens,
@@ -961,6 +964,7 @@ export class AgentEngine {
               ModelRouter.recordInvocation({
                 userId:x.userId,projectId:x.projectId,runId:x.runId,stepId:x.stepId,agentKey,
                 profileKey:profile,providerKey:candidate.provider_key,modelId:candidate.model_id,
+                costStatus:'unknown',budgetCostUsd:Number(candidate.max_cost_usd||0),
                 latencyMs:Date.now()-repairStarted,status:'failed',errorCode:'structured_repair_transport',
                 retryIndex:i+1,
               });
@@ -977,7 +981,8 @@ export class AgentEngine {
               userId:x.userId,projectId:x.projectId,runId:x.runId,stepId:x.stepId,agentKey,
               profileKey:profile,providerKey:candidate.provider_key,modelId:candidate.model_id,
               inputTokens:repaired.usage?.inputTokens,outputTokens:repaired.usage?.outputTokens,
-              costUsd:repaired.usage?.billedCostUsd,latencyMs:Date.now()-repairStarted,
+              costUsd:repaired.usage?.billedCostUsd,costStatus:repaired.usage?.costStatus,
+              budgetCostUsd:Number(candidate.max_cost_usd||0),latencyMs:Date.now()-repairStarted,
               status:repairOk?'success':'failed',
               errorCode:repairOk?undefined:'structured_repair_failed',retryIndex:i+1,
             });
@@ -993,11 +998,21 @@ export class AgentEngine {
               );
             }
 
+            const firstCostKnown=result.usage?.billedCostUsd!==undefined;
+            const repairedCostKnown=repaired.usage?.billedCostUsd!==undefined;
+            const combinedKnownCost=Number(result.usage?.billedCostUsd||0)+Number(repaired.usage?.billedCostUsd||0);
+            const combinedHasUnknown=
+              !firstCostKnown||!repairedCostKnown||
+              ['unknown','partial'].includes(String(result.usage?.costStatus||''))||
+              ['unknown','partial'].includes(String(repaired.usage?.costStatus||''));
             const combinedUsage={
               inputTokens:Number(result.usage?.inputTokens||0)+Number(repaired.usage?.inputTokens||0),
               outputTokens:Number(result.usage?.outputTokens||0)+Number(repaired.usage?.outputTokens||0),
-              billedCostUsd:Number(result.usage?.billedCostUsd||0)+Number(repaired.usage?.billedCostUsd||0),
-            };
+              ...((firstCostKnown||repairedCostKnown)?{billedCostUsd:combinedKnownCost}:{}),
+              costStatus:combinedHasUnknown
+                ?((firstCostKnown||repairedCostKnown)?'partial':'unknown')
+                :(combinedKnownCost===0?'known_zero':'reported'),
+            } as LLMExecutionResult['usage'];
             result={
               ...repaired,
               plan:parsedRepair.plan,
@@ -1046,6 +1061,8 @@ export class AgentEngine {
           inputTokens: result.usage?.inputTokens,
           outputTokens: result.usage?.outputTokens,
           costUsd: result.usage?.billedCostUsd,
+          costStatus: result.usage?.costStatus,
+          budgetCostUsd: Number(candidate.max_cost_usd||0),
           latencyMs: Date.now() - started,
           status: 'success',
           retryIndex: i,
@@ -1079,7 +1096,7 @@ export class AgentEngine {
         const structuredRepairFailure=Boolean(e?.structuredRepairAttempted);
         if(terminalProviderOutage)ModelRouter.openCandidateCircuit(candidate.id,30,'provider_outage');
         else if(!structuredRepairFailure)ModelRouter.recordCandidateResult(candidate.id, false, kind);
-        if(!e?.invocationAlreadyRecorded)ModelRouter.recordInvocation({
+        if(providerCallStarted&&!e?.invocationAlreadyRecorded)ModelRouter.recordInvocation({
           userId: x.userId,
           projectId: x.projectId,
           runId: x.runId,
@@ -1088,6 +1105,8 @@ export class AgentEngine {
           profileKey: profile,
           providerKey: candidate.provider_key,
           modelId: candidate.model_id,
+          costStatus:'unknown',
+          budgetCostUsd:Number(candidate.max_cost_usd||0),
           latencyMs: Date.now() - started,
           status: x.signal?.aborted ? 'aborted' : 'failed',
           errorCode: x.signal?.aborted ? 'aborted' : kind,

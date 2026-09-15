@@ -35,8 +35,50 @@ export class ModelRouter {
     const until=n>=2?new Date(Date.now()+300000).toISOString():null;
     db.prepare('UPDATE model_candidates SET consecutive_failures=?,health_state=?,circuit_open_until=?,updated_at=? WHERE id=?').run(n,until?'open':'degraded',until,now,id);
   }
-  static spent(userId:string,since:string,runId?:string){const r=(runId?db.prepare('SELECT COALESCE(SUM(cost_usd),0) total FROM model_invocations WHERE user_id=? AND run_id=?').get(userId,runId):db.prepare('SELECT COALESCE(SUM(cost_usd),0) total FROM model_invocations WHERE user_id=? AND created_at>=?').get(userId,since)) as any;return Number(r?.total||0);}
-  static assertBudget(userId:string,max:number,o:{runId?:string;runLimit?:number;dailyLimit?:number}={}){const d=new Date();d.setHours(0,0,0,0);if(this.spent(userId,d.toISOString())+max>(o.dailyLimit??3))throw Error('Limite diário de IA atingido.');if(o.runId){const run=db.prepare('SELECT budget_usd,spent_usd FROM agent_runs WHERE id=? AND user_id=?').get(o.runId,userId) as any;const limit=Number(o.runLimit??run?.budget_usd??.5);const spent=Number(run?.spent_usd??this.spent(userId,'',o.runId));if(spent+max>limit)throw Error('Orçamento desta execução seria excedido.');}}
-  static recordInvocation(x:{userId:string;projectId?:string;runId?:string;stepId?:string;agentKey?:string;profileKey?:string;providerKey:string;modelId:string;inputTokens?:number;outputTokens?:number;costUsd?:number;latencyMs:number;status:string;errorCode?:string;retryIndex?:number;contextPackId?:string;contextScope?:string;projectHash?:string;contextTokens?:number;contextSelectedFiles?:string[];contextOmittedFilesCount?:number}){db.prepare(`INSERT INTO model_invocations(id,user_id,project_id,run_id,step_id,agent_key,profile_key,provider_key,model_id,input_tokens,output_tokens,cost_usd,latency_ms,status,error_code,retry_index,context_pack_id,context_scope,project_hash,context_tokens,context_selected_files_json,context_omitted_files_count,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(`inv-${crypto.randomUUID()}`,x.userId,x.projectId||null,x.runId||null,x.stepId||null,x.agentKey||null,x.profileKey||null,x.providerKey,x.modelId,x.inputTokens||0,x.outputTokens||0,x.costUsd||0,x.latencyMs,x.status,x.errorCode||null,x.retryIndex||0,x.contextPackId||null,x.contextScope||null,x.projectHash||null,x.contextTokens||0,JSON.stringify(x.contextSelectedFiles||[]),x.contextOmittedFilesCount||0,new Date().toISOString());if(x.runId){db.prepare('UPDATE agent_runs SET spent_usd=(SELECT COALESCE(SUM(cost_usd),0) FROM model_invocations WHERE user_id=? AND run_id=?) WHERE id=? AND user_id=?').run(x.userId,x.runId,x.runId,x.userId);}}
+  static spent(userId:string,since:string,runId?:string){
+    const r=(runId
+      ?db.prepare('SELECT COALESCE(SUM(budget_cost_usd),0) total FROM model_invocations WHERE user_id=? AND run_id=?').get(userId,runId)
+      :db.prepare('SELECT COALESCE(SUM(budget_cost_usd),0) total FROM model_invocations WHERE user_id=? AND created_at>=?').get(userId,since)) as any;
+    return Number(r?.total||0);
+  }
+  static assertBudget(userId:string,max:number,o:{runId?:string;runLimit?:number;dailyLimit?:number}={}){
+    const d=new Date();d.setHours(0,0,0,0);
+    if(this.spent(userId,d.toISOString())+max>(o.dailyLimit??3))throw Error('Limite diário de IA atingido.');
+    if(o.runId){
+      const run=db.prepare('SELECT budget_usd,spent_usd FROM agent_runs WHERE id=? AND user_id=?').get(o.runId,userId) as any;
+      const limit=Number(o.runLimit??run?.budget_usd??.5);
+      const spent=Number(run?.spent_usd??this.spent(userId,'',o.runId));
+      if(spent+max>limit)throw Error('Orçamento desta execução seria excedido.');
+    }
+  }
+  static recordInvocation(x:{
+    userId:string;projectId?:string;runId?:string;stepId?:string;agentKey?:string;profileKey?:string;
+    providerKey:string;modelId:string;inputTokens?:number;outputTokens?:number;costUsd?:number;
+    costStatus?:'reported'|'known_zero'|'unknown'|'partial';budgetCostUsd?:number;
+    latencyMs:number;status:string;errorCode?:string;retryIndex?:number;contextPackId?:string;
+    contextScope?:string;projectHash?:string;contextTokens?:number;contextSelectedFiles?:string[];
+    contextOmittedFilesCount?:number;
+  }){
+    const knownCost=x.costUsd===undefined||x.costUsd===null?null:Math.max(0,Number(x.costUsd)||0);
+    const costStatus=x.costStatus||(knownCost===null?'unknown':knownCost===0?'known_zero':'reported');
+    const reservation=Math.max(0,Number(x.budgetCostUsd||0));
+    const budgetCost=(costStatus==='unknown'||costStatus==='partial')
+      ?Math.max(knownCost||0,reservation)
+      :(knownCost||0);
+    db.prepare(`INSERT INTO model_invocations(
+      id,user_id,project_id,run_id,step_id,agent_key,profile_key,provider_key,model_id,
+      input_tokens,output_tokens,cost_usd,cost_status,budget_cost_usd,latency_ms,status,error_code,retry_index,
+      context_pack_id,context_scope,project_hash,context_tokens,context_selected_files_json,context_omitted_files_count,created_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      `inv-${crypto.randomUUID()}`,x.userId,x.projectId||null,x.runId||null,x.stepId||null,x.agentKey||null,x.profileKey||null,
+      x.providerKey,x.modelId,x.inputTokens||0,x.outputTokens||0,knownCost,costStatus,budgetCost,x.latencyMs,x.status,x.errorCode||null,
+      x.retryIndex||0,x.contextPackId||null,x.contextScope||null,x.projectHash||null,x.contextTokens||0,
+      JSON.stringify(x.contextSelectedFiles||[]),x.contextOmittedFilesCount||0,new Date().toISOString()
+    );
+    if(x.runId){
+      db.prepare('UPDATE agent_runs SET spent_usd=(SELECT COALESCE(SUM(budget_cost_usd),0) FROM model_invocations WHERE user_id=? AND run_id=?) WHERE id=? AND user_id=?')
+        .run(x.userId,x.runId,x.runId,x.userId);
+    }
+  }
 }
 

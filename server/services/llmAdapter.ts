@@ -66,6 +66,8 @@ export interface ChangeProposal {
   toolExecutionIds?: string[];
 }
 
+export type InvocationCostStatus='reported'|'known_zero'|'unknown'|'partial';
+
 export interface LLMExecutionResult {
   replyText: string;
   mode: AgentMode;
@@ -80,7 +82,7 @@ export interface LLMExecutionResult {
   errorMessage?: string;
   invalidResponse?: boolean;
   errorReason?: string;
-  usage?: {inputTokens:number;outputTokens:number;billedCostUsd:number};
+  usage?: {inputTokens:number;outputTokens:number;billedCostUsd?:number;costStatus?:InvocationCostStatus};
   diagnostics?: { strategy?: string; attempts?: number; targets?: string[]; failures?: string[]; toolRounds?: number; toolExecutions?: number; toolBudgetExhausted?: boolean };
 }
 
@@ -1059,6 +1061,8 @@ export class LLMAdapterService {
     let inputTokens = 0;
     let outputTokens = 0;
     let billedCostUsd = 0;
+    let knownCostSeen = false;
+    let unknownCostSeen = false;
     let providerUsed = '';
     let modelUsed = options.modelId;
     let totalAttempts = 0;
@@ -1112,7 +1116,15 @@ export class LLMAdapterService {
         modelUsed = result.modelUsed || modelUsed;
         inputTokens += Number(result.usage?.inputTokens || 0);
         outputTokens += Number(result.usage?.outputTokens || 0);
-        billedCostUsd += Number(result.usage?.billedCostUsd || 0);
+        const resultCostStatus=result.usage?.costStatus
+          ||(result.usage&&result.usage.billedCostUsd!==undefined
+            ?(Number(result.usage.billedCostUsd)===0?'known_zero':'reported')
+            :'unknown');
+        if(result.usage?.billedCostUsd!==undefined&&Number.isFinite(Number(result.usage.billedCostUsd))){
+          billedCostUsd+=Number(result.usage.billedCostUsd);
+          knownCostSeen=true;
+        }
+        if(resultCostStatus==='unknown'||resultCostStatus==='partial')unknownCostSeen=true;
         lastRaw = result.replyText || lastRaw;
 
         const exact = result.build?.files?.find((file) => file.path.replace(/\\/g, '/') === targetPath.replace(/\\/g, '/'));
@@ -1160,7 +1172,12 @@ export class LLMAdapterService {
         invalidResponse: true,
         errorMessage: terminalFailure,
         errorReason: 'terminal_provider_error',
-        usage: { inputTokens, outputTokens, billedCostUsd },
+        usage: {
+          inputTokens,
+          outputTokens,
+          ...(knownCostSeen?{billedCostUsd}:{}),
+          costStatus:unknownCostSeen?(knownCostSeen?'partial':'unknown'):(knownCostSeen?(billedCostUsd===0?'known_zero':'reported'):'unknown'),
+        },
         diagnostics: { strategy: 'atomic_file_build', attempts: totalAttempts, targets, failures },
       };
     }
@@ -1176,7 +1193,12 @@ export class LLMAdapterService {
         hasErrors: true,
         invalidResponse: true,
         errorReason: 'granular_build_failed',
-        usage: { inputTokens, outputTokens, billedCostUsd },
+        usage: {
+          inputTokens,
+          outputTokens,
+          ...(knownCostSeen?{billedCostUsd}:{}),
+          costStatus:unknownCostSeen?(knownCostSeen?'partial':'unknown'):(knownCostSeen?(billedCostUsd===0?'known_zero':'reported'):'unknown'),
+        },
         diagnostics: { strategy: 'atomic_file_build', attempts: totalAttempts, targets, failures },
       };
     }
@@ -1196,7 +1218,12 @@ export class LLMAdapterService {
         explanation: 'Arquivos gerados em etapas atômicas e preservados como proposta revisável. Nenhum arquivo foi aplicado automaticamente.',
         files: generated,
       },
-      usage: { inputTokens, outputTokens, billedCostUsd },
+      usage: {
+          inputTokens,
+          outputTokens,
+          ...(knownCostSeen?{billedCostUsd}:{}),
+          costStatus:unknownCostSeen?(knownCostSeen?'partial':'unknown'):(knownCostSeen?(billedCostUsd===0?'known_zero':'reported'):'unknown'),
+        },
       diagnostics: { strategy: 'atomic_file_build', attempts: totalAttempts, targets, failures },
     };
   }
@@ -1204,6 +1231,19 @@ export class LLMAdapterService {
   /**
    * Main Prompt Execution with Support for "auto" mode
    */
+  private static extractUsageCost(usage:any):{billedCostUsd?:number;costStatus:InvocationCostStatus}{
+    if(!usage||typeof usage!=='object')return{costStatus:'unknown'};
+    for(const key of ['billed_cost_usd','cost_usd','total_cost_usd']){
+      if(!Object.prototype.hasOwnProperty.call(usage,key))continue;
+      const value=Number(usage[key]);
+      if(Number.isFinite(value)&&value>=0)return{
+        billedCostUsd:value,
+        costStatus:value===0?'known_zero':'reported',
+      };
+    }
+    return{costStatus:'unknown'};
+  }
+
   private static requestTimeoutMs(): number {
     const configured = Number(process.env.FORGE_LLM_TIMEOUT_MS || 90000);
     if (!Number.isFinite(configured)) return 90000;
@@ -1594,10 +1634,11 @@ Responda sempre em português claro, elegante e profissional.`;
     }
 
     const parsed = this.parseLLMResponse(textContent, context.mode, config.name, config.modelId, context.existingFiles);
+    const cost=this.extractUsageCost(usage);
     parsed.usage = {
       inputTokens: Number(usage?.prompt_tokens || 0),
       outputTokens: Number(usage?.completion_tokens || 0),
-      billedCostUsd: Number(usage?.billed_cost_usd || 0),
+      ...cost,
     };
     return parsed;
   }
@@ -1620,7 +1661,14 @@ Responda sempre em português claro, elegante e profissional.`;
     });
 
     const textContent = res.text || '';
-    return this.parseLLMResponse(textContent, context.mode, config.name, config.modelId, context.existingFiles);
+    const parsed=this.parseLLMResponse(textContent, context.mode, config.name, config.modelId, context.existingFiles);
+    const usage=(res as any).usageMetadata||null;
+    parsed.usage={
+      inputTokens:Number(usage?.promptTokenCount||0),
+      outputTokens:Number(usage?.candidatesTokenCount||0),
+      costStatus:'unknown',
+    };
+    return parsed;
   }
 
   private static parseLLMResponse(
