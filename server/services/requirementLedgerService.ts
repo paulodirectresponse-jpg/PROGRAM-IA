@@ -25,6 +25,24 @@ export interface RequirementRecord {
 const json=(value:unknown,fallback:any=[])=>{try{return typeof value==='string'?JSON.parse(value):value??fallback;}catch{return fallback;}};
 
 export class RequirementLedgerService {
+  static normalizeRequirements(requirements:PlanRequirement[]=[]):PlanRequirement[]{
+    return (requirements||[]).map((req:any,index)=>{
+      const title=String(req?.title||req?.description||`Requisito ${index+1}`).trim()||`Requisito ${index+1}`;
+      const description=String(req?.description||title).trim()||title;
+      const rawPriority=String(req?.priority||'high').toLowerCase();
+      const priority=(['critical','high','medium','low'].includes(rawPriority)?rawPriority:'high') as PlanRequirement['priority'];
+      const verification=(Array.isArray(req?.verification)?req.verification:[])
+        .map((item:any)=>String(item||'').trim()).filter(Boolean);
+      return {
+        id:String(req?.id||`REQ-${String(index+1).padStart(3,'0')}`).toUpperCase().trim(),
+        title,
+        description,
+        priority,
+        verification:verification.length?verification:[description],
+      };
+    });
+  }
+
   static syncPlan(input:{
     projectId:string;
     conversationId?:string|null;
@@ -33,7 +51,16 @@ export class RequirementLedgerService {
     requirements:PlanRequirement[];
   }){
     const now=new Date().toISOString();
-    const requirements=(input.requirements||[]).filter(req=>req?.id&&req?.title);
+    const requirements=this.normalizeRequirements(input.requirements||[]);
+    const keys=requirements.map(req=>req.id);
+    if(new Set(keys).size!==keys.length)throw new Error('Requirement Ledger recusou IDs duplicados no mesmo plano.');
+    if(keys.length){
+      const placeholders=keys.map(()=>'?').join(',');
+      db.prepare(`DELETE FROM requirements WHERE project_id=? AND plan_id=? AND requirement_key NOT IN (${placeholders})`)
+        .run(input.projectId,input.planId,...keys);
+    }else{
+      db.prepare('DELETE FROM requirements WHERE project_id=? AND plan_id=?').run(input.projectId,input.planId);
+    }
     for(const req of requirements){
       const existing=db.prepare('SELECT id,status,files_json,evidence_json FROM requirements WHERE project_id=? AND plan_id=? AND requirement_key=?')
         .get(input.projectId,input.planId,req.id) as any;
@@ -47,6 +74,22 @@ export class RequirementLedgerService {
       }
     }
     return this.listByPlan(input.projectId,input.planId);
+  }
+
+  static verifyPlanSync(projectId:string,planId:string,requirements:PlanRequirement[]){
+    const expected=this.normalizeRequirements(requirements);
+    const rows=this.listByPlan(projectId,planId);
+    const expectedKeys=[...new Set(expected.map(req=>req.id))];
+    const persistedKeys=[...new Set(rows.map(req=>req.requirement_key))];
+    const missing=expectedKeys.filter(key=>!persistedKeys.includes(key));
+    const unexpected=persistedKeys.filter(key=>!expectedKeys.includes(key));
+    return{
+      valid:expectedKeys.length>0&&missing.length===0&&unexpected.length===0&&rows.length===expectedKeys.length,
+      expected:expectedKeys.length,
+      persisted:rows.length,
+      missing,
+      unexpected,
+    };
   }
 
   static attachRun(projectId:string,planId:string,runId:string){

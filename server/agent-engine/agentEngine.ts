@@ -447,10 +447,25 @@ function repairPlanDeterministically(plan:PlanOutput|undefined){
   )changes.push('removed_unsafe_file_targets');
 
   let acceptance=[...(plan.acceptance_criteria||[])].map(item=>String(item||'').trim()).filter(Boolean);
+  const rawTasksForRequirements=Array.isArray(plan.task_graph)?plan.task_graph:[];
+  const usedRequirementIds=new Set<string>();
+  const nextRequirementId=(preferred:string,index:number)=>{
+    let id=String(preferred||`REQ-${String(index+1).padStart(3,'0')}`).toUpperCase().trim();
+    if(!id||usedRequirementIds.has(id)){
+      let cursor=index+1;
+      do{id=`REQ-${String(cursor).padStart(3,'0')}`;cursor++;}while(usedRequirementIds.has(id));
+      changes.push('normalized_requirement_ids');
+    }
+    usedRequirementIds.add(id);
+    return id;
+  };
+  let derivedRequirementIdsByTask:string[]=[];
   let requirements=(plan.requirements||[]).map((req,index)=>{
-    const id=String(req.id||`REQ-${String(index+1).padStart(3,'0')}`).toUpperCase();
+    const id=nextRequirementId(String(req.id||''),index);
     const title=String(req.title||req.description||`Requisito ${index+1}`).trim();
     const description=String(req.description||title).trim();
+    const rawPriority=String(req.priority||'high').toLowerCase();
+    const priority=(['critical','high','medium','low'].includes(rawPriority)?rawPriority:'high') as 'critical'|'high'|'medium'|'low';
     let verification=(req.verification||[]).map(item=>String(item||'').trim()).filter(Boolean);
     if(!verification.length){
       const fallback=acceptance[index]||description||title;
@@ -459,8 +474,25 @@ function repairPlanDeterministically(plan:PlanOutput|undefined){
         changes.push('filled_requirement_verification');
       }
     }
-    return{...req,id,title,description,verification};
+    return{...req,id,title,description,priority,verification};
   });
+
+  if(!requirements.length&&rawTasksForRequirements.length){
+    requirements=rawTasksForRequirements.map((task,index)=>{
+      const title=String(task.title||`Tarefa ${index+1}`).trim();
+      const verification=acceptance[index]||`Concluir e validar: ${title}`;
+      const id=nextRequirementId('',index);
+      derivedRequirementIdsByTask[index]=id;
+      return{
+        id,
+        title,
+        description:title,
+        priority:'high' as const,
+        verification:[verification],
+      };
+    });
+    changes.push('requirements_from_tasks');
+  }
 
   if(!requirements.length&&acceptance.length){
     requirements=acceptance.map((criterion,index)=>({
@@ -480,8 +512,12 @@ function repairPlanDeterministically(plan:PlanOutput|undefined){
 
   const requirementIds=new Set(requirements.map(req=>req.id.toUpperCase()));
   let tasks=(plan.task_graph||[]).map((task,index)=>{
-    const requirement_ids=(task.requirement_ids||[]).map(id=>String(id||'').toUpperCase()).filter(id=>requirementIds.has(id));
+    let requirement_ids=(task.requirement_ids||[]).map(id=>String(id||'').toUpperCase()).filter(id=>requirementIds.has(id));
     if(requirement_ids.length!==(task.requirement_ids||[]).length)changes.push('removed_unknown_task_requirements');
+    if(!requirement_ids.length&&derivedRequirementIdsByTask[index]){
+      requirement_ids=[derivedRequirementIdsByTask[index]];
+      changes.push('linked_task_derived_requirement');
+    }
     return{
       ...task,
       id:String(task.id||`TASK-${String(index+1).padStart(3,'0')}`).toUpperCase(),
@@ -533,7 +569,9 @@ function assessPlanArchitecture(plan:PlanOutput|undefined,complex:boolean):PlanA
   const unsafeTargets=targets.filter(path=>path.includes('..')||path.startsWith('/')||path.startsWith('\\'));
   const requirements=Array.isArray(plan.requirements)?plan.requirements:[];
   const tasks=Array.isArray(plan.task_graph)?plan.task_graph:[];
-  const requirementIds=new Set(requirements.map(req=>String(req.id||'').toUpperCase()).filter(Boolean));
+  const requirementIdList=requirements.map(req=>String(req.id||'').toUpperCase()).filter(Boolean);
+  const requirementIds=new Set(requirementIdList);
+  const duplicateRequirementIds=requirementIdList.filter((id,index)=>requirementIdList.indexOf(id)!==index);
   const referencedRequirementIds=new Set(
     tasks.flatMap(task=>Array.isArray(task.requirement_ids)?task.requirement_ids:[])
       .map(id=>String(id||'').toUpperCase())
@@ -548,6 +586,8 @@ function assessPlanArchitecture(plan:PlanOutput|undefined,complex:boolean):PlanA
   if(unsafeTargets.length)reasons.push('unsafe_file_targets');
   if(complex&&targets.length===1&&targets[0].toLowerCase()==='index.html')reasons.push('single_index_only');
   if(!requirements.length)reasons.push('missing_requirements');
+  if(duplicateRequirementIds.length)reasons.push('duplicate_requirement_ids');
+  if(requirements.some(req=>!String(req.title||req.description||'').trim()))reasons.push('requirements_without_title');
   if(requirements.some(req=>!Array.isArray(req.verification)||req.verification.filter(Boolean).length===0)){
     reasons.push('requirements_without_verification');
   }
@@ -1154,8 +1194,8 @@ export class AgentWorkflowEngine extends AgentEngine {
           targetCount:(result.plan?.existing_files_to_modify?.length||0)+(result.plan?.new_files_to_create?.length||0),
           requirementCount:result.plan?.requirements?.length||0,taskCount:result.plan?.task_graph?.length||0
         });
-        if(complexPlan){
-          let initialAssessment=assessPlanArchitecture(result.plan,true);
+        if(x.mode==='plan'){
+          let initialAssessment=assessPlanArchitecture(result.plan,complexPlan);
           RunService.recordStage(x.stepId,'planning.architecture_validation','started',{
             phase:'initial',targetCount:initialAssessment.targets.length,targets:initialAssessment.targets.slice(0,40),
             requirementCount:initialAssessment.requirementCount,taskCount:initialAssessment.taskCount,
@@ -1170,7 +1210,7 @@ export class AgentWorkflowEngine extends AgentEngine {
 
             const deterministic=repairPlanDeterministically(result.plan);
             if(deterministic.plan&&deterministic.changes.length){
-              const deterministicAssessment=assessPlanArchitecture(deterministic.plan,true);
+              const deterministicAssessment=assessPlanArchitecture(deterministic.plan,complexPlan);
               RunService.recordStage(x.stepId,'planning.deterministic_repair',deterministicAssessment.valid?'completed':'info',{
                 changes:deterministic.changes,beforeReasons:initialAssessment.reasons,afterReasons:deterministicAssessment.reasons,
                 targetCount:deterministicAssessment.targets.length,requirementCount:deterministicAssessment.requirementCount,
@@ -1222,7 +1262,7 @@ export class AgentWorkflowEngine extends AgentEngine {
               },
               { profile:'EXPERT_PAID',forcedAgentKey:'SCOUT',allowExpertEscalation:false,requireModelWork:true }
             );
-              const repairedAssessment=assessPlanArchitecture(repaired.plan,true);
+              const repairedAssessment=assessPlanArchitecture(repaired.plan,complexPlan);
               RunService.recordStage(x.stepId,'planning.architecture_repair',repairedAssessment.valid?'completed':'failed',{
                 profileKey:repaired.profileKey,decisionType:repaired.decisionType,
                 targetCount:repairedAssessment.targets.length,requirementCount:repairedAssessment.requirementCount,
@@ -1231,7 +1271,7 @@ export class AgentWorkflowEngine extends AgentEngine {
               if(repaired.plan)result=repaired;
             }
           }
-          const finalAssessment=assessPlanArchitecture(result.plan,true);
+          const finalAssessment=assessPlanArchitecture(result.plan,complexPlan);
           if(!finalAssessment.valid){
             RunService.recordStage(x.stepId,'planning.architecture_validation','failed',{
               phase:'final',reason:'architecture_plan_incomplete',reasons:finalAssessment.reasons,

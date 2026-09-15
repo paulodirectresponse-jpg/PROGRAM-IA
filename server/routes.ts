@@ -1560,30 +1560,63 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
 
     let savedPlanId:string|null=null;
     if(result.plan){
+      const normalizedRequirements=RequirementLedgerService.normalizeRequirements(result.plan.requirements||[]);
+      if(!normalizedRequirements.length){
+        if(execution)RunService.recordStage(execution.stepId,'requirements.persistence','failed',{
+          reason:'zero_requirements',planMode:resolvedMode,planRequirementCount:0,
+        });
+        throw Object.assign(
+          new Error('O planejamento não pode ser concluído sem requirements verificáveis.'),
+          {code:'PLAN_REQUIREMENTS_EMPTY'}
+        );
+      }
+      result.plan.requirements=normalizedRequirements;
       savedPlanId='plan-'+Date.now();
-      db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'").run(now,projectId);
-      db.prepare(`
-        INSERT INTO plans (
-          id,task_id,project_id,objective,scope_in,scope_out,
-          architecture_summary,existing_files_json,new_files_json,files_to_delete_json,
-          files_affected_json,integrations_json,risks_json,acceptance_criteria_json,
-          requirements_json,task_graph_json,status,created_at,updated_at
-        ) VALUES (?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',?,?)
-      `).run(
-        savedPlanId,projectId,
-        typeof result.plan.objective==='string'?result.plan.objective:JSON.stringify(result.plan.objective??''),
-        typeof result.plan.scope_in==='string'?result.plan.scope_in:JSON.stringify(result.plan.scope_in??''),
-        typeof result.plan.scope_out==='string'?result.plan.scope_out:JSON.stringify(result.plan.scope_out??''),
-        result.plan.architecture_summary||'',
-        JSON.stringify(result.plan.existing_files_to_modify||[]),JSON.stringify(result.plan.new_files_to_create||[]),
-        JSON.stringify(result.plan.files_to_delete||[]),JSON.stringify(result.plan.files_affected||[]),
-        JSON.stringify(result.plan.integrations||[]),JSON.stringify(result.plan.risks||[]),
-        JSON.stringify(result.plan.acceptance_criteria||[]),JSON.stringify(result.plan.requirements||[]),
-        JSON.stringify(result.plan.task_graph||[]),now,now
-      );
-      RequirementLedgerService.syncPlan({
-        projectId,conversationId:conv.id,runId:execution?.runId||null,planId:savedPlanId,requirements:result.plan.requirements||[],
-      });
+      db.exec('BEGIN IMMEDIATE');
+      try{
+        db.prepare("UPDATE plans SET status='superseded',updated_at=? WHERE project_id=? AND status='draft'").run(now,projectId);
+        db.prepare(`
+          INSERT INTO plans (
+            id,task_id,project_id,objective,scope_in,scope_out,
+            architecture_summary,existing_files_json,new_files_json,files_to_delete_json,
+            files_affected_json,integrations_json,risks_json,acceptance_criteria_json,
+            requirements_json,task_graph_json,status,created_at,updated_at
+          ) VALUES (?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',?,?)
+        `).run(
+          savedPlanId,projectId,
+          typeof result.plan.objective==='string'?result.plan.objective:JSON.stringify(result.plan.objective??''),
+          typeof result.plan.scope_in==='string'?result.plan.scope_in:JSON.stringify(result.plan.scope_in??''),
+          typeof result.plan.scope_out==='string'?result.plan.scope_out:JSON.stringify(result.plan.scope_out??''),
+          result.plan.architecture_summary||'',
+          JSON.stringify(result.plan.existing_files_to_modify||[]),JSON.stringify(result.plan.new_files_to_create||[]),
+          JSON.stringify(result.plan.files_to_delete||[]),JSON.stringify(result.plan.files_affected||[]),
+          JSON.stringify(result.plan.integrations||[]),JSON.stringify(result.plan.risks||[]),
+          JSON.stringify(result.plan.acceptance_criteria||[]),JSON.stringify(normalizedRequirements),
+          JSON.stringify(result.plan.task_graph||[]),now,now
+        );
+        RequirementLedgerService.syncPlan({
+          projectId,conversationId:conv.id,runId:execution?.runId||null,planId:savedPlanId,requirements:normalizedRequirements,
+        });
+        const coverage=RequirementLedgerService.verifyPlanSync(projectId,savedPlanId,normalizedRequirements);
+        if(!coverage.valid){
+          throw Object.assign(
+            new Error(`Requirement Ledger inconsistente: esperado ${coverage.expected}, persistido ${coverage.persisted}.`),
+            {code:'REQUIREMENT_LEDGER_MISMATCH',coverage}
+          );
+        }
+        db.exec('COMMIT');
+        if(execution)RunService.recordStage(execution.stepId,'requirements.persistence','completed',{
+          planId:savedPlanId,expected:coverage.expected,persisted:coverage.persisted,
+          missing:coverage.missing,unexpected:coverage.unexpected,
+        });
+      }catch(error:any){
+        try{db.exec('ROLLBACK');}catch{}
+        if(execution)RunService.recordStage(execution.stepId,'requirements.persistence','failed',{
+          planId:savedPlanId,reason:error?.code||'persistence_error',error:String(error?.message||error),
+        });
+        savedPlanId=null;
+        throw error;
+      }
     }
 
     let replyText=String(result.replyText||'').trim();

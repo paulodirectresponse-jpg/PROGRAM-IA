@@ -148,6 +148,45 @@ test('phase0 requirement ledger persists progress evidence without treating impl
   }
 });
 
+test('phase0 requirement ledger mirrors normalized plan requirements exactly', () => {
+  const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
+  const projectId=`phase0-ledger-mirror-${unique}`;
+  const planId=`phase0-ledger-plan-${unique}`;
+  try{
+    const rows=RequirementLedgerService.syncPlan({
+      projectId,planId,
+      requirements:[
+        {id:'req-001',title:'',description:'Fluxo de caixa',priority:'critical',verification:[]} as any,
+        {id:'REQ-002',title:'Estoque',description:'Controlar estoque',priority:'invalid',verification:['estoque atualiza']} as any,
+      ],
+    });
+    assert.equal(rows.length,2);
+    assert.equal(rows[0].requirement_key,'REQ-001');
+    assert.equal(rows[0].title,'Fluxo de caixa');
+    assert.deepEqual(rows[0].verification,['Fluxo de caixa']);
+    assert.equal(rows[1].priority,'high');
+
+    const second=RequirementLedgerService.syncPlan({
+      projectId,planId,
+      requirements:[{id:'REQ-002',title:'Estoque atualizado',description:'Controlar estoque',priority:'high',verification:['estoque atualiza']}],
+    });
+    assert.equal(second.length,1);
+    const coverage=RequirementLedgerService.verifyPlanSync(projectId,planId,[{id:'REQ-002',title:'Estoque atualizado',description:'Controlar estoque',priority:'high',verification:['estoque atualiza']}]);
+    assert.equal(coverage.valid,true);
+    assert.equal(coverage.persisted,1);
+
+    assert.throws(()=>RequirementLedgerService.syncPlan({
+      projectId,planId,
+      requirements:[
+        {id:'REQ-X',title:'A',description:'A',priority:'high',verification:['A']},
+        {id:'REQ-X',title:'B',description:'B',priority:'high',verification:['B']},
+      ],
+    }),/duplicados/i);
+  }finally{
+    db.prepare('DELETE FROM requirements WHERE project_id=?').run(projectId);
+  }
+});
+
 test('phase0 waiting approval and resume cannot leave stale running steps behind', () => {
   const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
   const {runId,stepId}=RunService.start(`u-${unique}`,`p-${unique}`,`c-${unique}`,'build',0.5);
