@@ -479,6 +479,20 @@ Criar API segura
         'build'
       );
       assert.equal(
+        LLMAdapterService.resolveRequestedMode('aplique tudo isso ao site agora', 'auto', {
+          conversationHistory:[{sender:'agent',content:'Sugestões: parallax sutil, cards com tilt 3D, botões interativos e fundo animado.'}],
+          existingFiles:['index.html','styles.css','app.js'],
+        }),
+        'build'
+      );
+      assert.equal(
+        LLMAdapterService.resolveRequestedMode('perfeito, pode fazer', 'auto', {
+          conversationHistory:[{sender:'agent',content:'Posso aplicar essas melhorias visuais diretamente na landing page.'}],
+          existingFiles:['index.html'],
+        }),
+        'build'
+      );
+      assert.equal(
         LLMAdapterService.resolveRequestedMode('Adicione mais detalhes a essa ideia', 'auto', {
           conversationHistory:[{sender:'agent',content:'Ideia para um aplicativo de finanças.'}],
           existingFiles:['index.html'],
