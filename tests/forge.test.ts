@@ -446,6 +446,10 @@ Criar API segura
         'plan'
       );
       assert.equal(
+        LLMAdapterService.resolveRequestedMode('Planeja um site para administrar todo o fluxo de caixa da minha loja de roupa', 'auto'),
+        'plan'
+      );
+      assert.equal(
         LLMAdapterService.resolveRequestedMode('Planeje a arquitetura e depois construa o sistema', 'auto'),
         'build'
       );
