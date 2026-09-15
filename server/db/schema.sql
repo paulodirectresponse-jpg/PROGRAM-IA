@@ -355,6 +355,20 @@ CREATE TABLE IF NOT EXISTS benchmark_case_runs (
 CREATE INDEX IF NOT EXISTS benchmark_case_runs_run_order ON benchmark_case_runs(benchmark_run_id,case_order);
 CREATE INDEX IF NOT EXISTS benchmark_case_runs_case ON benchmark_case_runs(case_id,created_at);
 
+CREATE TABLE IF NOT EXISTS benchmark_smoke_requests (
+  request_id TEXT PRIMARY KEY,
+  user_id TEXT,
+  benchmark_run_id TEXT,
+  status TEXT NOT NULL,
+  max_cost_usd REAL NOT NULL,
+  case_ids_json TEXT NOT NULL DEFAULT '[]',
+  report_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS benchmark_smoke_requests_created ON benchmark_smoke_requests(created_at);
+
 -- 12. skills
 CREATE TABLE IF NOT EXISTS skills (
   id TEXT PRIMARY KEY,
