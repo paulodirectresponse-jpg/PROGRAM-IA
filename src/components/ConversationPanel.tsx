@@ -191,8 +191,11 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
     }
 
     stickToBottomRef.current=true;
-    onSendMessage(inputText, mentionedSkills);
+    onSendMessage(inputText, mentionedSkills, mentionedFiles, attachments);
     setInputText('');
+    setMentionedFiles([]);
+    setAttachments([]);
+    setShowFilePicker(false);
     setShowSkillPicker(false);
   };
 
