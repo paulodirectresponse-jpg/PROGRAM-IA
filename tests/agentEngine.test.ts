@@ -168,6 +168,86 @@ test('complex PLAN repairs only contract gaps and accepts repaired architecture'
   }
 });
 
+test('complex BUILD accepts a complete three-file architecture and implementation', async (t) => {
+  const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
+  const userId=`agent-three-file-build-user-${unique}`;
+  const projectId=`agent-three-file-build-project-${unique}`;
+  const conversationId=`agent-three-file-build-conv-${unique}`;
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'build',0.5);
+  seedRealWorkflowModel(userId,unique);
+  let scoutCalls=0;
+  let studioCalls=0;
+  let forgeCalls=0;
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    if(String(options.prompt).includes('PAPEL INTERNO: SCOUT')){
+      scoutCalls++;
+      return {
+        replyText:JSON.stringify({
+          type:'architecture_brief',
+          objective:'Administrar fluxo de caixa da loja',
+          complexity:'complex',
+          architecture_summary:'Aplicação modular com navegação, estado e persistência',
+          routes:[{path:'/',purpose:'Dashboard'},{path:'/caixa',purpose:'Fluxo de caixa'}],
+          modules:[{name:'financeiro',responsibility:'movimentações'}],
+          file_plan:{modify:['index.html'],create:['app.js','styles.css'],delete:[]},
+          requirements:[{id:'REQ-001',description:'Fluxo de caixa funcional',verification:['registrar entrada e saída']}],
+          task_graph:[{id:'TASK-001',title:'Implementar caixa',requirement_ids:['REQ-001'],depends_on:[]}],
+          risks:[],
+          acceptance_criteria:['Fluxo de caixa funcional']
+        }),
+        mode:'review',decisionType:'review',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,
+        usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}
+      } as any;
+    }
+    studioCalls++;
+    return {
+      replyText:'Navegação clara, estados funcionais e responsividade.',
+      mode:'review',decisionType:'review',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,
+      usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}
+    } as any;
+  });
+  t.mock.method(LLMAdapterService,'buildApprovedPlanReliably',async(options:any)=>{
+    forgeCalls++;
+    assert.deepEqual(new Set(options.requestedFiles),new Set(['index.html','app.js','styles.css']));
+    return {
+      replyText:'implementação pronta',
+      mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,
+      build:{
+        summary:'Fluxo de caixa implementado',
+        explanation:'Implementação completa',
+        files:[
+          {path:'index.html',action:'modify',content:'<html><link rel="stylesheet" href="styles.css"><script src="app.js"></script></html>'},
+          {path:'app.js',action:'create',content:'console.log("caixa")'},
+          {path:'styles.css',action:'create',content:'body{margin:0}'}
+        ]
+      },
+      usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}
+    } as any;
+  });
+  try{
+    const result=await AgentWorkflowEngine.executeWorkflow({
+      prompt:'faça um sistema para administrar o fluxo de caixa da minha loja de roupa',
+      mode:'build',projectId,existingFiles:{'index.html':'<html></html>'},appliedSkills:[],conversationHistory:[],
+      userId,runId,stepId
+    });
+    assert.equal(scoutCalls,1);
+    assert.equal(studioCalls,1);
+    assert.equal(forgeCalls,1);
+    assert.equal(result.workflow.status,'validating');
+    assert.equal(result.build?.files.length,3);
+    const trace=RunService.trace(runId);
+    const scout=trace.find((step:any)=>step.agent_key==='SCOUT');
+    const scoutEvents=(scout?.context?.events||[]).filter((event:any)=>event.type==='agent_stage');
+    assert.ok(scoutEvents.some((event:any)=>event.stage==='scout.architecture_validation'&&event.status==='completed'));
+    assert.equal(scoutEvents.some((event:any)=>event.stage==='scout.architecture_validation'&&event.status==='failed'),false);
+  }finally{
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    cleanupWorkflowModel(userId);
+  }
+});
+
 test('SCOUT planning trace preserves model and architecture stage evidence after finishStep', async (mock) => {
   const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
   const userId=`agent-trace-user-${unique}`;
