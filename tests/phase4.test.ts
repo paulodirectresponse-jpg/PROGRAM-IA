@@ -5,8 +5,46 @@ import { db, initializeDatabase } from '../server/db/index.js';
 import { PHASE4_BENCHMARK_CASES, PHASE4_SUITE_KEY } from '../server/benchmark/catalog.js';
 import { scoreBenchmarkCase } from '../server/benchmark/scorer.js';
 import { BenchmarkService } from '../server/benchmark/benchmarkService.js';
+import { BenchmarkSmokeBootstrap, smokeBootstrapConfig } from '../server/benchmark/smokeBootstrap.js';
 
 initializeDatabase();
+
+test('phase4 server-side smoke configuration is hard-bounded and idempotent',async()=>{
+  const migration12=db.prepare('SELECT name FROM schema_migrations WHERE version=12').get() as any;
+  assert.equal(migration12?.name,'012_phase4_server_side_smoke_request');
+  const smokeColumns=new Set((db.prepare('PRAGMA table_info(benchmark_smoke_requests)').all() as any[]).map(row=>row.name));
+  for(const column of ['request_id','user_id','benchmark_run_id','status','max_cost_usd','case_ids_json','report_json'])assert.ok(smokeColumns.has(column));
+
+  const cfg=smokeBootstrapConfig({
+    FORGE_BENCHMARK_SMOKE_REQUEST_ID:'authorized-smoke',
+    FORGE_BENCHMARK_SMOKE_MAX_USD:'1',
+  } as any);
+  assert.deepEqual(cfg?.caseIds,['P4-01','P4-11','P4-28']);
+  assert.equal(cfg?.maxCostUsd,1);
+  assert.throws(()=>smokeBootstrapConfig({
+    FORGE_BENCHMARK_SMOKE_REQUEST_ID:'too-expensive',
+    FORGE_BENCHMARK_SMOKE_MAX_USD:'1.01',
+  } as any),/US\$1\.00/);
+
+  const requestId=`smoke-test-${crypto.randomUUID()}`;
+  const before=Number((db.prepare('SELECT COUNT(*) c FROM benchmark_runs').get() as any).c||0);
+  db.prepare(`INSERT INTO benchmark_smoke_requests(request_id,status,max_cost_usd,case_ids_json,created_at)
+    VALUES(?,'completed',1,'["P4-01","P4-11","P4-28"]',?)`).run(requestId,new Date().toISOString());
+  const prevId=process.env.FORGE_BENCHMARK_SMOKE_REQUEST_ID;
+  const prevBudget=process.env.FORGE_BENCHMARK_SMOKE_MAX_USD;
+  process.env.FORGE_BENCHMARK_SMOKE_REQUEST_ID=requestId;
+  process.env.FORGE_BENCHMARK_SMOKE_MAX_USD='1';
+  try{
+    const result=await BenchmarkSmokeBootstrap.maybeStartFromEnv();
+    assert.equal((result as any).skipped,true);
+    const after=Number((db.prepare('SELECT COUNT(*) c FROM benchmark_runs').get() as any).c||0);
+    assert.equal(after,before);
+  }finally{
+    if(prevId===undefined)delete process.env.FORGE_BENCHMARK_SMOKE_REQUEST_ID;else process.env.FORGE_BENCHMARK_SMOKE_REQUEST_ID=prevId;
+    if(prevBudget===undefined)delete process.env.FORGE_BENCHMARK_SMOKE_MAX_USD;else process.env.FORGE_BENCHMARK_SMOKE_MAX_USD=prevBudget;
+    db.prepare('DELETE FROM benchmark_smoke_requests WHERE request_id=?').run(requestId);
+  }
+});
 
 test('phase4 migration and canonical benchmark catalog exist',()=>{
   const migration9=db.prepare('SELECT name FROM schema_migrations WHERE version=9').get() as any;
