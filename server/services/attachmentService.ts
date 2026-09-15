@@ -84,9 +84,61 @@ export class AttachmentService {
       return text.slice(0,120000);
     }
 
+    const ext=path.extname(input.name).toLowerCase();
+    if(['.docx','.pptx','.xlsx','.zip'].includes(ext)){
+      try{
+        const JSZip=(await import('jszip')).default;
+        const zip=await JSZip.loadAsync(input.bytes);
+        const candidates=Object.keys(zip.files)
+          .filter(name=>!zip.files[name].dir)
+          .filter(name=>ext==='.docx'?/word\/(?:document|header|footer).*\.xml$/i.test(name):
+            ext==='.pptx'?/ppt\/(?:slides|notesSlides)\/.*\.xml$/i.test(name):
+            ext==='.xlsx'?/xl\/(?:sharedStrings|worksheets\/.*)\.xml$/i.test(name):
+            /\.(?:txt|md|json|csv|xml|html|js|ts|css|py)$/i.test(name))
+          .slice(0,80);
+        const chunks:string[]=[];
+        for(const name of candidates){
+          const raw=await zip.files[name].async('string');
+          const text=raw
+            .replace(/<w:tab\s*\/>/gi,'\t')
+            .replace(/<a:br\s*\/>/gi,'\n')
+            .replace(/<[^>]+>/g,' ')
+            .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&')
+            .replace(/\s+/g,' ').trim();
+          if(text)chunks.push(`[${name}] ${text}`);
+          if(chunks.join('\n').length>120000)break;
+        }
+        if(chunks.length)return chunks.join('\n').slice(0,120000);
+        if(ext==='.zip')return `Arquivo ZIP recebido. Conteúdo: ${Object.keys(zip.files).slice(0,200).join(', ')}`;
+      }catch{}
+    }
+
     const gemini=LLMAdapterService.getProviderConfig('gemini',input.userId);
     if(!gemini?.isConfigured){
-      return `Arquivo ${input.name} recebido (${input.mimeType}, ${input.bytes.length} bytes). Não há Gemini multimodal configurado para interpretar semanticamente este binário.`;
+      const active=LLMAdapterService.getActiveProviderConfig(input.userId);
+      if(active?.isConfigured&&active.type==='openai_compatible'&&input.kind==='image'){
+        try{
+          const endpoint=`${active.baseUrl.replace(/\/+$/,'')}/chat/completions`;
+          const response=await fetch(endpoint,{
+            method:'POST',
+            headers:{'Content-Type':'application/json',Authorization:`Bearer ${active.apiKey}`},
+            body:JSON.stringify({
+              model:active.modelId,
+              messages:[{role:'user',content:[
+                {type:'text',text:'Analise esta imagem como referência para edição/criação de software. Descreva layout, textos, hierarquia, cores, componentes, espaçamentos e detalhes visuais concretos. Responda em português e não invente detalhes.'},
+                {type:'image_url',image_url:{url:`data:${input.mimeType};base64,${input.bytes.toString('base64')}`}}
+              ]}],
+              temperature:0.1,
+            }),
+          });
+          if(response.ok){
+            const data:any=await response.json();
+            const text=String(data?.choices?.[0]?.message?.content||'').trim();
+            if(text)return text.slice(0,60000);
+          }
+        }catch{}
+      }
+      return `Arquivo ${input.name} recebido (${input.mimeType}, ${input.bytes.length} bytes). O binário foi preservado, mas nenhum modelo multimodal configurado conseguiu extrair seu conteúdo semanticamente.`;
     }
 
     try{
