@@ -57,7 +57,9 @@ export interface BenchmarkRunSummary {
   repairRate:number;
   verifiedRate:number;
   totalCostUsd:number;
+  budgetCostUsd:number;
+  unknownCostCalls:number;
   averageLatencyMs:number;
-  providerBreakdown:Record<string,{cases:number;costUsd:number;passed:number}>;
+  providerBreakdown:Record<string,{cases:number;costUsd:number;budgetCostUsd:number;unknownCostCalls:number;passed:number}>;
   categoryBreakdown:Record<string,{cases:number;passed:number;averageScore:number}>;
 }
