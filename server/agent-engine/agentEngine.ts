@@ -396,6 +396,39 @@ function normalizePlanTarget(path:string){
   return String(path||'').replace(/\\/g,'/').replace(/^\.\//,'').trim();
 }
 
+function deterministicStructuredPlanRepair(rawOutput:string){
+  const original=String(rawOutput||'').trim();
+  if(!original)return null;
+  const variants:string[]=[];
+  const add=(value:string)=>{const trimmed=String(value||'').trim();if(trimmed&&!variants.includes(trimmed))variants.push(trimmed);};
+  add(original);
+  const normalized=original
+    .replace(/^\uFEFF/,'')
+    .replace(/\u0000/g,'')
+    .replace(/[“”]/g,'"')
+    .replace(/,\s*([}\]])/g,'$1');
+  add(normalized);
+  const first=normalized.indexOf('{');
+  const last=normalized.lastIndexOf('}');
+  if(first>=0&&last>first)add(normalized.slice(first,last+1));
+  for(const candidate of variants){
+    const plan=LLMAdapterService.extractPlan(candidate);
+    if(plan)return{plan,normalized:candidate,changed:candidate!==original};
+  }
+  return null;
+}
+
+function isAdapterSyntheticPlanFallback(result:LLMExecutionResult){
+  const plan=result.plan;
+  if(!plan||result.decisionType!=='plan')return false;
+  const targets=[
+    ...(plan.existing_files_to_modify||[]),
+    ...(plan.new_files_to_create||[]),
+    ...(plan.files_to_delete||[]),
+  ].filter(Boolean);
+  return targets.length===0&&/arquitetura ainda n[aã]o determinada/i.test(String(plan.architecture_summary||''));
+}
+
 function repairPlanDeterministically(plan:PlanOutput|undefined){
   if(!plan)return{plan,changes:[] as string[]};
   const changes:string[]=[];
@@ -777,7 +810,8 @@ export class AgentEngine {
         RunService.recordStage(x.stepId,'model.request','started',{
           profile,agentKey,attempt:i,retryStrategy,providerKey:candidate.provider_key,modelId:candidate.model_id
         });
-        const result = attemptInput.reliableBuild && attemptInput.mode === 'build'
+        let primaryInvocationRecorded=false;
+        let result = attemptInput.reliableBuild && attemptInput.mode === 'build'
           ? await LLMAdapterService.buildApprovedPlanReliably({
               projectId: attemptInput.projectId,
               providerKey: candidate.provider_key,
@@ -803,6 +837,150 @@ export class AgentEngine {
           planRequirements:result.plan?.requirements?.length||0,
           buildFiles:result.build?.files?.length||result.proposal?.files?.length||0
         });
+        if(x.mode==='plan'&&isAdapterSyntheticPlanFallback(result)){
+          RunService.recordStage(x.stepId,'structured_output.repair','started',{
+            profile,agentKey,attempt:i,strategy:'deterministic_then_micro_model',
+            providerKey:candidate.provider_key,modelId:candidate.model_id,
+            reason:'plan_output_not_parseable'
+          });
+
+          const deterministic=deterministicStructuredPlanRepair(result.replyText||'');
+          if(deterministic?.plan){
+            result={
+              ...result,
+              plan:deterministic.plan,
+              replyText:deterministic.normalized,
+              hasErrors:false,
+              invalidResponse:false,
+              errorReason:undefined,
+              errorMessage:undefined,
+              decisionType:'plan',
+            };
+            RunService.recordStage(x.stepId,'structured_output.repair','completed',{
+              profile,agentKey,attempt:i,strategy:'deterministic',
+              changed:deterministic.changed,
+              targetCount:(deterministic.plan.existing_files_to_modify?.length||0)+(deterministic.plan.new_files_to_create?.length||0),
+              requirementCount:deterministic.plan.requirements?.length||0,
+              taskCount:deterministic.plan.task_graph?.length||0
+            });
+          }else{
+            const initialLatency=Date.now()-started;
+            ModelRouter.recordInvocation({
+              userId:x.userId,projectId:x.projectId,runId:x.runId,stepId:x.stepId,agentKey,
+              profileKey:profile,providerKey:candidate.provider_key,modelId:candidate.model_id,
+              inputTokens:result.usage?.inputTokens,outputTokens:result.usage?.outputTokens,
+              costUsd:result.usage?.billedCostUsd,latencyMs:initialLatency,status:'success',
+              errorCode:'structured_output_invalid',retryIndex:i,
+              contextPackId:attemptInput.contextPack?.id,contextScope:attemptInput.contextPack?.scope,
+              projectHash:attemptInput.contextPack?.projectHash,contextTokens:attemptInput.contextPack?.estimatedTokens,
+              contextSelectedFiles:attemptInput.contextPack?.selectedFiles.map(item=>item.file.path),
+              contextOmittedFilesCount:attemptInput.contextPack?.omittedFiles.length,
+            });
+            primaryInvocationRecorded=true;
+
+            const initialCost=Number(result.usage?.billedCostUsd||0);
+            ModelRouter.assertBudget(
+              x.userId,
+              initialCost+Number(candidate.max_cost_usd||0),
+              {runId:x.runId}
+            );
+
+            const repairStarted=Date.now();
+            const repairPrompt=[
+              'REPARO DE FORMATO APENAS. Não replaneje e não acrescente nenhuma funcionalidade, arquivo, requisito ou decisão que não exista na saída original.',
+              'Converta exclusivamente a informação existente para o schema PLAN abaixo.',
+              'Campos ausentes podem ficar vazios. Preserve nomes, caminhos, requisitos e tarefas já presentes.',
+              'Responda SOMENTE JSON válido, sem Markdown e sem explicação.',
+              '',
+              'SCHEMA:',
+              '{"type":"plan","plan":{"objective":"...","scope_in":"...","scope_out":"...","architecture_summary":"...","existing_files_to_modify":[],"new_files_to_create":[],"files_to_delete":[],"integrations":[],"risks":[],"acceptance_criteria":[],"requirements":[{"id":"REQ-001","title":"...","description":"...","priority":"critical|high|medium|low","verification":["..."]}],"task_graph":[{"id":"TASK-001","title":"...","requirement_ids":["REQ-001"],"depends_on":[]}]}}',
+              '',
+              'ERRO:',
+              'A saída anterior não pôde ser convertida para o schema PLAN.',
+              '',
+              'SAÍDA ORIGINAL:',
+              String(result.replyText||'').slice(0,60000),
+            ].join('\n');
+
+            let repaired:LLMExecutionResult;
+            try{
+              repaired=await LLMAdapterService.executePrompt({
+                prompt:repairPrompt,
+                mode:'plan',
+                projectId:x.projectId,
+                existingFiles:{},
+                appliedSkills:[],
+                conversationHistory:[],
+                providerKey:candidate.provider_key,
+                modelId:candidate.model_id,
+                userId:x.userId,
+                signal:x.signal,
+                allowActiveFallback:false,
+                contextBrief:'',
+              });
+            }catch(repairError:any){
+              ModelRouter.recordInvocation({
+                userId:x.userId,projectId:x.projectId,runId:x.runId,stepId:x.stepId,agentKey,
+                profileKey:profile,providerKey:candidate.provider_key,modelId:candidate.model_id,
+                latencyMs:Date.now()-repairStarted,status:'failed',errorCode:'structured_repair_transport',
+                retryIndex:i+1,
+              });
+              RunService.recordStage(x.stepId,'structured_output.repair','failed',{
+                profile,agentKey,attempt:i,strategy:'micro_model',
+                reason:'transport_failure',error:String(repairError?.message||repairError)
+              });
+              throw Object.assign(repairError,{structuredRepairAttempted:true,invocationAlreadyRecorded:true});
+            }
+
+            const parsedRepair=deterministicStructuredPlanRepair(repaired.replyText||'');
+            const repairOk=Boolean(parsedRepair?.plan);
+            ModelRouter.recordInvocation({
+              userId:x.userId,projectId:x.projectId,runId:x.runId,stepId:x.stepId,agentKey,
+              profileKey:profile,providerKey:candidate.provider_key,modelId:candidate.model_id,
+              inputTokens:repaired.usage?.inputTokens,outputTokens:repaired.usage?.outputTokens,
+              costUsd:repaired.usage?.billedCostUsd,latencyMs:Date.now()-repairStarted,
+              status:repairOk?'success':'failed',
+              errorCode:repairOk?undefined:'structured_repair_failed',retryIndex:i+1,
+            });
+
+            if(!parsedRepair?.plan){
+              RunService.recordStage(x.stepId,'structured_output.repair','failed',{
+                profile,agentKey,attempt:i,strategy:'micro_model',
+                reason:'repair_still_invalid',replyChars:String(repaired.replyText||'').length
+              });
+              throw Object.assign(
+                new Error('O reparo localizado de formato ainda não produziu um PLAN estruturado válido.'),
+                {kind:'incompatible',reason:'structured_repair_failed',structuredRepairAttempted:true,invocationAlreadyRecorded:true}
+              );
+            }
+
+            const combinedUsage={
+              inputTokens:Number(result.usage?.inputTokens||0)+Number(repaired.usage?.inputTokens||0),
+              outputTokens:Number(result.usage?.outputTokens||0)+Number(repaired.usage?.outputTokens||0),
+              billedCostUsd:Number(result.usage?.billedCostUsd||0)+Number(repaired.usage?.billedCostUsd||0),
+            };
+            result={
+              ...repaired,
+              plan:parsedRepair.plan,
+              replyText:parsedRepair.normalized,
+              mode:'plan',
+              decisionType:'plan',
+              hasErrors:false,
+              invalidResponse:false,
+              errorReason:undefined,
+              errorMessage:undefined,
+              usage:combinedUsage,
+            };
+            RunService.recordStage(x.stepId,'structured_output.repair','completed',{
+              profile,agentKey,attempt:i,strategy:'micro_model',
+              targetCount:(parsedRepair.plan.existing_files_to_modify?.length||0)+(parsedRepair.plan.new_files_to_create?.length||0),
+              requirementCount:parsedRepair.plan.requirements?.length||0,
+              taskCount:parsedRepair.plan.task_graph?.length||0,
+              rawChars:String(result.replyText||'').length
+            });
+          }
+        }
+
         RunService.recordStage(x.stepId,'contract.validation','started',{profile,agentKey,attempt:i,source:'llm_adapter'});
         if (result.isDemonstrativeFallback || result.hasErrors) {
           RunService.recordStage(x.stepId,'contract.validation','failed',{
@@ -817,7 +995,7 @@ export class AgentEngine {
           profile,agentKey,attempt:i,decisionType:result.decisionType,invalidResponse:Boolean(result.invalidResponse)
         });
         ModelRouter.recordCandidateResult(candidate.id, true);
-        ModelRouter.recordInvocation({
+        if(!primaryInvocationRecorded)ModelRouter.recordInvocation({
           userId: x.userId,
           projectId: x.projectId,
           runId: x.runId,
@@ -859,9 +1037,10 @@ export class AgentEngine {
         const terminalModelMismatch=/invalid[_ -]?model|model[^\n]{0,40}(?:not found|unsupported|does not support)|unsupported[^\n]{0,30}model|incompatible[^\n]{0,30}(?:model|provider)/i.test(message);
         const terminalProviderOutage=/HTTP\s*530|Error\s*1033|Cloudflare Tunnel error|trycloudflare\.com/i.test(message);
         const kind: FailureKind = declaredKind || (operational ? 'operational' : 'incompatible');
+        const structuredRepairFailure=Boolean(e?.structuredRepairAttempted);
         if(terminalProviderOutage)ModelRouter.openCandidateCircuit(candidate.id,30,'provider_outage');
-        else ModelRouter.recordCandidateResult(candidate.id, false, kind);
-        ModelRouter.recordInvocation({
+        else if(!structuredRepairFailure)ModelRouter.recordCandidateResult(candidate.id, false, kind);
+        if(!e?.invocationAlreadyRecorded)ModelRouter.recordInvocation({
           userId: x.userId,
           projectId: x.projectId,
           runId: x.runId,
@@ -895,12 +1074,22 @@ export class AgentEngine {
         if(terminalModelMismatch){
           throw Object.assign(e,{kind:'incompatible',reason:'candidate_incompatible',terminalCandidate:true});
         }
-        const decision=ProgressRetryController.decide(evidence,attemptHistory,{
-          attempt:i+1,
-          maxAttempts,
-          hasNextCandidate:available.length>candidateIndex+1,
-          canEscalate:Boolean(options.allowExpertEscalation&&profile==='BASE_FREE'),
-        });
+        const decision=e?.structuredRepairAttempted
+          ? {
+              retryAllowed:false,
+              escalateAllowed:Boolean(options.allowExpertEscalation&&profile==='BASE_FREE'),
+              nextStrategy:(options.allowExpertEscalation&&profile==='BASE_FREE'?'expert':'stop') as RetryStrategy|'expert'|'stop',
+              reason:profile==='BASE_FREE'
+                ? 'reparo localizado de formato falhou; escalar sem repetir o contexto completo no mesmo candidate'
+                : 'reparo localizado de formato falhou no perfil expert; interromper sem loop',
+              signature:'structured-repair-'+profile.toLowerCase(),
+            }
+          : ProgressRetryController.decide(evidence,attemptHistory,{
+              attempt:i+1,
+              maxAttempts,
+              hasNextCandidate:available.length>candidateIndex+1,
+              canEscalate:Boolean(options.allowExpertEscalation&&profile==='BASE_FREE'),
+            });
         RunService.recordStage(x.stepId,'retry.decision','info',{
           profile,agentKey,attempt:i,retryAllowed:decision.retryAllowed,escalateAllowed:decision.escalateAllowed,
           nextStrategy:decision.nextStrategy,reason:decision.reason,signature:decision.signature
