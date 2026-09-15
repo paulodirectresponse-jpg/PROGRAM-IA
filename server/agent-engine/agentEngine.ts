@@ -493,6 +493,20 @@ function extractArchitectureTargets(existingFiles:Record<string,string>,brief:st
   return targets;
 }
 
+function assessArchitectureBrief(existingFiles:Record<string,string>,brief:string,focusPaths:string[]=[]){
+  const targets=extractArchitectureTargets(existingFiles,brief,focusPaths);
+  const parsed=extractJsonObject(brief);
+  const requirements=Array.isArray(parsed?.requirements)?parsed.requirements:[];
+  const tasks=Array.isArray(parsed?.task_graph)?parsed.task_graph:Array.isArray(parsed?.tasks)?parsed.tasks:[];
+  const reasons:string[]=[];
+  if(!parsed)reasons.push('unstructured_architecture_brief');
+  if(!targets.length)reasons.push('missing_file_plan');
+  if(targets.length===1&&targets[0].toLowerCase()==='index.html')reasons.push('single_index_only');
+  if(!requirements.length)reasons.push('missing_requirements');
+  if(!tasks.length)reasons.push('missing_task_graph');
+  return{valid:reasons.length===0,reasons,targets,requirementCount:requirements.length,taskCount:tasks.length};
+}
+
 function buildTargetsFromBrief(existingFiles:Record<string,string>, texts:string[], focusPaths:string[]=[]){
   const targets:string[]=[];
   const add=(path:string)=>{for(const item of extractArchitectureTargets(existingFiles,path,[]))if(!targets.includes(item))targets.push(item);};
@@ -998,8 +1012,13 @@ export class AgentWorkflowEngine extends AgentEngine {
       }
     }
 
-    let architectureTargets=extractArchitectureTargets(x.existingFiles,scoutBrief,x.focusPaths||[]);
-    if(architectureCritical&&(architectureTargets.length<4||(architectureTargets.length===1&&architectureTargets[0]==='index.html'))){
+    let architectureAssessment=assessArchitectureBrief(x.existingFiles,scoutBrief,x.focusPaths||[]);
+    let architectureTargets=architectureAssessment.targets;
+    if(architectureCritical&&!architectureAssessment.valid){
+      RunService.recordStage(x.stepId,'scout.architecture_validation','failed',{
+        phase:'initial',reasons:architectureAssessment.reasons,targetCount:architectureTargets.length,
+        requirementCount:architectureAssessment.requirementCount,taskCount:architectureAssessment.taskCount
+      });
       try{
         const repaired=await AgentEngine.execute(
           {
@@ -1020,20 +1039,31 @@ export class AgentWorkflowEngine extends AgentEngine {
         if(!repaired.hasErrors&&!repaired.isDemonstrativeFallback&&repaired.replyText?.trim()){
           scoutBrief=repaired.replyText.trim();
           scoutSource='model_repaired';
-          architectureTargets=extractArchitectureTargets(x.existingFiles,scoutBrief,x.focusPaths||[]);
+          architectureAssessment=assessArchitectureBrief(x.existingFiles,scoutBrief,x.focusPaths||[]);
+          architectureTargets=architectureAssessment.targets;
         }
       }catch(error:any){
         scoutError=error;
       }
     }
 
-    if(architectureCritical&&(architectureTargets.length<4||(architectureTargets.length===1&&architectureTargets[0]==='index.html'))){
+    if(architectureCritical&&!architectureAssessment.valid){
+      RunService.recordStage(x.stepId,'scout.architecture_validation','failed',{
+        phase:'final',reasons:architectureAssessment.reasons,targetCount:architectureTargets.length,
+        requirementCount:architectureAssessment.requirementCount,taskCount:architectureAssessment.taskCount
+      });
       const error=Object.assign(
-        new Error('O SCOUT não conseguiu definir páginas, módulos e arquivos suficientes para este sistema; a construção foi bloqueada para evitar outro site incompleto.'),
-        {kind:'incompatible',reason:'architecture_brief_incomplete',cause:scoutError}
+        new Error('O SCOUT não conseguiu produzir um briefing arquitetural executável: '+architectureAssessment.reasons.join(', ')+'.'),
+        {kind:'incompatible',reason:'architecture_brief_incomplete',cause:scoutError,architectureReasons:architectureAssessment.reasons}
       );
-      RunService.finishStep(x.stepId,'failed',{error:error.message,source:scoutSource,architectureTargets});
+      RunService.finishStep(x.stepId,'failed',{error:error.message,source:scoutSource,architectureTargets,architectureReasons:architectureAssessment.reasons});
       throw error;
+    }
+    if(architectureCritical){
+      RunService.recordStage(x.stepId,'scout.architecture_validation','completed',{
+        phase:'final',targetCount:architectureTargets.length,requirementCount:architectureAssessment.requirementCount,
+        taskCount:architectureAssessment.taskCount
+      });
     }
 
     recordContextCommitFromStep(x, 'SCOUT', complexRequest?'PROJECT':'TASK', 'SCOUT briefing concluído', {
@@ -1202,9 +1232,9 @@ export class AgentWorkflowEngine extends AgentEngine {
         const missing=required.filter(path=>!produced.has(path));
         const failedTargets=Array.isArray((result.diagnostics as any)?.failures)?(result.diagnostics as any).failures:[];
         const onlySingleIndex=proposalFiles.length===1&&proposalFiles[0]?.path==='index.html';
-        if(missing.length||failedTargets.length||proposalFiles.length<4||onlySingleIndex){
+        if(missing.length||failedTargets.length||onlySingleIndex){
           throw Object.assign(
-            new Error(`O FORGE gerou uma implementação arquitetural incompleta. Faltando: ${missing.join(', ')||'estrutura mínima/arquivos completos'}.`),
+            new Error(`O FORGE gerou uma implementação arquitetural incompleta. Faltando: ${missing.join(', ')||'arquivos/targets exigidos pela arquitetura'}.`),
             {kind:'incompatible',reason:'incomplete_architecture_build',missingTargets:missing,failedTargets}
           );
         }
