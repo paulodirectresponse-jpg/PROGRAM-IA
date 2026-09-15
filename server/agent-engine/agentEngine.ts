@@ -833,6 +833,7 @@ export class AgentEngine {
         estimatedTokens:contextBase.contextPack?.estimatedTokens,selectedFiles:contextBase.contextPack?.selectedFiles.length||0,
         omittedFiles:contextBase.contextPack?.omittedFiles.length||0
       });
+      let providerCallStarted=false;
       try {
         ModelRouter.assertBudget(x.userId, Number(candidate.max_cost_usd || 0), { runId: x.runId });
         const attemptInput = retryStrategy==='reduce_context' || retryStrategy==='fragment_task'
@@ -851,6 +852,7 @@ export class AgentEngine {
           profile,agentKey,attempt:i,retryStrategy,providerKey:candidate.provider_key,modelId:candidate.model_id
         });
         let primaryInvocationRecorded=false;
+        providerCallStarted=true;
         let result = attemptInput.reliableBuild && attemptInput.mode === 'build'
           ? await LLMAdapterService.buildApprovedPlanReliably({
               projectId: attemptInput.projectId,
@@ -1094,7 +1096,7 @@ export class AgentEngine {
         const structuredRepairFailure=Boolean(e?.structuredRepairAttempted);
         if(terminalProviderOutage)ModelRouter.openCandidateCircuit(candidate.id,30,'provider_outage');
         else if(!structuredRepairFailure)ModelRouter.recordCandidateResult(candidate.id, false, kind);
-        if(!e?.invocationAlreadyRecorded)ModelRouter.recordInvocation({
+        if(providerCallStarted&&!e?.invocationAlreadyRecorded)ModelRouter.recordInvocation({
           userId: x.userId,
           projectId: x.projectId,
           runId: x.runId,
