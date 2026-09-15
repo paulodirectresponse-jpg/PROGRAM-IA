@@ -46,6 +46,19 @@ test('SCOUT architecture_brief file_plan is normalized into executable PLAN targ
   assert.deepEqual(parsed!.files_affected,['index.html','app.js','styles.css']);
   assert.equal(parsed!.requirements.length,1);
   assert.equal(parsed!.task_graph.length,1);
+
+  const wrapped=LLMAdapterService.extractPlan(JSON.stringify({
+    architecture_brief:{
+      objective:'Administrar fluxo de caixa da loja',
+      architecture_summary:'Aplicação modular',
+      file_plan:{modify:['index.html'],create:['app.js','styles.css'],delete:[]},
+      requirements:[{id:'REQ-001',description:'Fluxo funcional',verification:['registrar entrada']}],
+      task_graph:[{id:'TASK-001',title:'Implementar caixa',requirement_ids:['REQ-001'],depends_on:[]}],
+      acceptance_criteria:['Fluxo funcional']
+    }
+  }));
+  assert.ok(wrapped);
+  assert.deepEqual(wrapped!.new_files_to_create,['app.js','styles.css']);
 });
 
 test('complex PLAN accepts a complete three-file architecture without redundant expert repair', async (t) => {
