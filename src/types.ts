@@ -120,6 +120,21 @@ export interface Conversation {
   updated_at: string;
 }
 
+export interface ChatAttachmentInput {
+  name: string;
+  mimeType: string;
+  size: number;
+  dataBase64: string;
+}
+
+export interface ChatAttachmentMeta {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  kind?: 'text' | 'image' | 'video' | 'audio' | 'pdf' | 'binary';
+}
+
 export interface Message {
   id: string;
   conversation_id: string;
@@ -130,6 +145,8 @@ export interface Message {
   metadata?: {
     mode?: AgentMode;
     appliedSkills?: string[];
+    mentionedFiles?: string[];
+    attachments?: ChatAttachmentMeta[];
     isDemonstrativeFallback?: boolean;
     providerUsed?: string;
     modelUsed?: string;
