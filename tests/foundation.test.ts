@@ -46,6 +46,40 @@ test('budget governor keeps benchmark daily limits explicit without silently cap
     else process.env.FORGE_DAILY_AI_BUDGET_USD=previous;
   }
 });
+test('budget guard failures cannot leave a candidate quarantined when no provider call happened',()=>{
+  const candidate=ModelRouter.listProfiles(a)[0].candidates[0] as any;
+  ModelRouter.recordCandidateResult(candidate.id,false,'incompatible');
+  const poisoned=db.prepare('SELECT health_state,circuit_open_until FROM model_candidates WHERE id=?').get(candidate.id) as any;
+  assert.equal(poisoned.health_state,'incompatible');
+  assert.ok(poisoned.circuit_open_until);
+
+  const runId=`budget-repair-run-${suffix}`;
+  const stepId=`budget-repair-step-${suffix}`;
+  const createdAt=new Date().toISOString();
+  db.prepare(`INSERT INTO agent_runs(id,user_id,project_id,conversation_id,mode,status,budget_usd,spent_usd,created_at)
+    VALUES(?,?,?,?,?,'failed',.5,0,?)`).run(runId,a,`project-${suffix}`,`conv-${suffix}`,'plan',createdAt);
+  db.prepare(`INSERT INTO agent_steps(id,run_id,agent_key,title,status,order_index,scope_level,attempt_count,acceptance_json,context_json,created_at)
+    VALUES(?,?,?,'Analyze','failed',0,'task',1,'[]',?,?)`).run(
+      stepId,runId,'SCOUT',
+      JSON.stringify({events:[{
+        type:'agent_stage',stage:'attempt.failed',status:'failed',profile:'BASE_FREE',
+        providerKey:candidate.provider_key,modelId:candidate.model_id,error:'Limite diário de IA atingido.'
+      }]}),
+      createdAt
+    );
+  try{
+    const repaired=ModelRouter.repairFalseBudgetQuarantines();
+    assert.ok(repaired>=1);
+    const recovered=db.prepare('SELECT health_state,circuit_open_until,consecutive_failures FROM model_candidates WHERE id=?').get(candidate.id) as any;
+    assert.equal(recovered.health_state,'healthy');
+    assert.equal(recovered.circuit_open_until,null);
+    assert.equal(Number(recovered.consecutive_failures),0);
+  }finally{
+    db.prepare('DELETE FROM agent_steps WHERE id=?').run(stepId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+  }
+});
+
 test('Firebase identity stays bound to uid; email cannot take over an existing account',()=>{
   assert.throws(()=>AuthService.firebaseLogin(`a-${suffix}@example.test`,'Other','unrelated-uid'), /outra identidade/);
   assert.equal(AuthService.firebaseLogin(`a-${suffix}@example.test`,'A',`fb-a-${suffix}`).user.id,a);
