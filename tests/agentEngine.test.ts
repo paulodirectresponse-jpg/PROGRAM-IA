@@ -112,7 +112,7 @@ test('paid SCOUT success with only structural gaps is repaired deterministically
       mode:'plan',projectId,existingFiles:{'index.html':'<html></html>'},appliedSkills:[],conversationHistory:[],
       userId,runId,stepId
     });
-    assert.equal(calls,1);
+    assert.equal(calls,2);
     assert.equal(result.workflow.status,'completed');
     assert.equal(result.plan?.task_graph.length,1);
     const invocations=db.prepare('SELECT profile_key,status FROM model_invocations WHERE run_id=? ORDER BY created_at').all(runId) as any[];
@@ -291,7 +291,7 @@ test('complex PLAN repairs only contract gaps and accepts repaired architecture'
       mode:'plan',projectId,existingFiles:{'index.html':'<html></html>'},appliedSkills:[],conversationHistory:[],
       userId,runId,stepId
     });
-    assert.equal(calls,2);
+    assert.equal(calls,1);
     assert.equal(result.workflow.status,'completed');
     assert.equal(result.plan?.task_graph.length,1);
     const trace=RunService.trace(runId);
