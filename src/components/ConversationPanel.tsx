@@ -318,6 +318,9 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
           }
           const rawMeta = msg.metadata && typeof msg.metadata === 'object' ? msg.metadata : parsedMetadata;
           const meta = rawMeta && typeof rawMeta === 'object' ? rawMeta : {};
+          const errorMessage = typeof meta.errorMessage === 'string' ? meta.errorMessage : '';
+          const isBudgetError = ['AI_DAILY_BUDGET_EXCEEDED','AI_RUN_BUDGET_EXCEEDED'].includes(String((meta as any).errorCode||''))
+            || /Limite diário de IA atingido|Orçamento desta execução seria excedido/i.test(errorMessage);
           const rawProposal = meta.proposal && typeof meta.proposal === 'object' ? meta.proposal as ChangeProposal : undefined;
           const proposal = rawProposal && Array.isArray(rawProposal.files) ? rawProposal : undefined;
           const hasProposal = Boolean(proposal && proposal.files.length > 0);
@@ -374,9 +377,11 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                   <div className="mb-2 p-2.5 rounded bg-rose-950/60 border border-rose-800/70 text-[11px] text-rose-300 flex items-start gap-2">
                     <AlertTriangle size={14} className="shrink-0 mt-0.5 text-rose-400" />
                     <div className="min-w-0">
-                      <div className="font-semibold text-rose-200">Não foi possível concluir a alteração</div>
+                      <div className="font-semibold text-rose-200">{isBudgetError?'Limite de orçamento atingido':'Não foi possível concluir a alteração'}</div>
                       <div className="text-rose-300/90 text-[10px] mt-0.5">
-                        A revisão automática bloqueou esta versão para preservar o projeto atual.
+                        {isBudgetError
+                          ? 'A execução foi interrompida antes de continuar o uso de IA para respeitar o limite configurado.'
+                          : 'A revisão automática bloqueou esta versão para preservar o projeto atual.'}
                       </div>
                       {meta.errorMessage && (
                         <details className="mt-1.5 text-[10px] text-rose-300/70">

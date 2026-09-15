@@ -1228,7 +1228,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
       const failedAt=new Date().toISOString();
       const msgId='msg-agent-'+Date.now();
       const content=controller.signal.aborted?'A construção foi interrompida. O plano voltou a ficar disponível.':`Não consegui concluir a construção com segurança. ${detail}`;
-      const metadata={mode:'build',hasErrors:true,errorMessage:detail,planId,runId:execution?.runId,
+      const metadata={mode:'build',hasErrors:true,errorMessage:detail,errorCode:err?.code||null,planId,runId:execution?.runId,
         workflow:execution?{runId:execution.runId,status:controller.signal.aborted?'aborted':'failed',trace:RunService.trace(execution.runId)}:undefined,
         validation:err?.applyResult?.validation||null,browserQuality:err?.applyResult?.browserQuality||null,sentinelReview:err?.applyResult?.sentinelReview||null};
       db.prepare("INSERT INTO messages(id,conversation_id,sender,content,metadata_json,created_at) VALUES(?,?,'agent',?,?,?)")
@@ -1730,7 +1730,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
         ? 'A execução foi interrompida. O progresso concluído foi preservado.'
         : `Não consegui concluir esta implementação com segurança. ${detail}`;
       const metadata={
-        mode:req.body?.mode||'auto',hasErrors:true,errorMessage:detail,runId:execution?.runId,
+        mode:req.body?.mode||'auto',hasErrors:true,errorMessage:detail,errorCode:err?.code||null,runId:execution?.runId,
         workflow:execution?{runId:execution.runId,status:controller.signal.aborted?'aborted':'failed',trace:RunService.trace(execution.runId)}:undefined,
         validation:err?.applyResult?.validation||null,browserQuality:err?.applyResult?.browserQuality||null,
         sentinelReview:err?.applyResult?.sentinelReview||null,

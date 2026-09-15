@@ -82,10 +82,16 @@ export class BenchmarkSmokeBootstrap {
           return {enabled:true,skipped:true,status:current.status,benchmarkRunId:existing.benchmark_run_id,report};
         }
       }
-      console.log('FORGE_BENCHMARK_SMOKE_SKIP '+JSON.stringify({
-        requestId:config.requestId,status:existing.status,benchmarkRunId:existing.benchmark_run_id||null,
-      }));
-      return {enabled:true,skipped:true,status:existing.status,benchmarkRunId:existing.benchmark_run_id||null};
+      if(existing.status==='waiting_budget'&&!existing.benchmark_run_id){
+        db.prepare('DELETE FROM benchmark_smoke_requests WHERE request_id=? AND status=? AND benchmark_run_id IS NULL')
+          .run(config.requestId,'waiting_budget');
+        console.log('FORGE_BENCHMARK_SMOKE_RESUME_WAIT '+JSON.stringify({requestId:config.requestId}));
+      }else{
+        console.log('FORGE_BENCHMARK_SMOKE_SKIP '+JSON.stringify({
+          requestId:config.requestId,status:existing.status,benchmarkRunId:existing.benchmark_run_id||null,
+        }));
+        return {enabled:true,skipped:true,status:existing.status,benchmarkRunId:existing.benchmark_run_id||null};
+      }
     }
 
     const createdAt=now();
