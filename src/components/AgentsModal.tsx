@@ -108,9 +108,24 @@ export function AgentsModal({isOpen,onClose,projectId}:{isOpen:boolean;onClose:(
   const accountedCost=runs.reduce((sum,run)=>sum+Number(run.budget_accounted_usd??run.spent_usd??0),0);
   const unknownCostCalls=runs.reduce((sum,run)=>sum+Number(run.unknown_cost_calls||0),0);
   if(!isOpen)return null;
-  return <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-5"><div className="w-full max-w-5xl max-h-[88vh] overflow-auto rounded-2xl border border-slate-700/80 bg-slate-950 shadow-2xl">
-    <header className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/95 backdrop-blur"><div><h2 className="text-lg font-semibold text-white flex items-center gap-2"><Bot size={19} className="text-cyan-400"/>Agentes e roteamento</h2><p className="text-xs text-slate-400 mt-1">Papéis fixos, modelos substituíveis, custo e saúde observáveis.</p></div><button onClick={onClose} className="p-2 text-slate-400 hover:text-white"><X size={18}/></button></header>
-    <div className="p-6 space-y-7">
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 backdrop-blur-sm md:p-5"><div className="flex max-h-[92vh] w-full max-w-7xl flex-col overflow-hidden rounded-2xl border border-slate-700/80 bg-slate-950 shadow-2xl">
+    <header className="shrink-0 border-b border-slate-800 bg-slate-950/95 px-4 py-4 backdrop-blur md:px-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div><h2 className="flex items-center gap-2 text-lg font-semibold text-white"><Bot size={20} className="text-cyan-400"/>Central de Agentes</h2><p className="mt-1 text-xs text-slate-400">O PROGRAM-IA coordena SCOUT, STUDIO, FORGE, SENTINEL e SHIP como uma única IA operacional.</p></div>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-lg border border-slate-800 bg-slate-900 p-0.5 text-[10px]"><button onClick={()=>setDetailMode('basic')} className={'rounded-md px-2.5 py-1.5 '+(detailMode==='basic'?'bg-slate-700 text-white':'text-slate-500 hover:text-slate-300')}>Básico</button><button onClick={()=>setDetailMode('advanced')} className={'rounded-md px-2.5 py-1.5 '+(detailMode==='advanced'?'bg-cyan-950 text-cyan-200':'text-slate-500 hover:text-slate-300')}>Avançado</button></div>
+          <button onClick={()=>load().catch(()=>{})} title="Atualizar" className="rounded-lg border border-slate-800 p-2 text-slate-400 hover:bg-slate-900 hover:text-white"><RefreshCcw size={15} className={refreshing?'animate-spin':''}/></button>
+          <button onClick={onClose} title="Fechar" className="rounded-lg p-2 text-slate-400 hover:bg-slate-900 hover:text-white"><X size={18}/></button>
+        </div>
+      </div>
+      <nav className="mt-4 flex gap-1 overflow-x-auto" aria-label="Seções da Central de Agentes">
+        {([
+          ['overview','Visão geral',Gauge],['runs','Execuções',Activity],['requirements','Requisitos',ListChecks],['routing','Modelos & Roteamento',Network]
+        ] as [TabKey,string,React.ComponentType<{size?:number}>][]).map(([key,label,Icon])=><button key={key} onClick={()=>setTab(key)} aria-selected={tab===key} className={'flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-[11px] font-medium '+(tab===key?'bg-cyan-950/70 text-cyan-200 ring-1 ring-cyan-900':'text-slate-500 hover:bg-slate-900 hover:text-slate-300')}><Icon size={13}/>{label}</button>)}
+      </nav>
+    </header>
+    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 md:p-6">
+      {error&&<div className="flex items-start gap-2 rounded-xl border border-rose-900/60 bg-rose-950/25 px-3 py-2.5 text-xs text-rose-200"><AlertTriangle size={14} className="mt-0.5 shrink-0"/><span>{error}</span></div>}
       {engineEnabled===false&&<section className="rounded-xl border border-amber-800/60 bg-amber-950/30 px-4 py-3 text-xs text-amber-200">O Agent Engine está configurado, mas desativado neste runtime. Os perfis podem ser preparados aqui sem executar orquestração multiagente até <span className="font-mono">AGENT_ENGINE_ENABLED=true</span>.</section>}
       {engineEnabled===true&&<section className="rounded-xl border border-emerald-800/60 bg-emerald-950/25 px-4 py-3 text-xs text-emerald-200">Agent Engine ativo neste runtime. Roteamento por perfil, telemetria e limites de custo estão habilitados.</section>}
       <section><h3 className="text-xs uppercase tracking-wider text-slate-500 mb-3">Equipe do MVP</h3><div className="grid grid-cols-2 lg:grid-cols-5 gap-3">{agents.map(a=><div key={a.key} className="rounded-xl border border-slate-800 bg-slate-900/60 p-3"><div className="font-semibold text-slate-100">{a.key}</div><div className="text-[11px] text-slate-400 mt-1">{a.label}</div><div className="mt-3 text-[10px] text-cyan-300">{a.profile}</div><div className="text-[10px] text-slate-400 mt-1">{a.metrics.executions||0} execuções · {a.metrics.calls||0} chamadas IA</div><div className="text-[10px] text-slate-500 mt-0.5">{a.metrics.successes||0} OK · US$ {Number(a.metrics.cost_usd||0).toFixed(3)} confirmado{Number(a.metrics.unknown_cost_calls||0)>0?` · ${Number(a.metrics.unknown_cost_calls)} sem custo informado`:''}</div></div>)}</div></section>
