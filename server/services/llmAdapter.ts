@@ -169,7 +169,8 @@ export class LLMAdapterService {
     const currentSoftware=softwarePattern.test(text);
     const recentSoftware=softwarePattern.test(recent)||existingFiles.some(path=>/\.(?:tsx?|jsx?|html?|css|vue|svelte)$/i.test(path));
     const planningVerb=/\b(planeje|planeja|planejar|planejamento|estruture|estruturar|arquiteture|arquitetar|mapeie|mapear|desenhe\s+(?:a\s+)?arquitetura|defina\s+(?:a\s+)?arquitetura)\b/.test(text);
-    if(planningVerb&&(currentSoftware||recentSoftware))return 'plan';
+    const planningAlsoRequestsExecution=/\b(depois\s+(?:construa|implemente|crie|faca)|construa|implemente|programe|codifique|execute|aplique)\b/.test(text);
+    if(planningVerb&&!planningAlsoRequestsExecution&&(currentSoftware||recentSoftware))return 'plan';
 
     const ideation=/\b(me\s+ajude|ajude|detalhe|detalhar|explique|explicar|o\s+que|como\s+(?:voce|eu|isso)|qual|quais|pense|pensar|sugira|sugerir|avalie|avaliar|opine|opinar|brainstorm|ideia|conceito|estrategia|roteiro|copy|texto|mensagem)\b/;
     const executionAction=/\b(criar|crie|faca|monte|montar|implemente|implementar|construa|construir|programe|programar|codifique|codificar|gere|gerar|adicione|adicionar|inclua|incluir|altere|alterar|mude|mudar|edite|editar|substitua|substituir|remova|remover|exclua|excluir|corrija|corrigir|refatore|refatorar|melhore|melhorar|aplique|aplicar|aplicando|coloque|colocar|incorpore|incorporar|execute|executar|deixe|deixar|use|usar|troque|trocar|replique|replicar|siga|seguir|baseie|basear)\b/;
