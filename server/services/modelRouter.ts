@@ -35,6 +35,42 @@ export class ModelRouter {
     const until=n>=2?new Date(Date.now()+300000).toISOString():null;
     db.prepare('UPDATE model_candidates SET consecutive_failures=?,health_state=?,circuit_open_until=?,updated_at=? WHERE id=?').run(n,until?'open':'degraded',until,now,id);
   }
+  static repairFalseBudgetQuarantines(hours=24){
+    const since=new Date(Date.now()-Math.max(1,hours)*60*60*1000).toISOString();
+    const steps=db.prepare(`SELECT s.id step_id,s.context_json,r.user_id
+      FROM agent_steps s JOIN agent_runs r ON r.id=s.run_id
+      WHERE s.created_at>=? AND s.context_json IS NOT NULL`).all(since) as Array<{step_id:string;context_json:string;user_id:string}>;
+    let repaired=0;
+    for(const step of steps){
+      let events:any[]=[];
+      try{
+        const parsed=JSON.parse(step.context_json||'{}');
+        events=Array.isArray(parsed?.events)?parsed.events:[];
+      }catch{continue;}
+      for(const event of events){
+        if(event?.stage!=='attempt.failed')continue;
+        if(!/Limite diário de IA atingido|Orçamento desta execução seria excedido/i.test(String(event?.error||'')))continue;
+        const providerKey=String(event?.providerKey||'').trim();
+        const modelId=String(event?.modelId||'').trim();
+        const profileKey=String(event?.profile||'').trim();
+        if(!providerKey||!modelId||!profileKey)continue;
+        const invocation=db.prepare('SELECT 1 FROM model_invocations WHERE step_id=? AND provider_key=? AND model_id=? LIMIT 1')
+          .get(step.step_id,providerKey,modelId);
+        if(invocation)continue;
+        const candidate=db.prepare(`SELECT c.id,c.health_state,c.circuit_open_until
+          FROM model_candidates c JOIN model_profiles p ON p.id=c.profile_id
+          WHERE p.user_id=? AND p.profile_key=? AND c.provider_key=? AND c.model_id=? LIMIT 1`)
+          .get(step.user_id,profileKey,providerKey,modelId) as any;
+        if(!candidate||candidate.health_state!=='incompatible'||!candidate.circuit_open_until)continue;
+        if(String(candidate.circuit_open_until)<=new Date().toISOString())continue;
+        db.prepare("UPDATE model_candidates SET health_state='healthy',consecutive_failures=0,circuit_open_until=NULL,updated_at=? WHERE id=?")
+          .run(new Date().toISOString(),candidate.id);
+        repaired++;
+      }
+    }
+    return repaired;
+  }
+
   static spent(userId:string,since:string,runId?:string){
     const r=(runId
       ?db.prepare('SELECT COALESCE(SUM(budget_cost_usd),0) total FROM model_invocations WHERE user_id=? AND run_id=?').get(userId,runId)
