@@ -878,10 +878,9 @@ export class AgentEngine {
             });
             primaryInvocationRecorded=true;
 
-            const initialCost=Number(result.usage?.billedCostUsd||0);
             ModelRouter.assertBudget(
               x.userId,
-              initialCost+Number(candidate.max_cost_usd||0),
+              Number(candidate.max_cost_usd||0),
               {runId:x.runId}
             );
 
