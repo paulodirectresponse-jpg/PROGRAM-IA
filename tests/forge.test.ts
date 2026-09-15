@@ -595,10 +595,27 @@ Criar API segura
         assert.match(result.build.files[0].content, /STREAM_OK/);
         assert.equal(result.usage.inputTokens, 10);
         assert.equal(result.usage.outputTokens, 20);
+        assert.equal(result.usage.costStatus, 'unknown');
+        assert.equal(result.usage.billedCostUsd, undefined);
       } finally {
         globalThis.fetch = originalFetch;
       }
 
+
+    test('4.11b: custo explícito zero é diferente de custo ausente', () => {
+      assert.deepEqual(
+        (LLMAdapterService as any).extractUsageCost({prompt_tokens:1,completion_tokens:1}),
+        {costStatus:'unknown'}
+      );
+      assert.deepEqual(
+        (LLMAdapterService as any).extractUsageCost({billed_cost_usd:0}),
+        {billedCostUsd:0,costStatus:'known_zero'}
+      );
+      assert.deepEqual(
+        (LLMAdapterService as any).extractUsageCost({billed_cost_usd:0.018}),
+        {billedCostUsd:0.018,costStatus:'reported'}
+      );
+    });
 
     test('4.12: Modo plano sempre produz plano mesmo quando o provider responde só em prosa', () => {
       const parsed = (LLMAdapterService as any).parseLLMResponse(
