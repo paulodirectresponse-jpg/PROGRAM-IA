@@ -168,6 +168,8 @@ export class LLMAdapterService {
     const softwarePattern=/\b(site|website|landing\s*page|page|sistema|app|aplicativo|pagina|tela|dashboard|painel|layout|interface|codigo|arquivo|componente|botao|endpoint|api|backend|frontend|banco\s+de\s+dados|funcao|feature|funcionalidade|css|html|react|typescript|javascript|checkout|login|formulario|menu|navbar|hero|footer)\b/;
     const currentSoftware=softwarePattern.test(text);
     const recentSoftware=softwarePattern.test(recent)||existingFiles.some(path=>/\.(?:tsx?|jsx?|html?|css|vue|svelte)$/i.test(path));
+    const planningVerb=/\b(planeje|planeja|planejar|planejamento|estruture|estruturar|arquiteture|arquitetar|mapeie|mapear|desenhe\s+(?:a\s+)?arquitetura|defina\s+(?:a\s+)?arquitetura)\b/.test(text);
+    if(planningVerb&&(currentSoftware||recentSoftware))return 'plan';
 
     const ideation=/\b(me\s+ajude|ajude|detalhe|detalhar|explique|explicar|o\s+que|como\s+(?:voce|eu|isso)|qual|quais|pense|pensar|sugira|sugerir|avalie|avaliar|opine|opinar|brainstorm|ideia|conceito|estrategia|roteiro|copy|texto|mensagem)\b/;
     const executionAction=/\b(criar|crie|faca|monte|montar|implemente|implementar|construa|construir|programe|programar|codifique|codificar|gere|gerar|adicione|adicionar|inclua|incluir|altere|alterar|mude|mudar|edite|editar|substitua|substituir|remova|remover|exclua|excluir|corrija|corrigir|refatore|refatorar|melhore|melhorar|aplique|aplicar|aplicando|coloque|colocar|incorpore|incorporar|execute|executar|deixe|deixar|use|usar|troque|trocar|replique|replicar|siga|seguir|baseie|basear)\b/;
@@ -916,7 +918,9 @@ export class LLMAdapterService {
       const onlyIndex = existingPaths.length === 1 && existingPaths[0] === 'index.html';
       const indexContent = String(existingFiles['index.html'] || '');
       const isForgePlaceholder = /forge-placeholder:\s*preview-only/i.test(indexContent);
-      if (onlyIndex && !isForgePlaceholder) add('index.html');
+      const normalizedPrompt=String(prompt||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+      const complexProduct=/\b(sistema|dashboard|painel|admin|administrativo|saas|erp|crm|e-?commerce|loja\s+virtual|fluxo\s+de\s+caixa|estoque|vendas|fornecedores|clientes|funcionarios|relatorios|autenticacao|login)\b/.test(normalizedPrompt);
+      if (onlyIndex && !isForgePlaceholder && !complexProduct) add('index.html');
     }
     return out.sort((a, b) => this.buildTargetPriority(a) - this.buildTargetPriority(b));
   }
@@ -1002,6 +1006,22 @@ export class LLMAdapterService {
       options.existingFiles,
       [options.objective, options.scopeIn, ...(options.acceptanceCriteria || [])].filter(Boolean).join('\n')
     );
+
+    if(targets.length===0){
+      return {
+        replyText:'A construção foi bloqueada porque ainda não existe um plano de arquivos suficiente para esta arquitetura.',
+        mode:'build',
+        decisionType:'invalid_response',
+        isDemonstrativeFallback:false,
+        providerUsed:'Planejamento arquitetural',
+        modelUsed:options.modelId,
+        hasErrors:true,
+        invalidResponse:true,
+        errorReason:'architecture_targets_missing',
+        errorMessage:'SCOUT/FORGE precisam definir os arquivos reais da arquitetura antes de construir.',
+        diagnostics:{strategy:'atomic_file_build',attempts:0,targets:[],failures:[]},
+      };
+    }
 
     const generated: FileChangeProposal[] = [];
     const failures: string[] = [];
@@ -1312,8 +1332,12 @@ ${JSON.stringify(existingFiles)}
 REGRAS ARQUITETURAIS OBRIGATÓRIAS:
 - A arquitetura deve ser definida pelo produto solicitado, não pela quantidade de arquivos que já existem.
 - Um index.html de starter/preview NÃO significa que a aplicação deve permanecer em um único arquivo.
-- Não existe preferência por arquivo único. Crie tantos arquivos e diretórios quanto forem tecnicamente justificáveis.
+- Não existe preferência por arquivo único. Crie quantos arquivos, diretórios, módulos e rotas forem tecnicamente necessários.
+- Landing page simples pode ser enxuta. Sistema, dashboard, painel administrativo, SaaS, e-commerce, ERP ou aplicação com múltiplas funções NÃO pode ser comprimido artificialmente em um único index.html.
 - Para aplicações não triviais, separe responsabilidades (UI, domínio, estado, serviços, persistência, rotas, estilos, testes/configuração) conforme o stack escolhido.
+- Calcule as páginas/rotas pela necessidade real do produto: nem páginas artificiais em excesso, nem funcionalidades diferentes espremidas em uma tela única.
+- Toda ação visível precisa ter comportamento real ou estado coerente. Não crie botões, favoritos, sacolas, filtros, menus ou cards sem fluxo funcional quando o pedido exige um sistema utilizável.
+- Se uma nova capacidade exigir novo módulo, rota, componente, serviço, arquivo ou diretório, crie-o. O workspace atual nunca é um limite arquitetural.
 - Não invente complexidade apenas para aumentar a quantidade de arquivos; modularize quando isso melhora correção, manutenção, testes ou isolamento de responsabilidades.
 - Não declare funcionalidade pronta apenas porque a tela existe. Critérios comportamentais precisam aparecer no plano/requisitos.
 - Nunca trate "unverified" como equivalente a "verified".
@@ -1345,7 +1369,7 @@ SCHEMA PLAN (use em PLAN e quando AUTO decidir planejar):
     "objective": "objetivo do produto",
     "scope_in": "escopo incluído",
     "scope_out": "fora do escopo",
-    "architecture_summary": "stack, módulos e responsabilidades recomendadas",
+    "architecture_summary": "stack, páginas/rotas necessárias, módulos, estado, persistência, entidades e responsabilidades recomendadas",
     "existing_files_to_modify": ["caminhos existentes realmente necessários"],
     "new_files_to_create": ["novos caminhos necessários pela arquitetura"],
     "files_to_delete": [],
@@ -1394,6 +1418,8 @@ SCHEMA BUILD (use em BUILD e quando AUTO decidir construir):
 IMPORTANTE:
 - Não limite a lista de arquivos para caber em um exemplo.
 - Os exemplos de path são placeholders e NÃO indicam stack obrigatório.
+- Em PLAN, derive explicitamente páginas/rotas, módulos e arquivos necessários a partir das capacidades pedidas.
+- new_files_to_create deve conter caminhos concretos suficientes para implementar a arquitetura; não use somente index.html para sistemas não triviais.
 - Se o pedido grande ainda não possui arquitetura suficiente, prefira PLAN em AUTO.
 - Em BUILD, se o sistema exigir múltiplos módulos, retorne múltiplos arquivos coerentes.
 - Respostas de alteração sem estrutura de arquivos são rejeitadas por segurança.
