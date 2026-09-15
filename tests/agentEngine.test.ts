@@ -69,6 +69,132 @@ test('SCOUT architecture_brief file_plan is normalized into executable PLAN targ
   assert.deepEqual(wrapped!.new_files_to_create,['app.js','styles.css']);
 });
 
+test('SCOUT repairs common malformed PLAN JSON deterministically without another model call', async (t) => {
+  const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
+  const userId=`agent-structured-local-user-${unique}`;
+  const projectId=`agent-structured-local-project-${unique}`;
+  const conversationId=`agent-structured-local-conv-${unique}`;
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'plan',0.5);
+  seedRealWorkflowModel(userId,unique);
+  let calls=0;
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>{
+    calls++;
+    const malformed='{"type":"plan","plan":{"objective":"Administrar caixa","scope_in":"Dashboard","scope_out":"","architecture_summary":"Aplicação modular","existing_files_to_modify":["index.html"],"new_files_to_create":["app.js","styles.css"],"files_to_delete":[],"integrations":[],"risks":[],"acceptance_criteria":["Fluxo funciona"],"requirements":[{"id":"REQ-001","title":"Caixa","description":"Registrar entradas e saídas","priority":"critical","verification":["registrar entrada"]}],"task_graph":[{"id":"TASK-001","title":"Implementar caixa","requirement_ids":["REQ-001"],"depends_on":[]},],},}';
+    return {
+      replyText:malformed,mode:'plan',decisionType:'plan',isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,
+      plan:{
+        objective:'fallback',scope_in:'fallback',scope_out:'',
+        architecture_summary:'Arquitetura ainda não determinada; deve ser escolhida conforme o produto e o workspace, sem preferência por arquivo único.',
+        existing_files_to_modify:[],new_files_to_create:[],files_to_delete:[],files_affected:[],
+        integrations:[],risks:[],acceptance_criteria:['Implementação funcional'],
+        requirements:[{id:'REQ-001',title:'Implementação funcional',description:'Implementação funcional',priority:'high',verification:['Implementação funcional']}],
+        task_graph:[]
+      },
+      usage:{inputTokens:10,outputTokens:20,billedCostUsd:0}
+    } as any;
+  });
+  try{
+    const result=await AgentWorkflowEngine.executeWorkflow({
+      prompt:'planeja um site para ajudar a administrar todo o fluxo de caixa da minha loja de roupa',
+      mode:'plan',projectId,existingFiles:{'index.html':'<html></html>'},appliedSkills:[],conversationHistory:[],
+      userId,runId,stepId
+    });
+    assert.equal(calls,1);
+    assert.equal(result.workflow.status,'completed');
+    assert.deepEqual(result.plan?.new_files_to_create,['app.js','styles.css']);
+    const events=(RunService.trace(runId)[0]?.context?.events||[]).filter((event:any)=>event.type==='agent_stage');
+    assert.ok(events.some((event:any)=>event.stage==='structured_output.repair'&&event.status==='completed'&&event.strategy==='deterministic'));
+  }finally{
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    cleanupWorkflowModel(userId);
+  }
+});
+
+test('SCOUT uses one context-free micro model repair when PLAN formatting cannot be fixed locally', async (t) => {
+  const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
+  const userId=`agent-structured-micro-user-${unique}`;
+  const projectId=`agent-structured-micro-project-${unique}`;
+  const conversationId=`agent-structured-micro-conv-${unique}`;
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'plan',0.5);
+  seedRealWorkflowModel(userId,unique);
+  let calls=0;
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    calls++;
+    if(calls===1){
+      return {
+        replyText:'Objetivo: administrar fluxo de caixa. Arquivos: index.html, app.js e styles.css. Requisito: registrar entradas e saídas.',
+        mode:'plan',decisionType:'plan',isDemonstrativeFallback:false,
+        providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,
+        plan:{
+          objective:'fallback',scope_in:'fallback',scope_out:'',
+          architecture_summary:'Arquitetura ainda não determinada; deve ser escolhida conforme o produto e o workspace, sem preferência por arquivo único.',
+          existing_files_to_modify:[],new_files_to_create:[],files_to_delete:[],files_affected:[],
+          integrations:[],risks:[],acceptance_criteria:['Implementação funcional'],
+          requirements:[{id:'REQ-001',title:'Implementação funcional',description:'Implementação funcional',priority:'high',verification:['Implementação funcional']}],
+          task_graph:[]
+        },
+        usage:{inputTokens:10,outputTokens:20,billedCostUsd:0.001}
+      } as any;
+    }
+    assert.match(String(options.prompt),/REPARO DE FORMATO APENAS/);
+    assert.deepEqual(options.existingFiles,{});
+    assert.deepEqual(options.conversationHistory,[]);
+    return {
+      replyText:JSON.stringify({
+        type:'plan',
+        plan:{
+          objective:'Administrar fluxo de caixa',
+          scope_in:'Dashboard e movimentações',scope_out:'',
+          architecture_summary:'Aplicação modular com estado e persistência',
+          existing_files_to_modify:['index.html'],
+          new_files_to_create:['app.js','styles.css'],
+          files_to_delete:[],integrations:[],risks:[],
+          acceptance_criteria:['Registrar entradas e saídas'],
+          requirements:[{id:'REQ-001',title:'Fluxo de caixa',description:'Registrar entradas e saídas',priority:'critical',verification:['registrar entrada e saída']}],
+          task_graph:[{id:'TASK-001',title:'Implementar caixa',requirement_ids:['REQ-001'],depends_on:[]}]
+        }
+      }),
+      mode:'plan',decisionType:'plan',isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,
+      plan:{
+        objective:'Administrar fluxo de caixa',scope_in:'Dashboard e movimentações',scope_out:'',
+        architecture_summary:'Aplicação modular com estado e persistência',
+        existing_files_to_modify:['index.html'],new_files_to_create:['app.js','styles.css'],files_to_delete:[],
+        files_affected:['index.html','app.js','styles.css'],integrations:[],risks:[],
+        acceptance_criteria:['Registrar entradas e saídas'],
+        requirements:[{id:'REQ-001',title:'Fluxo de caixa',description:'Registrar entradas e saídas',priority:'critical',verification:['registrar entrada e saída']}],
+        task_graph:[{id:'TASK-001',title:'Implementar caixa',requirement_ids:['REQ-001'],depends_on:[]}]
+      },
+      usage:{inputTokens:5,outputTokens:10,billedCostUsd:0.0005}
+    } as any;
+  });
+  try{
+    const result=await AgentWorkflowEngine.executeWorkflow({
+      prompt:'planeja um site para ajudar a administrar todo o fluxo de caixa da minha loja de roupa',
+      mode:'plan',projectId,existingFiles:{'index.html':'<html></html>'},appliedSkills:[],conversationHistory:[],
+      userId,runId,stepId
+    });
+    assert.equal(calls,2);
+    assert.equal(result.workflow.status,'completed');
+    assert.deepEqual(result.plan?.new_files_to_create,['app.js','styles.css']);
+    const invocations=db.prepare('SELECT status,error_code,cost_usd FROM model_invocations WHERE run_id=? ORDER BY created_at').all(runId) as any[];
+    assert.equal(invocations.length,2);
+    assert.equal(invocations[0].status,'success');
+    assert.equal(invocations[0].error_code,'structured_output_invalid');
+    assert.equal(invocations[1].status,'success');
+    const events=(RunService.trace(runId)[0]?.context?.events||[]).filter((event:any)=>event.type==='agent_stage');
+    assert.ok(events.some((event:any)=>event.stage==='structured_output.repair'&&event.status==='completed'&&event.strategy==='micro_model'));
+  }finally{
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    cleanupWorkflowModel(userId);
+  }
+});
+
 test('paid SCOUT success with only structural gaps is repaired deterministically without a second paid call', async (t) => {
   const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
   const userId=`agent-paid-guard-user-${unique}`;
