@@ -33,7 +33,20 @@ test('each new Firebase user receives independent providers and skills',()=>{
 test('model profiles and candidates are isolated and configurable',()=>{const pa=ModelRouter.listProfiles(a),pb=ModelRouter.listProfiles(b);assert.equal(pa.length,3);assert.equal(pb.length,3);assert.equal(pa[0].candidates[0].provider_key,'omniroute');ModelRouter.saveCandidate(a,'BASE_FREE',{providerKey:'omniroute',modelId:'second-free',priority:2});assert.equal(ModelRouter.listProfiles(b)[0].candidates.length,1);});
 test('candidate order, pause and removal remain isolated',()=>{let c=ModelRouter.listProfiles(a)[0].candidates.find((x:any)=>x.model_id==='second-free');assert.ok(c);ModelRouter.updateCandidate(a,c.id,{priority:-1,enabled:false});c=ModelRouter.listProfiles(a)[0].candidates.find((x:any)=>x.id===c.id);assert.equal(c.enabled,0);ModelRouter.deleteCandidate(a,c.id);assert.equal(ModelRouter.listProfiles(a)[0].candidates.some((x:any)=>x.id===c.id),false);assert.throws(()=>ModelRouter.updateCandidate(b,c.id,{enabled:true}));});
 test('operational failures open and recover a candidate circuit',()=>{const c=ModelRouter.listProfiles(a)[0].candidates[0];ModelRouter.recordCandidateResult(c.id,false,'operational');ModelRouter.recordCandidateResult(c.id,false,'operational');assert.equal(ModelRouter.listProfiles(a)[0].candidates[0].health_state,'open');ModelRouter.recordCandidateResult(c.id,true);assert.equal(ModelRouter.listProfiles(a)[0].candidates[0].health_state,'healthy');});
-test('budget governor blocks calls before overspending',()=>{assert.throws(()=>ModelRouter.assertBudget(a,4),/diário/);ModelRouter.assertBudget(a,0);});
+test('budget governor keeps daily limits explicit and sizes interactive runs by mode',()=>{
+  const previous=process.env.FORGE_DAILY_AI_BUDGET_USD;
+  delete process.env.FORGE_DAILY_AI_BUDGET_USD;
+  try{
+    assert.doesNotThrow(()=>ModelRouter.assertBudget(a,4));
+    process.env.FORGE_DAILY_AI_BUDGET_USD='3';
+    assert.throws(()=>ModelRouter.assertBudget(a,4),(error:any)=>error?.code==='AI_DAILY_BUDGET_EXCEEDED');
+    assert.ok(ModelRouter.recommendedRunBudget(a,'plan')>=0.75);
+    assert.ok(ModelRouter.recommendedRunBudget(a,'auto')>=ModelRouter.recommendedRunBudget(a,'plan'));
+    assert.ok(ModelRouter.recommendedRunBudget(a,'auto')<=2);
+  }finally{
+    if(previous===undefined)delete process.env.FORGE_DAILY_AI_BUDGET_USD;else process.env.FORGE_DAILY_AI_BUDGET_USD=previous;
+  }
+});
 test('Firebase identity stays bound to uid; email cannot take over an existing account',()=>{
   assert.throws(()=>AuthService.firebaseLogin(`a-${suffix}@example.test`,'Other','unrelated-uid'), /outra identidade/);
   assert.equal(AuthService.firebaseLogin(`a-${suffix}@example.test`,'A',`fb-a-${suffix}`).user.id,a);
