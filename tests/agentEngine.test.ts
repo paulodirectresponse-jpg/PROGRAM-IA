@@ -29,6 +29,65 @@ function cleanupWorkflowModel(userId:string){
 }
 
 
+
+test('SCOUT planning trace preserves model and architecture stage evidence after finishStep', async (mock) => {
+  const unique=Date.now().toString(36)+Math.random().toString(36).slice(2);
+  const userId=`agent-trace-user-${unique}`;
+  const projectId=`agent-trace-project-${unique}`;
+  const conversationId=`agent-trace-conv-${unique}`;
+  const {runId,stepId}=RunService.start(userId,projectId,conversationId,'plan',0.5);
+  seedRealWorkflowModel(userId,unique);
+  mock.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>({
+    replyText:'Plano arquitetural válido',
+    mode:'plan',
+    decisionType:'plan',
+    isDemonstrativeFallback:false,
+    providerUsed:'OmniRoute',
+    modelUsed:'auto',
+    hasErrors:false,
+    plan:{
+      objective:'Gestão financeira de loja',
+      scope_in:'Fluxo de caixa, vendas e estoque',
+      scope_out:'',
+      architecture_summary:'Aplicação modular',
+      existing_files_to_modify:['index.html'],
+      new_files_to_create:['src/main.tsx','src/App.tsx','src/router.tsx','src/pages/Dashboard.tsx','src/pages/Financeiro.tsx'],
+      files_to_delete:[],
+      files_affected:['index.html','src/main.tsx','src/App.tsx','src/router.tsx','src/pages/Dashboard.tsx','src/pages/Financeiro.tsx'],
+      integrations:[],
+      risks:[],
+      acceptance_criteria:['Navegação funcional'],
+      requirements:[{id:'REQ-001',title:'Fluxo de caixa'}],
+      task_graph:[{id:'TASK-001',title:'Dashboard',requirement_ids:['REQ-001'],depends_on:[]}]
+    },
+    usage:{inputTokens:10,outputTokens:20,billedCostUsd:0}
+  } as any));
+  try{
+    await AgentWorkflowEngine.executeWorkflow({
+      prompt:'planeja um site para ajudar a administrar todo o fluxo de caixa da minha loja de roupa',
+      mode:'plan',projectId,existingFiles:{'index.html':'<html></html>'},appliedSkills:[],conversationHistory:[],
+      userId,runId,stepId
+    });
+    const trace=RunService.trace(runId);
+    const events=(trace[0]?.context?.events||[]).filter((event:any)=>event.type==='agent_stage');
+    const stages=events.map((event:any)=>`${event.stage}:${event.status}`);
+    assert.ok(stages.includes('agent.selected:completed'));
+    assert.ok(stages.includes('model.routing:completed'));
+    assert.ok(stages.includes('context.compile:completed'));
+    assert.ok(stages.includes('model.request:started'));
+    assert.ok(stages.includes('model.response:completed'));
+    assert.ok(stages.includes('contract.validation:completed'));
+    assert.ok(stages.includes('planning.model_result:completed'));
+    assert.ok(stages.includes('planning.architecture_validation:completed'));
+    assert.equal(trace[0]?.status,'completed');
+  }finally{
+    db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_steps WHERE run_id=?').run(runId);
+    db.prepare('DELETE FROM agent_runs WHERE id=?').run(runId);
+    cleanupWorkflowModel(userId);
+  }
+});
+
 test('agent profile without configured candidates stays blocked instead of escaping to active provider', async (t) => {
   let networkCalled = false;
   t.mock.method(globalThis, 'fetch', async () => {
