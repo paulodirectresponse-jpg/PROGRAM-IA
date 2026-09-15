@@ -168,9 +168,17 @@ export class AttachmentService {
 
   static formatContext(items:ProcessedAttachment[]){
     if(!items.length)return'';
-    return [
-      'ANEXOS ENVIADOS PELO USUÁRIO — trate como contexto primário do pedido:',
-      ...items.map((item,index)=>`[${index+1}] ${item.name} (${item.kind}, ${item.mimeType}, ${item.size} bytes)\n${item.analysis}`)
-    ].join('\n\n');
+    const chunks=['ANEXOS ENVIADOS PELO USUÁRIO — trate como contexto primário do pedido:'];
+    let used=chunks[0].length;
+    for(let index=0;index<items.length;index++){
+      const item=items[index];
+      const head=`[${index+1}] ${item.name} (${item.kind}, ${item.mimeType}, ${item.size} bytes)\n`;
+      const remaining=Math.max(0,120000-used-head.length);
+      if(!remaining)break;
+      const chunk=head+item.analysis.slice(0,Math.min(40000,remaining));
+      chunks.push(chunk);
+      used+=chunk.length;
+    }
+    return chunks.join('\n\n');
   }
 }
