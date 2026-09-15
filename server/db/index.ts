@@ -114,8 +114,17 @@ export function initializeDatabase() {
 
   ensureColumn('model_invocations', 'cost_status', "TEXT NOT NULL DEFAULT 'legacy'");
   ensureColumn('model_invocations', 'budget_cost_usd', 'REAL NOT NULL DEFAULT 0');
-  db.prepare("UPDATE model_invocations SET cost_status=CASE WHEN cost_status IS NULL OR cost_status='' OR cost_status='legacy' THEN CASE WHEN cost_usd IS NULL THEN 'unknown' WHEN cost_usd=0 THEN 'legacy' ELSE 'reported' END ELSE cost_status END").run();
-  db.prepare('UPDATE model_invocations SET budget_cost_usd=CASE WHEN budget_cost_usd IS NULL OR budget_cost_usd=0 THEN COALESCE(cost_usd,0) ELSE budget_cost_usd END').run();
+  db.prepare("UPDATE model_invocations SET cost_status=CASE WHEN cost_status IS NULL OR cost_status='' OR cost_status='legacy' THEN CASE WHEN COALESCE(cost_usd,0)>0 THEN 'reported' ELSE 'unknown' END ELSE cost_status END").run();
+  db.prepare(`UPDATE model_invocations
+    SET budget_cost_usd=CASE
+      WHEN budget_cost_usd IS NOT NULL AND budget_cost_usd>0 THEN budget_cost_usd
+      WHEN cost_status IN ('reported','known_zero') THEN COALESCE(cost_usd,0)
+      ELSE COALESCE((
+        SELECT max_cost_usd FROM model_profiles p
+        WHERE p.user_id=model_invocations.user_id AND p.profile_key=model_invocations.profile_key
+        LIMIT 1
+      ),COALESCE(cost_usd,0))
+    END`).run();
   db.prepare('UPDATE agent_runs SET spent_usd=COALESCE((SELECT SUM(mi.budget_cost_usd) FROM model_invocations mi WHERE mi.run_id=agent_runs.id),0)').run();
 
   const migration8Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 8').get() as { version: number } | undefined;
