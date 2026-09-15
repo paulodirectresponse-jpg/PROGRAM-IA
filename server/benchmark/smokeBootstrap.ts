@@ -15,7 +15,10 @@ export function smokeBootstrapConfig(env:NodeJS.ProcessEnv=process.env){
   if(!Number.isFinite(maxCostUsd)||maxCostUsd<0.05||maxCostUsd>1){
     throw new Error('FORGE_BENCHMARK_SMOKE_MAX_USD deve estar entre US$0.05 e US$1.00.');
   }
-  return {requestId,maxCostUsd:Number(maxCostUsd.toFixed(4)),caseIds:[...SMOKE_CASE_IDS]};
+  const waitForBudget=String(env.FORGE_BENCHMARK_SMOKE_WAIT_FOR_BUDGET||'false').toLowerCase()==='true';
+  const rawWait=Number(env.FORGE_BENCHMARK_SMOKE_MAX_WAIT_MINUTES||'360');
+  const maxWaitMinutes=Number.isFinite(rawWait)?Math.max(5,Math.min(720,Math.floor(rawWait))):360;
+  return {requestId,maxCostUsd:Number(maxCostUsd.toFixed(4)),caseIds:[...SMOKE_CASE_IDS],waitForBudget,maxWaitMinutes};
 }
 
 function sanitizedReport(run:any){
@@ -102,15 +105,55 @@ export class BenchmarkSmokeBootstrap {
         return {enabled:true,status:'failed_preflight',reason,eligibleCount:eligible.length};
       }
 
-      const {userId,preflight}=eligible[0];
-      const remaining=Number(preflight.remainingDailyUsd||0);
-      const effectiveBudget=Math.min(config.maxCostUsd,remaining);
+      const userId=eligible[0].userId;
+      let preflight=eligible[0].preflight;
+      let remaining=Number(preflight.remainingDailyUsd||0);
+      let effectiveBudget=Math.min(config.maxCostUsd,remaining);
       if(!Number.isFinite(effectiveBudget)||effectiveBudget<0.05){
-        const reason='insufficient_daily_budget';
-        db.prepare("UPDATE benchmark_smoke_requests SET user_id=?,status='failed_preflight',report_json=?,finished_at=? WHERE request_id=?")
-          .run(userId,JSON.stringify({reason,remainingDailyUsd:remaining}),now(),config.requestId);
-        console.error('FORGE_BENCHMARK_SMOKE_PREFLIGHT_FAILED '+JSON.stringify({requestId:config.requestId,reason,remainingDailyUsd:remaining}));
-        return {enabled:true,status:'failed_preflight',reason};
+        if(!config.waitForBudget){
+          const reason='insufficient_daily_budget';
+          db.prepare("UPDATE benchmark_smoke_requests SET user_id=?,status='failed_preflight',report_json=?,finished_at=? WHERE request_id=?")
+            .run(userId,JSON.stringify({reason,remainingDailyUsd:remaining}),now(),config.requestId);
+          console.error('FORGE_BENCHMARK_SMOKE_PREFLIGHT_FAILED '+JSON.stringify({requestId:config.requestId,reason,remainingDailyUsd:remaining}));
+          return {enabled:true,status:'failed_preflight',reason};
+        }
+
+        db.prepare("UPDATE benchmark_smoke_requests SET user_id=?,status='waiting_budget',report_json=? WHERE request_id=?")
+          .run(userId,JSON.stringify({reason:'waiting_daily_budget_reset',remainingDailyUsd:remaining,maxWaitMinutes:config.maxWaitMinutes}),config.requestId);
+        console.log('FORGE_BENCHMARK_SMOKE_WAITING_BUDGET '+JSON.stringify({
+          requestId:config.requestId,remainingDailyUsd:remaining,maxWaitMinutes:config.maxWaitMinutes,
+        }));
+
+        const maxPolls=config.maxWaitMinutes;
+        let ready=false;
+        for(let poll=0;poll<maxPolls;poll++){
+          await sleep(60_000);
+          preflight=BenchmarkService.preflight(userId,false);
+          const hasBase=Array.isArray(preflight.baseCandidates)&&preflight.baseCandidates.length>0;
+          if(!hasBase||!preflight.canRun){
+            const reason='provider_became_unavailable';
+            db.prepare("UPDATE benchmark_smoke_requests SET status='failed_preflight',report_json=?,finished_at=? WHERE request_id=?")
+              .run(JSON.stringify({reason}),now(),config.requestId);
+            console.error('FORGE_BENCHMARK_SMOKE_PREFLIGHT_FAILED '+JSON.stringify({requestId:config.requestId,reason}));
+            return {enabled:true,status:'failed_preflight',reason};
+          }
+          remaining=Number(preflight.remainingDailyUsd||0);
+          effectiveBudget=Math.min(config.maxCostUsd,remaining);
+          if(Number.isFinite(effectiveBudget)&&effectiveBudget>=0.05){
+            ready=true;
+            console.log('FORGE_BENCHMARK_SMOKE_BUDGET_READY '+JSON.stringify({
+              requestId:config.requestId,remainingDailyUsd:remaining,effectiveBudget:Number(effectiveBudget.toFixed(4)),
+            }));
+            break;
+          }
+        }
+        if(!ready){
+          const reason='budget_wait_timeout';
+          db.prepare("UPDATE benchmark_smoke_requests SET status='failed_preflight',report_json=?,finished_at=? WHERE request_id=?")
+            .run(JSON.stringify({reason,remainingDailyUsd:remaining}),now(),config.requestId);
+          console.error('FORGE_BENCHMARK_SMOKE_PREFLIGHT_FAILED '+JSON.stringify({requestId:config.requestId,reason,remainingDailyUsd:remaining}));
+          return {enabled:true,status:'failed_preflight',reason};
+        }
       }
 
       const active=db.prepare("SELECT id,status FROM benchmark_runs WHERE user_id=? AND status IN ('queued','running') LIMIT 1").get(userId) as any;

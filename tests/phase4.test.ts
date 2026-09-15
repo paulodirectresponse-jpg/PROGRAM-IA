@@ -18,9 +18,13 @@ test('phase4 server-side smoke configuration is hard-bounded and idempotent',asy
   const cfg=smokeBootstrapConfig({
     FORGE_BENCHMARK_SMOKE_REQUEST_ID:'authorized-smoke',
     FORGE_BENCHMARK_SMOKE_MAX_USD:'1',
+    FORGE_BENCHMARK_SMOKE_WAIT_FOR_BUDGET:'true',
+    FORGE_BENCHMARK_SMOKE_MAX_WAIT_MINUTES:'999',
   } as any);
   assert.deepEqual(cfg?.caseIds,['P4-01','P4-11','P4-28']);
   assert.equal(cfg?.maxCostUsd,1);
+  assert.equal(cfg?.waitForBudget,true);
+  assert.equal(cfg?.maxWaitMinutes,720);
   assert.throws(()=>smokeBootstrapConfig({
     FORGE_BENCHMARK_SMOKE_REQUEST_ID:'too-expensive',
     FORGE_BENCHMARK_SMOKE_MAX_USD:'1.01',
