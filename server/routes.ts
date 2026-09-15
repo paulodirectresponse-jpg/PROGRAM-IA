@@ -1280,15 +1280,22 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     });
     const attachmentContext=AttachmentService.formatContext(processedAttachments);
     const mentionedFileContext=validMentionedFiles.length
-      ? [
-          'ARQUIVOS DO WORKSPACE MENCIONADOS EXPLICITAMENTE PELO USUÁRIO — priorize estes arquivos:',
-          ...validMentionedFiles.map(filePath=>{
+      ? (()=>{
+          const chunks=['ARQUIVOS DO WORKSPACE MENCIONADOS EXPLICITAMENTE PELO USUÁRIO — priorize estes arquivos:'];
+          let used=chunks[0].length;
+          for(const filePath of validMentionedFiles){
             const text=existingFiles[filePath];
-            if(typeof text==='string')return `### ${filePath}\n${text.slice(0,50000)}`;
             const info=projectFiles.find(file=>file.path===filePath);
-            return `### ${filePath}\n[arquivo binário do workspace, ${info?.size||0} bytes]`;
-          })
-        ].join('\n\n')
+            const body=typeof text==='string'?text:`[arquivo binário do workspace, ${info?.size||0} bytes]`;
+            const head=`### ${filePath}\n`;
+            const remaining=Math.max(0,120000-used-head.length);
+            if(!remaining)break;
+            const chunk=head+body.slice(0,Math.min(50000,remaining));
+            chunks.push(chunk);
+            used+=chunk.length;
+          }
+          return chunks.join('\n\n');
+        })()
       : '';
     const requestContext=[attachmentContext,mentionedFileContext].filter(Boolean).join('\n\n');
     const effectivePrompt=[userContent,requestContext].filter(Boolean).join('\n\n');
