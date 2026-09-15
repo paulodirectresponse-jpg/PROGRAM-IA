@@ -874,7 +874,7 @@ export class AgentWorkflowEngine extends AgentEngine {
       nextState: { next: needsStudio([x.prompt,scoutBrief].join('\n'), x.mode) ? 'STUDIO' : 'FORGE', architectureTargets }
     });
     RunService.finishStep(x.stepId, 'completed', {
-      ...RunService.context(complexRequest?'project':'task', {
+      ...RunService.context('task', {
         objective: x.prompt,
         acceptanceCriteria: [
           'Atender ao pedido sem ampliar escopo',
