@@ -112,7 +112,7 @@ test('paid SCOUT success with only structural gaps is repaired deterministically
       mode:'plan',projectId,existingFiles:{'index.html':'<html></html>'},appliedSkills:[],conversationHistory:[],
       userId,runId,stepId
     });
-    assert.equal(calls,2);
+    assert.equal(calls,1);
     assert.equal(result.workflow.status,'completed');
     assert.equal(result.plan?.task_graph.length,1);
     const invocations=db.prepare('SELECT profile_key,status FROM model_invocations WHERE run_id=? ORDER BY created_at').all(runId) as any[];
@@ -299,7 +299,8 @@ test('complex PLAN repairs only contract gaps and accepts repaired architecture'
     const initialFailure=events.find((event:any)=>event.stage==='planning.architecture_validation'&&event.status==='failed'&&event.phase==='initial');
     assert.ok(initialFailure);
     assert.ok(Array.isArray(initialFailure.reasons)&&initialFailure.reasons.includes('missing_task_graph'));
-    assert.ok(events.some((event:any)=>event.stage==='planning.architecture_repair'&&event.status==='completed'));
+    assert.ok(events.some((event:any)=>event.stage==='planning.deterministic_repair'&&event.status==='completed'));
+    assert.equal(events.some((event:any)=>event.stage==='planning.architecture_repair'&&event.status==='started'),false);
     assert.ok(events.some((event:any)=>event.stage==='planning.architecture_validation'&&event.status==='completed'&&event.phase==='final'));
   }finally{
     db.prepare('DELETE FROM model_invocations WHERE run_id=?').run(runId);
