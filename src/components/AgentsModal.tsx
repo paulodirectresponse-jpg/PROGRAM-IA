@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, AlertTriangle, ArrowDown, ArrowUp, Bot, CheckCircle2, CircleDollarSign, Gauge, ListChecks, Network, Plus, RefreshCcw, Route, StopCircle, Trash2, X } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowDown, ArrowUp, Bot, CheckCircle2, CircleDollarSign, Gauge, ListChecks, Network, Plus, RefreshCcw, Route, ShieldCheck, StopCircle, Trash2, X } from 'lucide-react';
+import { BenchmarkPanel } from './BenchmarkPanel';
 
 type Candidate={id:string;provider_key:string;model_id:string;priority:number;enabled:number;health_state:string};
 type Profile={id:string;profile_key:string;name:string;max_attempts:number;max_cost_usd:number;candidates:Candidate[]};
@@ -9,7 +10,7 @@ type AgentStageEvent={type?:string;stage?:string;status?:string;at?:string;error
 type TraceStep={id:string;agent_key:string;title:string;status:string;attempt_count:number;invocations:Invocation[];context?:{events?:AgentStageEvent[]}|null};
 type AgentRun={id:string;project_id:string;mode:string;status:string;spent_usd:number;budget_usd:number;known_cost_usd?:number;budget_accounted_usd?:number;unknown_cost_calls?:number;created_at:string;trace:TraceStep[]};
 type Requirement={id:string;requirement_key:string;title:string;priority:string;status:string;verification:string[];files:string[];evidence:any[]};
-type TabKey='overview'|'runs'|'requirements'|'routing';
+type TabKey='overview'|'runs'|'requirements'|'routing'|'benchmark';
 type DetailMode='basic'|'advanced';
 type RunFilter='all'|'running'|'failed'|'completed';
 
@@ -122,7 +123,7 @@ export function AgentsModal({isOpen,onClose,projectId}:{isOpen:boolean;onClose:(
       </div>
       <nav className="mt-4 flex gap-1 overflow-x-auto" aria-label="Seções da Central de Agentes">
         {([
-          ['overview','Visão geral',Gauge],['runs','Execuções',Activity],['requirements','Requisitos',ListChecks],['routing','Modelos & Roteamento',Network]
+          ['overview','Visão geral',Gauge],['runs','Execuções',Activity],['requirements','Requisitos',ListChecks],['routing','Modelos & Roteamento',Network],['benchmark','Benchmark & Release',ShieldCheck]
         ] as [TabKey,string,React.ComponentType<{size?:number}>][]).map(([key,label,Icon])=><button key={key} onClick={()=>setTab(key)} aria-selected={tab===key} className={'flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-[11px] font-medium '+(tab===key?'bg-cyan-950/70 text-cyan-200 ring-1 ring-cyan-900':'text-slate-500 hover:bg-slate-900 hover:text-slate-300')}><Icon size={13}/>{label}</button>)}
       </nav>
     </header>
@@ -162,6 +163,7 @@ export function AgentsModal({isOpen,onClose,projectId}:{isOpen:boolean;onClose:(
       <section><div className="flex items-center gap-2 mb-3"><Network size={15} className="text-emerald-400"/><div><h3 className="text-sm font-semibold text-slate-100">Modelos & Roteamento</h3><p className="mt-0.5 text-[10px] text-slate-500">Agentes fixos; modelos substituíveis por perfil, disponibilidade e custo.</p></div></div><div className="grid lg:grid-cols-3 gap-3">{profiles.map(p=><div key={p.id} className="rounded-xl border border-slate-800 bg-slate-900/60 p-4"><div className="flex justify-between"><div><div className="font-semibold text-slate-100">{p.name}</div><div className="text-[10px] font-mono text-slate-500">{p.profile_key}</div></div><div className="text-[10px] text-slate-400">até ${p.max_cost_usd}</div></div><div className="mt-3 space-y-2">{p.candidates.map((c,i)=><div key={c.id} className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-950 p-2"><button onClick={()=>mutate(`/api/model-candidates/${c.id}`,'PATCH',{priority:Math.max(0,c.priority-1)}).catch(e=>setError(e.message))} title="Subir"><ArrowUp size={12}/></button><button onClick={()=>mutate(`/api/model-candidates/${c.id}`,'PATCH',{priority:c.priority+1}).catch(e=>setError(e.message))} title="Descer"><ArrowDown size={12}/></button><div className="min-w-0 flex-1"><div className="truncate text-[11px] text-slate-200">{c.provider_key} · {c.model_id}</div><div className="text-[9px] text-slate-500">#{i+1} · {c.health_state}</div></div><button onClick={()=>mutate(`/api/model-candidates/${c.id}`,'PATCH',{enabled:!c.enabled}).catch(e=>setError(e.message))} className={`text-[9px] px-1.5 py-1 rounded ${c.enabled?'text-emerald-300 bg-emerald-950':'text-slate-400 bg-slate-800'}`}>{c.enabled?'ativo':'pausado'}</button><button onClick={()=>mutate(`/api/model-candidates/${c.id}`,'DELETE').catch(e=>setError(e.message))}><Trash2 size={12} className="text-rose-400"/></button></div>)}</div></div>)}</div></section>
       <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-4"><h3 className="text-sm font-semibold text-slate-100 mb-3 flex items-center gap-2"><Plus size={14}/>Adicionar modelo ao perfil</h3><div className="grid sm:grid-cols-4 gap-2"><select value={profileKey} onChange={e=>setProfileKey(e.target.value)} className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs">{profiles.map(p=><option key={p.id} value={p.profile_key}>{p.name}</option>)}</select><input value={providerKey} onChange={e=>setProviderKey(e.target.value)} placeholder="provedor" className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs"/><input value={modelId} onChange={e=>setModelId(e.target.value)} placeholder="modelo" className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs"/><button onClick={()=>mutate(`/api/model-profiles/${profileKey}/candidates`,'PUT',{providerKey,modelId,priority:99}).catch(e=>setError(e.message))} className="rounded-lg bg-cyan-500 text-slate-950 text-xs font-semibold">Adicionar</button></div></section>
       </>}
+      {tab==='benchmark'&&<BenchmarkPanel/>}
     </div></div></div>
 }
 

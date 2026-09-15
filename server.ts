@@ -9,6 +9,7 @@ import { router as apiRouter } from './server/routes.js';
 import { CloudSyncService } from './server/services/cloudSyncService.js';
 import { RuntimeManager } from './server/services/runtimeManager.js';
 import { Phase2RecoveryService } from './server/tooling/phase2RecoveryService.js';
+import { BenchmarkService } from './server/benchmark/benchmarkService.js';
 
 dotenv.config();
 
@@ -20,6 +21,12 @@ try {
   // Recovery is best-effort. A stale/interrupted sandbox must never prevent
   // the application from booting after a successful schema migration.
   console.error('Phase 2 startup recovery failed:', error);
+}
+
+try {
+  BenchmarkService.recoverStartup();
+} catch (error) {
+  console.error('Phase 4 benchmark recovery failed:', error);
 }
 
 if (process.env.FORGE_REQUIRE_CLOUD_SYNC === 'true') {
