@@ -12,7 +12,7 @@ const DOMAINS=['users','projects','providers','user_secrets','integrations','ski
 function rowKey(domain:string,row:any){return String(row?.id||row?.service_key||row?.provider_key||row?.profile_key||`${domain}:${JSON.stringify(row)}`);}
 function normalizeValue(value:any,field?:string){
   if(value===undefined)return null;
-  if(['revision','level','max_attempts','max_cost_usd','priority','consecutive_failures','input_tokens','output_tokens','cost_usd','latency_ms','retry_index'].includes(String(field))&&value!==null&&value!=='')return Number(value);
+  if(['revision','level','max_attempts','max_cost_usd','priority','consecutive_failures','input_tokens','output_tokens','cost_usd','budget_cost_usd','latency_ms','retry_index'].includes(String(field))&&value!==null&&value!=='')return Number(value);
   return value;
 }
 function criticalFields(domain:string){
@@ -30,7 +30,7 @@ function criticalFields(domain:string){
     branches:['id','project_id','name','is_current','head_commit_hash'],
     model_profiles:['id','user_id','profile_key','level','max_attempts','max_cost_usd','enabled'],
     model_candidates:['id','profile_id','provider_key','model_id','priority','enabled','health_state','consecutive_failures','circuit_open_until'],
-    model_invocations:['id','user_id','project_id','run_id','step_id','agent_key','profile_key','provider_key','model_id','input_tokens','output_tokens','cost_usd','latency_ms','status','error_code','retry_index'],
+    model_invocations:['id','user_id','project_id','run_id','step_id','agent_key','profile_key','provider_key','model_id','input_tokens','output_tokens','cost_usd','cost_status','budget_cost_usd','latency_ms','status','error_code','retry_index'],
   };
   return map[domain]||['id'];
 }
