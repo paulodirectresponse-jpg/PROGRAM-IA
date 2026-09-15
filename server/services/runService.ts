@@ -83,7 +83,7 @@ export class RunService{
   static trace(runId:string){
     const steps=db.prepare(`SELECT id,agent_key,title,status,order_index,scope_level,attempt_count,context_json,created_at,finished_at
       FROM agent_steps WHERE run_id=? ORDER BY order_index ASC, created_at ASC`).all(runId) as any[];
-    const invocations=db.prepare(`SELECT id,step_id,agent_key,profile_key,provider_key,model_id,status,error_code,retry_index,latency_ms,cost_usd,context_pack_id,context_scope,project_hash,context_tokens,context_selected_files_json,context_omitted_files_count,created_at
+    const invocations=db.prepare(`SELECT id,step_id,agent_key,profile_key,provider_key,model_id,status,error_code,retry_index,latency_ms,cost_usd,cost_status,budget_cost_usd,context_pack_id,context_scope,project_hash,context_tokens,context_selected_files_json,context_omitted_files_count,created_at
       FROM model_invocations WHERE run_id=? ORDER BY created_at ASC`).all(runId) as any[];
     return steps.map(step=>({
       ...step,
