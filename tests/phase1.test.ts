@@ -195,6 +195,81 @@ test('phase1 agents send ContextPack-derived prompts and propagate requirements 
   } finally { cleanupRun(run.runId,projectId,userId); }
 });
 
+test('phase1 complex product build requires SCOUT architecture and sends all planned files to FORGE', async (t) => {
+  const suffix=safeIdSuffix();
+  const userId=`phase1-complex-user-${suffix}`;
+  const projectId=`phase1-complex-project-${suffix}`;
+  const run=RunService.start(userId,projectId,'conv-phase1-complex','build');
+  seedModel(userId);
+  const architectureFiles=['package.json','src/main.tsx','src/App.tsx','src/router.tsx','src/pages/Dashboard.tsx','src/pages/CashFlow.tsx','src/pages/Inventory.tsx','src/store/appStore.ts','src/styles.css'];
+  const architectureBrief=JSON.stringify({
+    type:'architecture_brief',
+    objective:'Administrar fluxo de caixa da loja',
+    complexity:'complex',
+    architecture_summary:'Aplicação modular com rotas e estado',
+    routes:[
+      {path:'/dashboard',purpose:'Visão geral'},
+      {path:'/caixa',purpose:'Fluxo de caixa'},
+      {path:'/estoque',purpose:'Estoque'},
+    ],
+    modules:[{name:'financeiro',responsibility:'movimentações'},{name:'estoque',responsibility:'produtos'}],
+    file_plan:{create:architectureFiles,modify:[],delete:[]},
+    requirements:[{id:'REQ-001',description:'Fluxo de caixa funcional',verification:['registrar entrada e saída']}],
+    task_graph:[{id:'TASK-001',title:'Construir base',requirement_ids:['REQ-001'],depends_on:[]}],
+    risks:[],
+    acceptance_criteria:['Navegação funcional'],
+  });
+  let scoutCalls=0,studioCalls=0;
+  t.mock.method(LLMAdapterService,'getProviderConfig',()=>({key:'mock-context',type:'openai_compatible',apiKey:'x',baseUrl:'https://mock.invalid/v1',modelId:'mock-model',name:'Mock Context',isConfigured:true} as any));
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    if(String(options.prompt).includes('PAPEL INTERNO: SCOUT')){
+      scoutCalls++;
+      return {replyText:architectureBrief,mode:'review',decisionType:'review',isDemonstrativeFallback:false,providerUsed:'Mock Context',modelUsed:'mock-model',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any;
+    }
+    if(String(options.prompt).includes('PAPEL INTERNO: STUDIO')){
+      studioCalls++;
+      return {replyText:'Navegação lateral entre dashboard, caixa e estoque; estados vazios, loading e erro; controles com comportamento real.',mode:'review',decisionType:'review',isDemonstrativeFallback:false,providerUsed:'Mock Context',modelUsed:'mock-model',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any;
+    }
+    return {replyText:'ok',mode:options.mode,decisionType:'explanation',isDemonstrativeFallback:false,providerUsed:'Mock Context',modelUsed:'mock-model',hasErrors:false,usage:{inputTokens:1,outputTokens:1,billedCostUsd:0}} as any;
+  });
+  let requested:string[]=[];
+  t.mock.method(LLMAdapterService,'buildApprovedPlanReliably',async(options:any)=>{
+    requested=[...options.requestedFiles];
+    const files=architectureFiles.map(path=>({
+      path,
+      action:path==='index.html'?'modify':'create',
+      content:path.endsWith('.json')?'{"scripts":{"dev":"vite"}}':path.endsWith('.css')?'body{margin:0}':path.endsWith('.tsx')||path.endsWith('.ts')?'export const value=1;':'export const value=1;'
+    }));
+    return {
+      replyText:'multi-file build',
+      mode:'build',decisionType:'change',isDemonstrativeFallback:false,providerUsed:'Mock Context',modelUsed:'mock-model',hasErrors:false,
+      build:{summary:'Sistema modular',explanation:'ok',files},
+      usage:{inputTokens:1,outputTokens:1,billedCostUsd:0},
+      diagnostics:{strategy:'atomic_file_build',attempts:files.length,targets:architectureFiles,failures:[]},
+    } as any;
+  });
+  try{
+    const result=await AgentWorkflowEngine.executeWorkflow({
+      prompt:'Faça um sistema para administrar fluxo de caixa, vendas, estoque, fornecedores e clientes da minha loja de roupa',
+      mode:'build',projectId,
+      existingFiles:{'index.html':'<!doctype html><html><body>antigo</body></html>'},
+      appliedSkills:[],
+      conversationHistory:[{sender:'user',content:'Planeje um sistema completo para a loja de roupa.'}],
+      userId,runId:run.runId,stepId:run.stepId,
+    });
+    assert.ok(scoutCalls>=1);
+    assert.ok(studioCalls>=1);
+    for(const file of architectureFiles)assert.ok(requested.includes(file),`missing planned target ${file}`);
+    assert.ok((result.build?.files||[]).length>=4);
+    const trace=RunService.trace(run.runId);
+    const scout=trace.find((step:any)=>step.agent_key==='SCOUT');
+    const studio=trace.find((step:any)=>step.agent_key==='STUDIO');
+    assert.equal(scout?.status,'completed');
+    assert.equal(studio?.status,'completed');
+    assert.notEqual(scout?.context?.source,'deterministic_fallback');
+  }finally{cleanupRun(run.runId,projectId,userId);}
+});
+
 test('phase1 repair uses local ContextPack focused on failed files instead of full project', async (t) => {
   const suffix=safeIdSuffix();
   const userId=`phase1-repair-user-${suffix}`;
