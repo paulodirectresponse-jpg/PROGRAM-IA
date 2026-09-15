@@ -396,6 +396,97 @@ function normalizePlanTarget(path:string){
   return String(path||'').replace(/\\/g,'/').replace(/^\.\//,'').trim();
 }
 
+function repairPlanDeterministically(plan:PlanOutput|undefined){
+  if(!plan)return{plan,changes:[] as string[]};
+  const changes:string[]=[];
+  const safePath=(path:string)=>{
+    const normalized=normalizePlanTarget(path);
+    return Boolean(normalized&&!normalized.includes('..')&&!normalized.startsWith('/')&&!normalized.startsWith('\\'));
+  };
+
+  const existingFiles=[...new Set((plan.existing_files_to_modify||[]).map(normalizePlanTarget).filter(safePath))];
+  const newFiles=[...new Set((plan.new_files_to_create||[]).map(normalizePlanTarget).filter(safePath))];
+  const deleteFiles=[...new Set((plan.files_to_delete||[]).map(normalizePlanTarget).filter(safePath))];
+  if(
+    existingFiles.length!==(plan.existing_files_to_modify||[]).length||
+    newFiles.length!==(plan.new_files_to_create||[]).length||
+    deleteFiles.length!==(plan.files_to_delete||[]).length
+  )changes.push('removed_unsafe_file_targets');
+
+  let acceptance=[...(plan.acceptance_criteria||[])].map(item=>String(item||'').trim()).filter(Boolean);
+  let requirements=(plan.requirements||[]).map((req,index)=>{
+    const id=String(req.id||`REQ-${String(index+1).padStart(3,'0')}`).toUpperCase();
+    const title=String(req.title||req.description||`Requisito ${index+1}`).trim();
+    const description=String(req.description||title).trim();
+    let verification=(req.verification||[]).map(item=>String(item||'').trim()).filter(Boolean);
+    if(!verification.length){
+      const fallback=acceptance[index]||description||title;
+      if(fallback){
+        verification=[fallback];
+        changes.push('filled_requirement_verification');
+      }
+    }
+    return{...req,id,title,description,verification};
+  });
+
+  if(!requirements.length&&acceptance.length){
+    requirements=acceptance.map((criterion,index)=>({
+      id:`REQ-${String(index+1).padStart(3,'0')}`,
+      title:criterion,
+      description:criterion,
+      priority:'high' as const,
+      verification:[criterion],
+    }));
+    changes.push('requirements_from_acceptance');
+  }
+
+  if(!acceptance.length&&requirements.length){
+    acceptance=[...new Set(requirements.flatMap(req=>req.verification?.length?req.verification:[req.description||req.title]).filter(Boolean))];
+    if(acceptance.length)changes.push('acceptance_from_requirements');
+  }
+
+  const requirementIds=new Set(requirements.map(req=>req.id.toUpperCase()));
+  let tasks=(plan.task_graph||[]).map((task,index)=>{
+    const requirement_ids=(task.requirement_ids||[]).map(id=>String(id||'').toUpperCase()).filter(id=>requirementIds.has(id));
+    if(requirement_ids.length!==(task.requirement_ids||[]).length)changes.push('removed_unknown_task_requirements');
+    return{
+      ...task,
+      id:String(task.id||`TASK-${String(index+1).padStart(3,'0')}`).toUpperCase(),
+      title:String(task.title||`Tarefa ${index+1}`).trim(),
+      requirement_ids,
+      depends_on:[...(task.depends_on||[])].map(id=>String(id||'').toUpperCase()).filter(Boolean),
+    };
+  });
+
+  const referenced=new Set(tasks.flatMap(task=>task.requirement_ids));
+  for(const req of requirements){
+    if(referenced.has(req.id.toUpperCase()))continue;
+    tasks.push({
+      id:`TASK-${String(tasks.length+1).padStart(3,'0')}`,
+      title:req.title||req.description||`Implementar ${req.id}`,
+      requirement_ids:[req.id.toUpperCase()],
+      depends_on:[],
+    });
+    referenced.add(req.id.toUpperCase());
+    changes.push('linked_unreferenced_requirement');
+  }
+
+  const filesAffected=[...new Set([...existingFiles,...newFiles,...deleteFiles])];
+  return{
+    plan:{
+      ...plan,
+      existing_files_to_modify:existingFiles,
+      new_files_to_create:newFiles,
+      files_to_delete:deleteFiles,
+      files_affected:filesAffected,
+      acceptance_criteria:acceptance,
+      requirements,
+      task_graph:tasks,
+    } satisfies PlanOutput,
+    changes:[...new Set(changes)],
+  };
+}
+
 function assessPlanArchitecture(plan:PlanOutput|undefined,complex:boolean):PlanArchitectureAssessment{
   const reasons:string[]=[];
   if(!plan){
@@ -876,7 +967,7 @@ export class AgentWorkflowEngine extends AgentEngine {
           requirementCount:result.plan?.requirements?.length||0,taskCount:result.plan?.task_graph?.length||0
         });
         if(complexPlan){
-          const initialAssessment=assessPlanArchitecture(result.plan,true);
+          let initialAssessment=assessPlanArchitecture(result.plan,true);
           RunService.recordStage(x.stepId,'planning.architecture_validation','started',{
             phase:'initial',targetCount:initialAssessment.targets.length,targets:initialAssessment.targets.slice(0,40),
             requirementCount:initialAssessment.requirementCount,taskCount:initialAssessment.taskCount,
@@ -888,11 +979,36 @@ export class AgentWorkflowEngine extends AgentEngine {
               targetCount:initialAssessment.targets.length,targets:initialAssessment.targets.slice(0,40),
               requirementCount:initialAssessment.requirementCount,taskCount:initialAssessment.taskCount
             });
-            RunService.recordStage(x.stepId,'planning.architecture_repair','started',{
-              reason:'plan_contract_incomplete',reasons:initialAssessment.reasons,
-              fromProfile:result.profileKey,toProfile:'EXPERT_PAID'
-            });
-            const repaired=await AgentEngine.execute(
+
+            const deterministic=repairPlanDeterministically(result.plan);
+            if(deterministic.plan&&deterministic.changes.length){
+              const deterministicAssessment=assessPlanArchitecture(deterministic.plan,true);
+              RunService.recordStage(x.stepId,'planning.deterministic_repair',deterministicAssessment.valid?'completed':'info',{
+                changes:deterministic.changes,beforeReasons:initialAssessment.reasons,afterReasons:deterministicAssessment.reasons,
+                targetCount:deterministicAssessment.targets.length,requirementCount:deterministicAssessment.requirementCount,
+                taskCount:deterministicAssessment.taskCount
+              });
+              result={...result,plan:deterministic.plan,replyText:JSON.stringify({type:'plan',...deterministic.plan},null,2)};
+              initialAssessment=deterministicAssessment;
+            }
+
+            if(initialAssessment.valid){
+              RunService.recordStage(x.stepId,'paid_call.guard','completed',{
+                action:'avoided_second_paid_call',reason:'deterministic_plan_repair_satisfied_contract',
+                originalProfile:result.profileKey
+              });
+            }else{
+              const alreadyPaid=result.profileKey==='EXPERT_PAID';
+              RunService.recordStage(x.stepId,'paid_call.guard','info',{
+                action:alreadyPaid?'authorized_second_paid_call':'first_paid_repair',
+                reason:'semantic_plan_gaps_require_model',remainingReasons:initialAssessment.reasons,
+                originalProfile:result.profileKey
+              });
+              RunService.recordStage(x.stepId,'planning.architecture_repair','started',{
+                reason:'plan_contract_incomplete',reasons:initialAssessment.reasons,
+                fromProfile:result.profileKey,toProfile:'EXPERT_PAID'
+              });
+              const repaired=await AgentEngine.execute(
               {
                 ...x,
                 mode:'plan',
@@ -918,13 +1034,14 @@ export class AgentWorkflowEngine extends AgentEngine {
               },
               { profile:'EXPERT_PAID',forcedAgentKey:'SCOUT',allowExpertEscalation:false,requireModelWork:true }
             );
-            const repairedAssessment=assessPlanArchitecture(repaired.plan,true);
-            RunService.recordStage(x.stepId,'planning.architecture_repair',repairedAssessment.valid?'completed':'failed',{
-              profileKey:repaired.profileKey,decisionType:repaired.decisionType,
-              targetCount:repairedAssessment.targets.length,requirementCount:repairedAssessment.requirementCount,
-              taskCount:repairedAssessment.taskCount,reasons:repairedAssessment.reasons
-            });
-            if(repaired.plan)result=repaired;
+              const repairedAssessment=assessPlanArchitecture(repaired.plan,true);
+              RunService.recordStage(x.stepId,'planning.architecture_repair',repairedAssessment.valid?'completed':'failed',{
+                profileKey:repaired.profileKey,decisionType:repaired.decisionType,
+                targetCount:repairedAssessment.targets.length,requirementCount:repairedAssessment.requirementCount,
+                taskCount:repairedAssessment.taskCount,reasons:repairedAssessment.reasons
+              });
+              if(repaired.plan)result=repaired;
+            }
           }
           const finalAssessment=assessPlanArchitecture(result.plan,true);
           if(!finalAssessment.valid){
