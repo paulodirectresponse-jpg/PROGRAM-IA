@@ -24,6 +24,7 @@ import {
   Plan,
   ChangeProposal,
   AuthUser,
+  ChatAttachmentInput,
 } from './types';
 
 async function readApiPayload(res: Response): Promise<any> {
@@ -347,7 +348,7 @@ export default function App() {
   };
 
   // Handle send message
-  const handleSendMessage = async (text: string, appliedSkills: string[]) => {
+  const handleSendMessage = async (text: string, appliedSkills: string[], mentionedFiles: string[] = [], attachments: ChatAttachmentInput[] = []) => {
     if (!activeProject || isLoading) return;
 
     // Optimistically add user message
@@ -357,7 +358,17 @@ export default function App() {
       sender: 'user',
       content: text,
       created_at: new Date().toISOString(),
-      metadata: { mode: activeMode, appliedSkills },
+      metadata: {
+        mode: activeMode,
+        appliedSkills,
+        mentionedFiles,
+        attachments: attachments.map(item=>({
+          id:'temp-'+item.name+'-'+item.size,
+          name:item.name,
+          mimeType:item.mimeType,
+          size:item.size,
+        })),
+      },
     };
     setMessages((prev) => [...prev, tempUserMsg]);
     setIsLoading(true);
@@ -379,6 +390,8 @@ export default function App() {
           content: text,
           mode: activeMode,
           appliedSkills,
+          mentionedFiles,
+          attachments,
         }),
       });
 
@@ -743,6 +756,7 @@ export default function App() {
         onContinueRun={handleContinueAgentRun}
         onAbort={handleAbort}
         availableSkills={skills}
+        workspaceFiles={files}
         canSend={Boolean(activeProject) && !projectLoadError}
         sidebarCollapsed={sidebarCollapsed}
       />
