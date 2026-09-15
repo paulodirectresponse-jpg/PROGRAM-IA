@@ -370,6 +370,29 @@ export function initializeDatabase() {
     );
   }
 
+  // Migration 012: idempotent server-side Phase 4 smoke requests.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS benchmark_smoke_requests (
+      request_id TEXT PRIMARY KEY,
+      user_id TEXT,
+      benchmark_run_id TEXT,
+      status TEXT NOT NULL,
+      max_cost_usd REAL NOT NULL,
+      case_ids_json TEXT NOT NULL DEFAULT '[]',
+      report_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS benchmark_smoke_requests_created ON benchmark_smoke_requests(created_at);
+  `);
+  const migration12Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 12').get() as { version: number } | undefined;
+  if (!migration12Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      12,'012_phase4_server_side_smoke_request',new Date().toISOString()
+    );
+  }
+
   db.prepare("UPDATE tool_executions SET status='interrupted',error_code=COALESCE(error_code,'worker_interrupted'),finished_at=COALESCE(finished_at,?) WHERE status IN ('queued','running')").run(new Date().toISOString());
   const restartRecoveryAt=new Date().toISOString();
   db.prepare("UPDATE agent_steps SET status='aborted',finished_at=? WHERE status='running' AND run_id IN (SELECT DISTINCT run_id FROM tool_executions WHERE status='interrupted' AND run_id IS NOT NULL)")
