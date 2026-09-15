@@ -37,7 +37,7 @@ type Input = {
   };
 };
 
-type ExecuteOptions = { profile?: ProfileKey; forcedAgentKey?: string; allowExpertEscalation?: boolean; repair?: boolean };
+type ExecuteOptions = { profile?: ProfileKey; forcedAgentKey?: string; allowExpertEscalation?: boolean; repair?: boolean; requireModelWork?: boolean };
 type RetryStrategy = 'same_candidate'|'next_candidate'|'reduce_context'|'fragment_task'|'expert'|'stop';
 
 function relevantFiles(files: Record<string, string>, previewLimit: number) {
@@ -366,26 +366,109 @@ function recordContextCommitFromStep(x: Input, agentKey: string, scope: ContextS
   });
 }
 
-function buildTargetsFromBrief(existingFiles:Record<string,string>, texts:string[], focusPaths:string[]=[]){
+function normalizeIntentText(value:string){
+  return String(value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,' ');
+}
+
+function isComplexProductRequest(x:Pick<Input,'prompt'|'mode'|'conversationHistory'|'existingFiles'>){
+  if(!['auto','build','plan'].includes(x.mode))return false;
+  const recent=(x.conversationHistory||[]).slice(-8).map(item=>item.content).join('\n');
+  const text=normalizeIntentText([recent,x.prompt].join('\n'));
+  const simpleLanding=/\b(landing\s*page|pagina\s+de\s+venda|pagina\s+institucional|site\s+institucional|one\s*page)\b/.test(text);
+  const product=/\b(sistema|aplicativo|app|dashboard|painel|admin|administrativo|saas|erp|crm|e-?commerce|loja\s+virtual|gestao|gerenciamento|administrar|fluxo\s+de\s+caixa|pdv|estoque|vendas|compras|fornecedores|clientes|funcionarios|usuarios|relatorios|financeiro|autenticacao|login|permissoes)\b/.test(text);
+  const capabilities=[
+    'fluxo de caixa','estoque','vendas','compras','fornecedores','clientes','funcionarios','usuarios',
+    'relatorios','financeiro','pdv','autenticacao','login','permissoes','dashboard','cadastro','historico'
+  ].filter(term=>text.includes(term)).length;
+  return product && (!simpleLanding || capabilities>=2);
+}
+
+function isUnderArchitectedWorkspace(files:Record<string,string>){
+  const paths=Object.keys(files).map(path=>path.replace(/\\/g,'/'));
+  const meaningful=paths.filter(path=>!/^README(?:\.md)?$/i.test(path));
+  if(meaningful.length<=2&&meaningful.includes('index.html'))return true;
+  const code=meaningful.filter(path=>/\.(?:tsx?|jsx?|mjs|cjs|html?|css|vue|svelte|py|go|rs|java|kt|php)$/i.test(path));
+  return code.length<=2&&paths.includes('index.html');
+}
+
+function extractJsonObject(text:string):any|null{
+  const raw=String(text||'').trim();
+  const candidates=[raw,...[...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map(match=>String(match[1]||'').trim())];
+  for(const candidate of candidates){
+    try{return JSON.parse(candidate);}catch{}
+    const first=candidate.indexOf('{'),last=candidate.lastIndexOf('}');
+    if(first>=0&&last>first){try{return JSON.parse(candidate.slice(first,last+1));}catch{}}
+  }
+  return null;
+}
+
+function extractArchitectureTargets(existingFiles:Record<string,string>,brief:string,focusPaths:string[]=[]){
   const existing=new Set(Object.keys(existingFiles).map(path=>path.replace(/\\/g,'/').replace(/^\.\//,'')));
   const targets:string[]=[];
-  const add=(path:string)=>{
-    const normalized=String(path||'').replace(/\\/g,'/').replace(/^\.\//,'').replace(/[),.;:]+$/,'').trim();
+  const add=(value:unknown)=>{
+    const normalized=String(value||'').replace(/\\/g,'/').replace(/^\.\//,'').replace(/[),.;:]+$/,'').trim();
     if(!normalized||targets.includes(normalized))return;
-    if(existing.has(normalized))targets.push(normalized);
-    else if(/^[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*\.[a-zA-Z0-9]+$/.test(normalized))targets.push(normalized);
+    if(existing.has(normalized)||/^[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*\.(?:tsx?|jsx?|mjs|cjs|html?|css|json|ya?ml|toml|md|sql|env|vue|svelte)$/i.test(normalized)||/(^|\/)(?:Dockerfile|Procfile)$/i.test(normalized))targets.push(normalized);
   };
   for(const path of focusPaths)add(path);
-  const pathPattern=/\b([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*\.(?:tsx?|jsx?|mjs|cjs|html?|css|json|ya?ml|toml|md))\b/g;
-  for(const text of texts){
-    let match:RegExpExecArray|null;
-    while((match=pathPattern.exec(String(text||'')))!==null)add(match[1]);
+  const parsed=extractJsonObject(brief);
+  const visit=(value:any,key='')=>{
+    if(Array.isArray(value)){
+      const fileish=/file|arquivo|create|modify|target|path/i.test(key);
+      for(const item of value){
+        if(fileish&&typeof item==='string')add(item);
+        else visit(item,key);
+      }
+      return;
+    }
+    if(!value||typeof value!=='object')return;
+    for(const [childKey,child] of Object.entries(value)){
+      if(typeof child==='string'&&/^(path|file|filepath|filename)$/i.test(childKey))add(child);
+      else visit(child,childKey);
+    }
+  };
+  if(parsed)visit(parsed);
+  const pathPattern=/\b([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*\.(?:tsx?|jsx?|mjs|cjs|html?|css|json|ya?ml|toml|md|sql|vue|svelte))\b/g;
+  let match:RegExpExecArray|null;
+  while((match=pathPattern.exec(String(brief||'')))!==null)add(match[1]);
+  return targets;
+}
+
+function buildTargetsFromBrief(existingFiles:Record<string,string>, texts:string[], focusPaths:string[]=[]){
+  const targets:string[]=[];
+  const add=(path:string)=>{for(const item of extractArchitectureTargets(existingFiles,path,[]))if(!targets.includes(item))targets.push(item);};
+  for(const path of focusPaths){
+    const normalized=String(path||'').replace(/\\/g,'/').replace(/^\.\//,'').trim();
+    if(normalized&&!targets.includes(normalized))targets.push(normalized);
   }
-  return targets.slice(0,8);
+  for(const text of texts){
+    for(const item of extractArchitectureTargets(existingFiles,String(text||''),[]))if(!targets.includes(item))targets.push(item);
+  }
+  return targets;
+}
+
+function architectureScoutPrompt(x:Input,repair=false){
+  const context=(x.conversationHistory||[]).slice(-8).map(item=>`${item.sender.toUpperCase()}: ${item.content}`).join('\n');
+  return [
+    contractPrompt('SCOUT'),
+    repair
+      ? 'A arquitetura anterior ficou insuficiente. Refaça a análise e produza um contrato arquitetural completo antes de qualquer código.'
+      : 'Faça análise arquitetural real antes da implementação. Não apenas resuma o pedido.',
+    'Determine a complexidade do produto e calcule as páginas/rotas, módulos e arquivos pela necessidade real. Não há meta mínima ou máxima artificial: crie exatamente o necessário.',
+    'Sistemas, dashboards, painéis administrativos, SaaS, lojas e aplicações com múltiplas capacidades não podem ser reduzidos a um único index.html.',
+    'Cada capacidade pedida deve ser mapeada para rota/tela quando fizer sentido, módulo/domínio, estado/persistência e critério verificável.',
+    'Não proponha controles sem comportamento. Menus, botões, favoritos, carrinhos, filtros, cadastros e relatórios precisam ter fluxo/estado previsto.',
+    'O file_plan deve listar caminhos CONCRETOS de arquivos a criar/modificar. Se uma nova pasta ou módulo for necessário, inclua-o.',
+    'Retorne SOMENTE JSON válido neste formato:',
+    '{"type":"architecture_brief","objective":"...","complexity":"simple|medium|complex","architecture_summary":"...","routes":[{"path":"/...","purpose":"...","capabilities":["..."]}],"modules":[{"name":"...","responsibility":"..."}],"data_entities":["..."],"file_plan":{"create":["path.ext"],"modify":["path.ext"],"delete":[]},"requirements":[{"id":"REQ-001","description":"...","verification":["..."]}],"task_graph":[{"id":"TASK-001","title":"...","requirement_ids":["REQ-001"],"depends_on":[]}],"risks":["..."],"acceptance_criteria":["..."]}',
+    'Não gere código. Não responda ao usuário final.',
+    context?'CONTEXTO RECENTE DA CONVERSA:\n'+context:'',
+    'PEDIDO ATUAL:\n'+x.prompt,
+  ].filter(Boolean).join('\n\n');
 }
 
 function needsStudio(prompt: string, mode: AgentMode) {
-  return (mode === 'auto' || mode === 'build') && /interface|layout|design|visual|tela|css|responsiv|premium|ux|ui|dashboard|painel/i.test(prompt);
+  return (mode === 'auto' || mode === 'build') && /interface|layout|design|visual|tela|css|responsiv|premium|ux|ui|dashboard|painel|site|website|app|aplicativo|sistema|loja|e-?commerce|pagina|landing/i.test(prompt);
 }
 
 function needsShip(prompt: string, mode: AgentMode) {
@@ -432,6 +515,24 @@ export class AgentEngine {
         );
       }
       const contextual = withCompiledContext(x, agentKey, options);
+      if(options.requireModelWork){
+        const active=LLMAdapterService.getActiveProviderConfig(x.userId);
+        if(!active?.isConfigured){
+          throw Object.assign(new Error('Nenhum modelo real configurado para executar esta etapa crítica.'),{kind:'capacity',reason:'no_real_model'});
+        }
+        const result=await LLMAdapterService.executePrompt({
+          ...contextual,
+          providerKey:active.key,
+          modelId:active.modelId,
+          allowActiveFallback:false,
+          contextBrief:contextual.contextBrief,
+          contextPackId:contextual.contextPack?.id,
+        });
+        if(result.isDemonstrativeFallback||result.hasErrors||result.invalidResponse){
+          throw Object.assign(new Error(result.errorMessage||'O modelo real não concluiu a etapa crítica.'),{kind:'operational',reason:result.errorReason||'critical_agent_failed'});
+        }
+        return { ...result, agentKey, profileKey: profile };
+      }
       const fallback = await LLMAdapterService.executePrompt({ ...contextual, providerKey: undefined, allowActiveFallback: false });
       return { ...fallback, agentKey, profileKey: profile };
     }
