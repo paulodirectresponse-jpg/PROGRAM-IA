@@ -295,6 +295,66 @@ CREATE INDEX IF NOT EXISTS browser_quality_project_created ON browser_quality_ru
 CREATE INDEX IF NOT EXISTS browser_quality_run_created ON browser_quality_runs(run_id,created_at);
 CREATE INDEX IF NOT EXISTS browser_quality_sandbox_created ON browser_quality_runs(sandbox_id,created_at);
 
+-- Phase 4: Benchmark + release gate
+CREATE TABLE IF NOT EXISTS benchmark_runs (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  suite_key TEXT NOT NULL,
+  status TEXT NOT NULL,
+  total_cases INTEGER NOT NULL,
+  completed_cases INTEGER NOT NULL DEFAULT 0,
+  passed_cases INTEGER NOT NULL DEFAULT 0,
+  failed_cases INTEGER NOT NULL DEFAULT 0,
+  max_cost_usd REAL NOT NULL,
+  spent_usd REAL NOT NULL DEFAULT 0,
+  allow_expert INTEGER NOT NULL DEFAULT 0,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  summary_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS benchmark_runs_user_created ON benchmark_runs(user_id,created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS benchmark_runs_one_active_user ON benchmark_runs(user_id) WHERE status IN ('queued','running');
+
+CREATE TABLE IF NOT EXISTS benchmark_case_runs (
+  id TEXT PRIMARY KEY,
+  benchmark_run_id TEXT NOT NULL,
+  case_id TEXT NOT NULL,
+  case_order INTEGER NOT NULL,
+  category TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  agent_key TEXT NOT NULL,
+  status TEXT NOT NULL,
+  score INTEGER NOT NULL DEFAULT 0,
+  passed INTEGER NOT NULL DEFAULT 0,
+  project_id TEXT,
+  agent_run_id TEXT,
+  provider_real INTEGER NOT NULL DEFAULT 0,
+  profile_key TEXT,
+  provider_key TEXT,
+  model_id TEXT,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  budget_cost_usd REAL NOT NULL DEFAULT 0,
+  unknown_cost_calls INTEGER NOT NULL DEFAULT 0,
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  repairs INTEGER NOT NULL DEFAULT 0,
+  expert_escalations INTEGER NOT NULL DEFAULT 0,
+  validator_status TEXT,
+  browser_status TEXT,
+  failure_reason TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT,
+  UNIQUE(benchmark_run_id,case_id)
+);
+CREATE INDEX IF NOT EXISTS benchmark_case_runs_run_order ON benchmark_case_runs(benchmark_run_id,case_order);
+CREATE INDEX IF NOT EXISTS benchmark_case_runs_case ON benchmark_case_runs(case_id,created_at);
+
 -- 12. skills
 CREATE TABLE IF NOT EXISTS skills (
   id TEXT PRIMARY KEY,
