@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import {db} from '../db/index.js';
 export type RunStatus='running'|'waiting_approval'|'needs_verification'|'completed'|'failed'|'aborted'|'rejected';
 export type StepStatus='completed'|'failed'|'aborted'|'rejected';
+export type AgentStageStatus='started'|'completed'|'failed'|'info';
 export class RunService{
   static start(userId:string,projectId:string,conversationId:string,mode:string,budget=.5){
     const now=new Date().toISOString(),runId=`run-${crypto.randomUUID()}`;
@@ -23,8 +24,16 @@ export class RunService{
   static recordAttempt(stepId:string){db.prepare('UPDATE agent_steps SET attempt_count=attempt_count+1 WHERE id=?').run(stepId);}
   static finishStep(stepId:string,status:StepStatus='completed',context?:unknown){
     const now=new Date().toISOString();
-    if(context===undefined) db.prepare('UPDATE agent_steps SET status=?,finished_at=? WHERE id=?').run(status,now,stepId);
-    else db.prepare('UPDATE agent_steps SET status=?,finished_at=?,context_json=? WHERE id=?').run(status,now,JSON.stringify(context),stepId);
+    if(context===undefined){
+      db.prepare('UPDATE agent_steps SET status=?,finished_at=? WHERE id=?').run(status,now,stepId);
+      return;
+    }
+    const row=db.prepare('SELECT context_json FROM agent_steps WHERE id=?').get(stepId) as {context_json?:string}|undefined;
+    let previous:any=null;
+    try{previous=row?.context_json?JSON.parse(row.context_json):null;}catch{previous=null;}
+    const mergeable=previous&&typeof previous==='object'&&!Array.isArray(previous)&&context&&typeof context==='object'&&!Array.isArray(context);
+    const nextContext=mergeable?{...previous,...context}:context;
+    db.prepare('UPDATE agent_steps SET status=?,finished_at=?,context_json=? WHERE id=?').run(status,now,JSON.stringify(nextContext),stepId);
   }
   static setStatus(runId:string,status:RunStatus,finish=false){
     const now=new Date().toISOString();
@@ -52,6 +61,9 @@ export class RunService{
     if(stepId) db.prepare('UPDATE agent_steps SET status=?,finished_at=? WHERE id=? AND status=\'running\'').run(stepStatus,now,stepId);
     db.prepare('UPDATE agent_steps SET status=?,finished_at=? WHERE run_id=? AND status=\'running\'').run(stepStatus,now,runId);
     db.prepare('UPDATE agent_runs SET status=?,finished_at=? WHERE id=?').run(status,now,runId);
+  }
+  static recordStage(stepId:string,stage:string,status:AgentStageStatus='info',details:Record<string,unknown>={}){
+    this.appendProgressEvent(stepId,{type:'agent_stage',stage,status,...details});
   }
   static appendProgressEvent(stepId:string,event:Record<string,unknown>){
     const row=db.prepare('SELECT context_json FROM agent_steps WHERE id=?').get(stepId) as {context_json?:string}|undefined;
