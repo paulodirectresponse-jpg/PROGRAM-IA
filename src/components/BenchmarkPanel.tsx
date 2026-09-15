@@ -9,7 +9,7 @@ type Preflight={
 };
 type BenchmarkCase={
   id:string;caseId:string;order:number;category:string;mode:string;agentKey:string;status:string;score:number;passed:boolean;
-  profileKey?:string|null;providerKey?:string|null;modelId?:string|null;providerReal:boolean;costUsd:number;latencyMs:number;
+  profileKey?:string|null;providerKey?:string|null;modelId?:string|null;providerReal:boolean;costUsd:number;budgetCostUsd:number;unknownCostCalls:number;latencyMs:number;
   attempts:number;repairs:number;expertEscalations:number;validatorStatus?:string|null;browserStatus?:string|null;failureReason?:string|null;
 };
 type BenchmarkRun={
@@ -158,19 +158,21 @@ export function BenchmarkPanel(){
         <span className={`rounded-md border px-2 py-1 text-[9px] uppercase ${statusTone(selected.status)}`}>{selected.status}</span>
       </div>
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-900"><div className="h-full bg-violet-500 transition-all" style={{width:`${Math.max(2,Math.round(progress*100))}%`}}/></div>
-      <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-6">
+      <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7">
         <Metric label="Aprovados" value={`${selected.passedCases}/${selected.completedCases||0}`}/>
         <Metric label="Pass rate" value={pct(selected.summary?.passRate)}/>
         <Metric label="Score médio" value={String(selected.summary?.averageScore??0)}/>
         <Metric label="1ª tentativa" value={pct(selected.summary?.firstPassRate)}/>
         <Metric label="Repair" value={pct(selected.summary?.repairRate)}/>
-        <Metric label="Custo" value={`${money(selected.spentUsd)} / ${money(selected.maxCostUsd)}`}/>
+        <Metric label="Custo confirmado" value={money(selected.summary?.totalCostUsd)}/>
+        <Metric label="Budget contabilizado" value={`${money(selected.spentUsd)} / ${money(selected.maxCostUsd)}`}/>
       </div>
+      {Number(selected.summary?.unknownCostCalls||0)>0&&<div className="mt-2 rounded-lg border border-amber-900/50 bg-amber-950/20 px-2.5 py-2 text-[9px] text-amber-300">{Number(selected.summary.unknownCostCalls)} chamada(s) não informaram preço real; o budget usa a reserva conservadora registrada.</div>}
 
       {categoryRows.length>0&&<div className="mt-3 flex flex-wrap gap-1.5">{categoryRows.map(([name,value]:any)=><span key={name} className="rounded border border-slate-800 bg-slate-900 px-2 py-1 text-[9px] text-slate-400">{name}: {value.passed}/{value.cases} · score {value.averageScore}</span>)}</div>}
 
       <div className="mt-3 max-h-56 overflow-auto rounded-lg border border-slate-900">
-        {(selected.cases||[]).map(item=><div key={item.id} className="grid grid-cols-[52px_1fr_auto] items-center gap-2 border-b border-slate-900 px-2 py-1.5 text-[9px] last:border-b-0"><span className="font-mono text-violet-300">{item.caseId}</span><div className="min-w-0"><div className="truncate text-slate-400">{item.category} · {item.agentKey} · {item.providerKey||'—'}/{item.modelId||'—'}</div>{item.failureReason&&<div className="truncate text-rose-400">{item.failureReason}</div>}</div><div className="flex items-center gap-2"><span className="text-slate-600">{money(item.costUsd)}</span><span className={item.passed?'text-emerald-400':item.status==='failed'?'text-rose-400':'text-slate-500'}>{item.status} · {item.score}</span></div></div>)}
+        {(selected.cases||[]).map(item=><div key={item.id} className="grid grid-cols-[52px_1fr_auto] items-center gap-2 border-b border-slate-900 px-2 py-1.5 text-[9px] last:border-b-0"><span className="font-mono text-violet-300">{item.caseId}</span><div className="min-w-0"><div className="truncate text-slate-400">{item.category} · {item.agentKey} · {item.providerKey||'—'}/{item.modelId||'—'}</div>{item.failureReason&&<div className="truncate text-rose-400">{item.failureReason}</div>}</div><div className="flex items-center gap-2"><span className="text-slate-600">{item.unknownCostCalls>0?`confirmado ${money(item.costUsd)} · budget ${money(item.budgetCostUsd)}`:money(item.costUsd)}</span><span className={item.passed?'text-emerald-400':item.status==='failed'?'text-rose-400':'text-slate-500'}>{item.status} · {item.score}</span></div></div>)}
       </div>
     </div>}
 
