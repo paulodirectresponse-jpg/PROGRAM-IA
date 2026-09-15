@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Send,
   Sparkles,
@@ -68,6 +68,19 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const [clockNow,setClockNow]=useState(()=>Date.now());
+  const compactActiveTrace=useMemo(()=>{
+    const latestByAgent=new Map<string,any>();
+    for(const step of activeAgentTrace||[]){
+      const key=String(step?.agent_key||step?.id||'STEP');
+      latestByAgent.set(key,step);
+    }
+    const order=['SCOUT','STUDIO','FORGE','SENTINEL','SHIP'];
+    return [...latestByAgent.values()].sort((a:any,b:any)=>{
+      const ai=order.indexOf(String(a?.agent_key||'')),bi=order.indexOf(String(b?.agent_key||''));
+      const av=ai<0?99:ai,bv=bi<0?99:bi;
+      return av-bv;
+    });
+  },[activeAgentTrace]);
 
   useEffect(()=>{
     if(activeAgentRunStatus!=='running')return;
@@ -450,9 +463,9 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                   }</span>
                   {activeAgentRun?.created_at&&<span className="font-mono text-[9px] text-slate-600">{elapsed(activeAgentRun.created_at,activeAgentRun.status==='running'?null:activeAgentRun.finished_at)}</span>}
                 </div>
-                {Array.isArray(activeAgentTrace) && activeAgentTrace.length > 0 && (
+                {compactActiveTrace.length > 0 && (
                   <div className="space-y-1 pl-3.5">
-                    {activeAgentTrace.map((step:any) => {
+                    {compactActiveTrace.map((step:any) => {
                       const labels:Record<string,string>={
                         SCOUT:'Analisando projeto e requisitos',
                         STUDIO:'Definindo direção visual e experiência',
