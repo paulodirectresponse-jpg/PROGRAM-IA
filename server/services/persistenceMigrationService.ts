@@ -30,7 +30,7 @@ function criticalFields(domain:string){
     branches:['id','project_id','name','is_current','head_commit_hash'],
     model_profiles:['id','user_id','profile_key','level','max_attempts','max_cost_usd','enabled'],
     model_candidates:['id','profile_id','provider_key','model_id','priority','enabled','health_state','consecutive_failures','circuit_open_until'],
-    model_invocations:['id','user_id','project_id','run_id','step_id','agent_key','profile_key','provider_key','model_id','input_tokens','output_tokens','cost_usd','cost_status','budget_cost_usd','latency_ms','status','error_code','retry_index'],
+    model_invocations:['id','user_id','project_id','run_id','step_id','agent_key','profile_key','provider_key','model_id','input_tokens','output_tokens','cost_usd','cost_status','budget_cost_usd','latency_ms','status','error_code','retry_index','benchmark_run_id','benchmark_case_id'],
   };
   return map[domain]||['id'];
 }
