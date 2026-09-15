@@ -499,27 +499,54 @@ export class AgentEngine {
         }
         throw error;
       }
-      return await this.executeWithProfile(x, 'EXPERT_PAID', { ...options, profile: 'EXPERT_PAID' });
+      RunService.recordStage(x.stepId,'profile.escalation','started',{
+        fromProfile:profile,toProfile:'EXPERT_PAID',reason:String(error?.reason||error?.kind||error?.message||'base_free_failed')
+      });
+      try{
+        const escalated=await this.executeWithProfile(x,'EXPERT_PAID',{...options,profile:'EXPERT_PAID'});
+        RunService.recordStage(x.stepId,'profile.escalation','completed',{fromProfile:profile,toProfile:'EXPERT_PAID'});
+        return escalated;
+      }catch(escalationError:any){
+        RunService.recordStage(x.stepId,'profile.escalation','failed',{
+          fromProfile:profile,toProfile:'EXPERT_PAID',error:String(escalationError?.message||escalationError)
+        });
+        throw escalationError;
+      }
     }
   }
 
   private static async executeWithProfile(x: Input, profile: ProfileKey, options: ExecuteOptions): Promise<LLMExecutionResult & { agentKey: string; profileKey: ProfileKey }> {
     const agentKey = options.forcedAgentKey || selectAgent(x.mode, x.prompt);
     RunService.assignAgent(x.stepId, agentKey);
+    RunService.recordStage(x.stepId,'agent.selected','completed',{agentKey,profile,mode:x.mode});
+    RunService.recordStage(x.stepId,'model.routing','started',{profile,agentKey});
     const available = ModelRouter.candidates(x.userId, profile).filter(c => LLMAdapterService.getProviderConfig(c.provider_key, x.userId).isConfigured);
+    RunService.recordStage(x.stepId,'model.routing','completed',{
+      profile,agentKey,candidateCount:available.length,
+      candidates:available.map(candidate=>({providerKey:candidate.provider_key,modelId:candidate.model_id,priority:candidate.priority,healthState:candidate.health_state}))
+    });
     if (!available.length) {
+      RunService.recordStage(x.stepId,'model.routing.empty','failed',{profile,agentKey,allowExpertEscalation:Boolean(options.allowExpertEscalation)});
       if (options.allowExpertEscalation) {
         throw Object.assign(
           new Error(`Nenhum candidate utilizável no perfil ${profile}.`),
           { kind: 'capacity', reason: 'no_candidate' }
         );
       }
+      RunService.recordStage(x.stepId,'context.compile','started',{profile,agentKey,strategy:'active_provider_fallback'});
       const contextual = withCompiledContext(x, agentKey, options);
+      RunService.recordStage(x.stepId,'context.compile','completed',{
+        profile,agentKey,strategy:'active_provider_fallback',contextPackId:contextual.contextPack?.id,
+        scope:contextual.contextPack?.scope,estimatedTokens:contextual.contextPack?.estimatedTokens,
+        selectedFiles:contextual.contextPack?.selectedFiles.length||0,omittedFiles:contextual.contextPack?.omittedFiles.length||0
+      });
       if(options.requireModelWork){
         const active=LLMAdapterService.getActiveProviderConfig(x.userId);
         if(!active?.isConfigured){
           throw Object.assign(new Error('Nenhum modelo real configurado para executar esta etapa crítica.'),{kind:'capacity',reason:'no_real_model'});
         }
+        const directStarted=Date.now();
+        RunService.recordStage(x.stepId,'model.request','started',{profile,agentKey,providerKey:active.key,modelId:active.modelId,strategy:'active_provider_fallback'});
         const result=await LLMAdapterService.executePrompt({
           ...contextual,
           providerKey:active.key,
@@ -528,9 +555,19 @@ export class AgentEngine {
           contextBrief:contextual.contextBrief,
           contextPackId:contextual.contextPack?.id,
         });
+        RunService.recordStage(x.stepId,'model.response','completed',{
+          profile,agentKey,providerKey:active.key,modelId:active.modelId,latencyMs:Date.now()-directStarted,
+          replyChars:String(result.replyText||'').length,decisionType:result.decisionType,
+          hasErrors:Boolean(result.hasErrors),invalidResponse:Boolean(result.invalidResponse),errorReason:result.errorReason||null
+        });
+        RunService.recordStage(x.stepId,'contract.validation','started',{profile,agentKey,source:'llm_adapter'});
         if(result.isDemonstrativeFallback||result.hasErrors||result.invalidResponse){
+          RunService.recordStage(x.stepId,'contract.validation','failed',{
+            profile,agentKey,reason:result.errorReason||'critical_agent_failed',message:result.errorMessage||null
+          });
           throw Object.assign(new Error(result.errorMessage||'O modelo real não concluiu a etapa crítica.'),{kind:'operational',reason:result.errorReason||'critical_agent_failed'});
         }
+        RunService.recordStage(x.stepId,'contract.validation','completed',{profile,agentKey,decisionType:result.decisionType});
         return { ...result, agentKey, profileKey: profile };
       }
       const fallback = await LLMAdapterService.executePrompt({ ...contextual, providerKey: undefined, allowActiveFallback: false });
@@ -546,7 +583,14 @@ export class AgentEngine {
       const candidateIndex=retryStrategy==='next_candidate' ? Math.min(i,available.length-1) : i % available.length;
       const candidate = available[candidateIndex];
       const started = Date.now();
+      RunService.recordStage(x.stepId,'context.compile','started',{profile,agentKey,attempt:i,retryStrategy,providerKey:candidate.provider_key,modelId:candidate.model_id});
       const contextBase = withCompiledContext(x, agentKey, options, retryStrategy);
+      RunService.recordStage(x.stepId,'context.compile','completed',{
+        profile,agentKey,attempt:i,retryStrategy,providerKey:candidate.provider_key,modelId:candidate.model_id,
+        contextPackId:contextBase.contextPack?.id,scope:contextBase.contextPack?.scope,
+        estimatedTokens:contextBase.contextPack?.estimatedTokens,selectedFiles:contextBase.contextPack?.selectedFiles.length||0,
+        omittedFiles:contextBase.contextPack?.omittedFiles.length||0
+      });
       try {
         ModelRouter.assertBudget(x.userId, Number(candidate.max_cost_usd || 0), { runId: x.runId });
         const attemptInput = retryStrategy==='reduce_context' || retryStrategy==='fragment_task'
@@ -561,6 +605,9 @@ export class AgentEngine {
               ].join('\n\n'),
             }
           : contextBase;
+        RunService.recordStage(x.stepId,'model.request','started',{
+          profile,agentKey,attempt:i,retryStrategy,providerKey:candidate.provider_key,modelId:candidate.model_id
+        });
         const result = attemptInput.reliableBuild && attemptInput.mode === 'build'
           ? await LLMAdapterService.buildApprovedPlanReliably({
               projectId: attemptInput.projectId,
@@ -579,11 +626,27 @@ export class AgentEngine {
               onProgress:(event)=>RunService.appendProgressEvent(attemptInput.stepId,event),
             })
           : await executePromptWithReadTools(attemptInput,candidate,agentKey);
+        RunService.recordStage(x.stepId,'model.response','completed',{
+          profile,agentKey,attempt:i,retryStrategy,providerKey:candidate.provider_key,modelId:candidate.model_id,
+          latencyMs:Date.now()-started,replyChars:String(result.replyText||'').length,decisionType:result.decisionType,
+          hasErrors:Boolean(result.hasErrors),invalidResponse:Boolean(result.invalidResponse),errorReason:result.errorReason||null,
+          planTargets:(result.plan?.existing_files_to_modify?.length||0)+(result.plan?.new_files_to_create?.length||0),
+          planRequirements:result.plan?.requirements?.length||0,
+          buildFiles:result.build?.files?.length||result.proposal?.files?.length||0
+        });
+        RunService.recordStage(x.stepId,'contract.validation','started',{profile,agentKey,attempt:i,source:'llm_adapter'});
         if (result.isDemonstrativeFallback || result.hasErrors) {
+          RunService.recordStage(x.stepId,'contract.validation','failed',{
+            profile,agentKey,attempt:i,reason:result.errorReason||result.errorMessage||'provider_error',
+            invalidResponse:Boolean(result.invalidResponse)
+          });
           const reason = String(result.errorReason || result.errorMessage || 'provider_error');
           const operational = /timeout|network|rate_limit|provider_error|429|5\d\d/i.test(reason);
           throw Object.assign(Error(result.errorMessage || 'Provider indisponível'), { kind: operational ? 'operational' : 'incompatible', reason });
         }
+        RunService.recordStage(x.stepId,'contract.validation','completed',{
+          profile,agentKey,attempt:i,decisionType:result.decisionType,invalidResponse:Boolean(result.invalidResponse)
+        });
         ModelRouter.recordCandidateResult(candidate.id, true);
         ModelRouter.recordInvocation({
           userId: x.userId,
@@ -618,6 +681,10 @@ export class AgentEngine {
       } catch (e: any) {
         last = e;
         const message=String(e?.message||e);
+        RunService.recordStage(x.stepId,'attempt.failed','failed',{
+          profile,agentKey,attempt:i,retryStrategy,providerKey:candidate.provider_key,modelId:candidate.model_id,
+          error:message,reason:e?.reason||null,declaredKind:e?.kind||null
+        });
         const declaredKind=['operational','incompatible','capacity'].includes(String(e?.kind)) ? e.kind as FailureKind : null;
         const operational = /429|5\d\d|timeout|fetch|network|indispon/i.test(message);
         const terminalModelMismatch=/invalid[_ -]?model|model[^\n]{0,40}(?:not found|unsupported|does not support)|unsupported[^\n]{0,30}model|incompatible[^\n]{0,30}(?:model|provider)/i.test(message);
@@ -664,6 +731,10 @@ export class AgentEngine {
           maxAttempts,
           hasNextCandidate:available.length>candidateIndex+1,
           canEscalate:Boolean(options.allowExpertEscalation&&profile==='BASE_FREE'),
+        });
+        RunService.recordStage(x.stepId,'retry.decision','info',{
+          profile,agentKey,attempt:i,retryAllowed:decision.retryAllowed,escalateAllowed:decision.escalateAllowed,
+          nextStrategy:decision.nextStrategy,reason:decision.reason,signature:decision.signature
         });
         attemptHistory.push(evidence);
         retryStrategy=decision.nextStrategy;
@@ -721,13 +792,28 @@ export class AgentWorkflowEngine extends AgentEngine {
           { profile: 'BASE_FREE', forcedAgentKey: owner, allowExpertEscalation: true, requireModelWork:x.mode==='plan' }
         );
 
+        RunService.recordStage(x.stepId,'planning.model_result','completed',{
+          owner,complexPlan,decisionType:result.decisionType,profileKey:result.profileKey,
+          targetCount:(result.plan?.existing_files_to_modify?.length||0)+(result.plan?.new_files_to_create?.length||0),
+          requirementCount:result.plan?.requirements?.length||0,taskCount:result.plan?.task_graph?.length||0
+        });
         if(complexPlan){
           const initialTargets=[
             ...(result.plan?.existing_files_to_modify||[]),
             ...(result.plan?.new_files_to_create||[]),
           ];
+          RunService.recordStage(x.stepId,'planning.architecture_validation','started',{
+            phase:'initial',targetCount:initialTargets.length,targets:initialTargets.slice(0,40),
+            requirementCount:result.plan?.requirements?.length||0,taskCount:result.plan?.task_graph?.length||0
+          });
           const weakPlan=initialTargets.length<4 || (initialTargets.length===1&&initialTargets[0]==='index.html');
           if(weakPlan){
+            RunService.recordStage(x.stepId,'planning.architecture_validation','failed',{
+              phase:'initial',reason:'weak_architecture',targetCount:initialTargets.length,targets:initialTargets.slice(0,40)
+            });
+            RunService.recordStage(x.stepId,'planning.architecture_repair','started',{
+              reason:'weak_architecture',fromProfile:result.profileKey,toProfile:'EXPERT_PAID'
+            });
             const repaired=await AgentEngine.execute(
               {
                 ...x,
@@ -749,6 +835,11 @@ export class AgentWorkflowEngine extends AgentEngine {
               },
               { profile:'EXPERT_PAID',forcedAgentKey:'SCOUT',allowExpertEscalation:false,requireModelWork:true }
             );
+            RunService.recordStage(x.stepId,'planning.architecture_repair','completed',{
+              profileKey:repaired.profileKey,decisionType:repaired.decisionType,
+              targetCount:(repaired.plan?.existing_files_to_modify?.length||0)+(repaired.plan?.new_files_to_create?.length||0),
+              requirementCount:repaired.plan?.requirements?.length||0,taskCount:repaired.plan?.task_graph?.length||0
+            });
             if(repaired.plan)result=repaired;
           }
           const finalTargets=[
@@ -756,8 +847,16 @@ export class AgentWorkflowEngine extends AgentEngine {
             ...(result.plan?.new_files_to_create||[]),
           ];
           if(finalTargets.length<4 || (finalTargets.length===1&&finalTargets[0]==='index.html')){
+            RunService.recordStage(x.stepId,'planning.architecture_validation','failed',{
+              phase:'final',reason:'architecture_plan_incomplete',targetCount:finalTargets.length,targets:finalTargets.slice(0,40),
+              requirementCount:result.plan?.requirements?.length||0,taskCount:result.plan?.task_graph?.length||0
+            });
             throw Object.assign(new Error('O SCOUT não conseguiu produzir uma arquitetura suficientemente completa para este sistema.'),{kind:'incompatible',reason:'architecture_plan_incomplete'});
           }
+          RunService.recordStage(x.stepId,'planning.architecture_validation','completed',{
+            phase:'final',targetCount:finalTargets.length,targets:finalTargets.slice(0,40),
+            requirementCount:result.plan?.requirements?.length||0,taskCount:result.plan?.task_graph?.length||0
+          });
         }
 
         RunService.finishStep(x.stepId, result.hasErrors ? 'failed' : 'completed', {
