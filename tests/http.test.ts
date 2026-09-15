@@ -776,6 +776,167 @@ test('agent planning returns 202 before a slow SCOUT finishes and persists the p
   }
 });
 
+
+test('block8 full-flow regression: clothing cashflow PLAN survives fallback, ledger sync, background handoff and truthful cost telemetry',async(t)=>{
+  const previousFlag=process.env.AGENT_ENGINE_ENABLED;
+  process.env.AGENT_ENGINE_ENABLED='true';
+  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto',0.01);
+  configureLifecycleProfile(userA,'EXPERT_PAID','cheaper_inference','gpt-5.6-luna',0.25);
+  db.prepare("UPDATE providers SET is_active=CASE WHEN provider_key='omniroute' THEN 1 ELSE 0 END,is_configured=1,connection_status='connected' WHERE user_id=? AND provider_key IN ('omniroute','cheaper_inference')").run(userA);
+
+  const projectId=createLifecycleProject('block8-clothing-cashflow');
+  WorkspaceManager.writeFile(projectId,'index.html','<html><body>Starter</body></html>');
+  const exactPrompt='planeja um site para ajudar a administrar todo o fluxo de caixa da minha loja de roupa';
+
+  let calls=0;
+  let expertStarted=false;
+  let releaseExpert!:()=>void;
+  const expertGate=new Promise<void>(resolve=>{releaseExpert=resolve;});
+
+  t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
+    calls++;
+    if(options.modelId==='auto'){
+      return {
+        replyText:'Resposta incompatível',
+        mode:'plan',decisionType:'invalid_response',isDemonstrativeFallback:false,
+        providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:true,invalidResponse:true,
+        errorReason:'incompatible_response',errorMessage:'Resposta incompatível',
+      } as any;
+    }
+
+    assert.equal(options.modelId,'gpt-5.6-luna');
+    expertStarted=true;
+    await expertGate;
+    return {
+      replyText:'plano expert com lacuna estrutural',
+      mode:'plan',decisionType:'plan',isDemonstrativeFallback:false,
+      providerUsed:'Cheaper Inference',modelUsed:'gpt-5.6-luna',hasErrors:false,
+      plan:{
+        objective:'Administrar fluxo de caixa da loja',
+        scope_in:'Dashboard financeiro, entradas, saídas, categorias e histórico',
+        scope_out:'Integração bancária automática e emissão fiscal',
+        architecture_summary:'Aplicação web modular com dashboard, módulo financeiro, estado persistente e separação entre interface e domínio',
+        existing_files_to_modify:['index.html'],
+        new_files_to_create:['app.js','styles.css'],
+        files_to_delete:[],files_affected:['index.html','app.js','styles.css'],
+        integrations:[],risks:['Persistência local deve manter consistência entre entradas e saídas'],
+        acceptance_criteria:['Registrar entradas e saídas e refletir o saldo no dashboard'],
+        requirements:[{
+          id:'REQ-001',title:'Fluxo de caixa funcional',
+          description:'Registrar entradas e saídas e recalcular o saldo',
+          priority:'critical',verification:['criar uma entrada, criar uma saída e conferir o saldo final']
+        }],
+        task_graph:[]
+      },
+      usage:{inputTokens:120,outputTokens:180,costStatus:'unknown'}
+    } as any;
+  });
+
+  try{
+    const response=await fetch(`${base}/conversations/${projectId}/messages`,{
+      method:'POST',
+      headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
+      body:JSON.stringify({content:exactPrompt,mode:'plan'})
+    });
+    assert.equal(response.status,202);
+    const accepted=await response.json();
+    assert.equal(accepted.accepted,true);
+    assert.equal(accepted.background,true);
+    assert.equal(accepted.mode,'plan');
+    assert.ok(accepted.runId);
+
+    await waitForCondition(()=>expertStarted,3000);
+
+    const runningResponse=await fetch(`${base}/agent-runs?projectId=${encodeURIComponent(projectId)}`,{
+      headers:{Authorization:`Bearer ${tokenA}`}
+    });
+    assert.equal(runningResponse.status,200);
+    const runningBody=await runningResponse.json();
+    const runningRun=(runningBody.runs||[]).find((run:any)=>run.id===accepted.runId);
+    assert.ok(runningRun);
+    assert.equal(runningRun.status,'running');
+    const runningStages=(runningRun.trace||[]).flatMap((step:any)=>step.context?.events||[]);
+    assert.ok(runningStages.some((event:any)=>event.stage==='run.background_handoff'&&event.lifecycle==='server_owned'));
+    assert.ok(runningStages.some((event:any)=>event.stage==='profile.escalation'));
+    assert.ok(runningStages.some((event:any)=>event.stage==='model.request'&&event.modelId==='gpt-5.6-luna'));
+
+    releaseExpert();
+    const terminal=await waitForRunTerminal(accepted.runId,12000);
+    assert.equal(terminal.status,'completed');
+    assert.equal(calls,2,'O fluxo original não pode voltar a fazer uma segunda chamada paga para reparar lacuna estrutural.');
+
+    const plan=db.prepare(`SELECT id,status,objective,requirements_json,task_graph_json FROM plans WHERE project_id=? ORDER BY created_at DESC LIMIT 1`).get(projectId) as any;
+    assert.ok(plan);
+    assert.equal(plan.status,'draft');
+    assert.match(plan.objective,/fluxo de caixa/i);
+    const planRequirements=JSON.parse(plan.requirements_json);
+    const planTasks=JSON.parse(plan.task_graph_json);
+    assert.equal(planRequirements.length,1);
+    assert.equal(planTasks.length,1);
+    assert.deepEqual(planTasks[0].requirement_ids,[planRequirements[0].id]);
+
+    const ledgerResponse=await fetch(`${base}/projects/${projectId}/requirements`,{
+      headers:{Authorization:`Bearer ${tokenA}`}
+    });
+    assert.equal(ledgerResponse.status,200);
+    const ledgerBody=await ledgerResponse.json();
+    assert.equal(ledgerBody.requirements.length,1);
+    assert.equal(ledgerBody.requirements[0].requirement_key,planRequirements[0].id);
+    assert.equal(ledgerBody.requirements[0].plan_id,plan.id);
+    assert.equal(ledgerBody.requirements[0].run_id,accepted.runId);
+    assert.ok(Array.isArray(ledgerBody.requirements[0].verification));
+    assert.ok(ledgerBody.requirements[0].verification.length>0);
+
+    const finalConversationResponse=await fetch(`${base}/conversations/${projectId}`,{
+      headers:{Authorization:`Bearer ${tokenA}`}
+    });
+    assert.equal(finalConversationResponse.status,200);
+    const finalConversation=await finalConversationResponse.json();
+    const persistedUserMessage=(finalConversation.messages||[]).find((message:any)=>message.sender==='user'&&message.content===exactPrompt);
+    assert.ok(persistedUserMessage);
+    const finalAgentMessages=(finalConversation.messages||[]).filter((message:any)=>message.sender==='agent');
+    assert.ok(finalAgentMessages.length>0);
+    const finalAgent=finalAgentMessages[finalAgentMessages.length-1];
+    assert.ok(String(finalAgent.content||'').trim().length>0);
+    const finalMetadata=typeof finalAgent.metadata_json==='string'?JSON.parse(finalAgent.metadata_json):finalAgent.metadata;
+    assert.equal(finalMetadata.runId,accepted.runId);
+    assert.equal(finalMetadata.workflow.status,'completed');
+    assert.equal(finalMetadata.planId,plan.id);
+    assert.equal(finalMetadata.profileKey,'EXPERT_PAID');
+
+    const finalRunsResponse=await fetch(`${base}/agent-runs?projectId=${encodeURIComponent(projectId)}`,{
+      headers:{Authorization:`Bearer ${tokenA}`}
+    });
+    assert.equal(finalRunsResponse.status,200);
+    const finalRunsBody=await finalRunsResponse.json();
+    const finalRun=(finalRunsBody.runs||[]).find((run:any)=>run.id===accepted.runId);
+    assert.ok(finalRun);
+    assert.equal(finalRun.status,'completed');
+    assert.equal(Number(finalRun.known_cost_usd),0);
+    assert.equal(Number(finalRun.unknown_cost_calls),2);
+    assert.equal(Number(finalRun.budget_accounted_usd),0.26);
+    assert.equal(Number(finalRun.spent_usd),0.26);
+
+    const invocations=(finalRun.trace||[]).flatMap((step:any)=>step.invocations||[]);
+    assert.equal(invocations.length,2);
+    assert.equal(invocations.filter((inv:any)=>inv.profile_key==='EXPERT_PAID').length,1);
+    assert.ok(invocations.every((inv:any)=>inv.cost_usd===null));
+    assert.ok(invocations.every((inv:any)=>inv.cost_status==='unknown'));
+
+    const events=(finalRun.trace||[]).flatMap((step:any)=>step.context?.events||[]);
+    assert.ok(events.some((event:any)=>event.stage==='attempt.failed'&&event.profile==='BASE_FREE'));
+    assert.ok(events.some((event:any)=>event.stage==='profile.escalation'));
+    assert.ok(events.some((event:any)=>event.stage==='planning.deterministic_repair'&&event.status==='completed'));
+    assert.ok(events.some((event:any)=>event.stage==='paid_call.guard'&&event.action==='avoided_second_paid_call'));
+    assert.ok(events.some((event:any)=>event.stage==='requirements.persistence'&&event.status==='completed'&&event.persisted===1));
+  }finally{
+    try{releaseExpert?.();}catch{}
+    if(previousFlag===undefined)delete process.env.AGENT_ENGINE_ENABLED;else process.env.AGENT_ENGINE_ENABLED=previousFlag;
+    WorkspaceManager.deleteProject(projectId);
+    db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
+  }
+});
+
 test('agent automatic lifecycle returns 202 then completes review and apply without user approval',async(t)=>{
   process.env.AGENT_ENGINE_ENABLED='true';configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
   t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{

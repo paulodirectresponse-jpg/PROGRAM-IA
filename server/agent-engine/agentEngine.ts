@@ -272,6 +272,16 @@ async function executePromptWithReadTools(attemptInput:Input,candidate:any,agent
   let inputTokens=0;
   let outputTokens=0;
   let billedCostUsd=0;
+  let knownCostSeen=false;
+  let unknownCostSeen=false;
+  const aggregatedUsage=():NonNullable<LLMExecutionResult['usage']>=>({
+    inputTokens,
+    outputTokens,
+    ...(knownCostSeen?{billedCostUsd}:{}),
+    costStatus:unknownCostSeen
+      ?(knownCostSeen?'partial':'unknown')
+      :(knownCostSeen?(billedCostUsd===0?'known_zero':'reported'):'unknown'),
+  });
   let prompt=[attemptInput.prompt,toolLoopInstruction()].join('\n\n');
 
   for(let round=0;round<=maxRounds;round++){
@@ -285,13 +295,21 @@ async function executePromptWithReadTools(attemptInput:Input,candidate:any,agent
     });
     inputTokens+=Number(result.usage?.inputTokens||0);
     outputTokens+=Number(result.usage?.outputTokens||0);
-    billedCostUsd+=Number(result.usage?.billedCostUsd||0);
+    const resultCostStatus=result.usage?.costStatus
+      ||(result.usage&&result.usage.billedCostUsd!==undefined
+        ?(Number(result.usage.billedCostUsd)===0?'known_zero':'reported')
+        :'unknown');
+    if(result.usage?.billedCostUsd!==undefined&&Number.isFinite(Number(result.usage.billedCostUsd))){
+      billedCostUsd+=Number(result.usage.billedCostUsd);
+      knownCostSeen=true;
+    }
+    if(resultCostStatus==='unknown'||resultCostStatus==='partial')unknownCostSeen=true;
 
     const calls=parseReadToolRequest(result.replyText);
     if(calls===null){
       return {
         ...result,
-        usage:{inputTokens,outputTokens,billedCostUsd},
+        usage:aggregatedUsage(),
         diagnostics:{...(result.diagnostics||{}),toolRounds,toolExecutions},
       };
     }
@@ -302,7 +320,7 @@ async function executePromptWithReadTools(attemptInput:Input,candidate:any,agent
         invalidResponse:true,
         errorReason:'tool_budget_exhausted',
         errorMessage:'O agente excedeu o orçamento bounded de inspeção por ferramentas.',
-        usage:{inputTokens,outputTokens,billedCostUsd},
+        usage:aggregatedUsage(),
         diagnostics:{...(result.diagnostics||{}),toolRounds,toolExecutions,toolBudgetExhausted:true},
       };
     }
