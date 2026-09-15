@@ -1143,7 +1143,7 @@ router.post('/conversations/:projectId/plan/approve', requireAuth, requireProjec
       .run('msg-user-'+Date.now(),conversation.id,'Aprovado. Pode construir o plano.',JSON.stringify({mode:'build',action:'approve_plan',planId}),approvedAt);
 
     if(agentEngineEnabled){
-      execution=RunService.start(req.user!.id,projectId,conversation.id,'build',.5);
+      execution=RunService.start(req.user!.id,projectId,conversation.id,'build',ModelRouter.recommendedRunBudget(req.user!.id,'build'));
       RequirementLedgerService.attachRun(projectId,planId,execution.runId);
       executionRequirementIds = workflowRequirementIds(projectId,execution.runId,planId);
       acceptedEarly=true;
@@ -1322,7 +1322,7 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
 
     const agentEngineEnabled=process.env.AGENT_ENGINE_ENABLED==='true';
     if(agentEngineEnabled&&!conversationalOnly){
-      execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,.5);
+      execution=RunService.start(req.user!.id,projectId,conv.id,resolvedMode,ModelRouter.recommendedRunBudget(req.user!.id,resolvedMode));
       if(implicitDraftPlan?.id){
         RequirementLedgerService.attachRun(projectId,implicitDraftPlan.id,execution.runId);
       }
