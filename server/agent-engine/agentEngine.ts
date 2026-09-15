@@ -496,10 +496,15 @@ function extractArchitectureTargets(existingFiles:Record<string,string>,brief:st
 function assessArchitectureBrief(existingFiles:Record<string,string>,brief:string,focusPaths:string[]=[]){
   const targets=extractArchitectureTargets(existingFiles,brief,focusPaths);
   const parsed=extractJsonObject(brief);
-  const requirements=Array.isArray(parsed?.requirements)?parsed.requirements:[];
-  const tasks=Array.isArray(parsed?.task_graph)?parsed.task_graph:Array.isArray(parsed?.tasks)?parsed.tasks:[];
+  const root=parsed?.architecture_brief&&typeof parsed.architecture_brief==='object'
+    ? parsed.architecture_brief
+    : parsed?.plan&&typeof parsed.plan==='object'
+      ? parsed.plan
+      : parsed;
+  const requirements=Array.isArray(root?.requirements)?root.requirements:[];
+  const tasks=Array.isArray(root?.task_graph)?root.task_graph:Array.isArray(root?.tasks)?root.tasks:[];
   const reasons:string[]=[];
-  if(!parsed)reasons.push('unstructured_architecture_brief');
+  if(!root)reasons.push('unstructured_architecture_brief');
   if(!targets.length)reasons.push('missing_file_plan');
   if(targets.length===1&&targets[0].toLowerCase()==='index.html')reasons.push('single_index_only');
   if(!requirements.length)reasons.push('missing_requirements');
