@@ -62,6 +62,8 @@ export function initializeDatabase() {
   ensureColumn('providers', 'is_active', 'INTEGER DEFAULT 0');
   ensureColumn('integrations', 'user_id', "TEXT");
   ensureColumn('attachments', 'user_id', "TEXT");
+  ensureColumn('attachments', 'mime_type', "TEXT");
+  ensureColumn('attachments', 'analysis_text', "TEXT");
   ensureColumn('logs', 'user_id', "TEXT");
   ensureColumn('users', 'last_active_project_id', 'TEXT');
   ensureColumn('skills', 'is_custom', "INTEGER DEFAULT 0");
