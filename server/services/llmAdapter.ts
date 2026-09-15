@@ -814,8 +814,16 @@ export class LLMAdapterService {
    */
   static extractPlan(text: string): PlanOutput | null {
     const structured = this.extractStructuredJson(text);
-    if (structured && (structured.objective || structured.plan)) {
-      return this.normalizePlanOutput(structured.plan || structured);
+    if (structured && typeof structured === 'object') {
+      const root =
+        structured.plan && typeof structured.plan === 'object'
+          ? structured.plan
+          : structured.architecture_brief && typeof structured.architecture_brief === 'object'
+            ? structured.architecture_brief
+            : structured;
+      if (root.objective || root.file_plan || structured.type === 'plan' || structured.type === 'architecture_brief') {
+        return this.normalizePlanOutput(root);
+      }
     }
 
     const objMatch = text.match(/##\s*Objetivo\s*\n([\s\S]*?)(?=\n##|$)/i);
@@ -1632,9 +1640,9 @@ Responda sempre em português claro, elegante e profissional.`;
       let proposal: ChangeProposal | undefined;
 
       if (structured) {
-        if (structured.plan || structured.type === 'plan' || structured.objective) {
+        if (structured.plan || structured.architecture_brief || structured.type === 'plan' || structured.type === 'architecture_brief' || structured.objective) {
           decisionType = 'plan';
-          plan = this.normalizePlanOutput(structured.plan || structured);
+          plan = this.normalizePlanOutput(structured.plan || structured.architecture_brief || structured);
         } else if (this.extractStructuredFiles(structured).length > 0) {
           decisionType = 'change';
           const validFiles: FileChangeProposal[] = [];
