@@ -459,6 +459,7 @@ function repairPlanDeterministically(plan:PlanOutput|undefined){
     usedRequirementIds.add(id);
     return id;
   };
+  let derivedRequirementIdsByTask:string[]=[];
   let requirements=(plan.requirements||[]).map((req,index)=>{
     const id=nextRequirementId(String(req.id||''),index);
     const title=String(req.title||req.description||`Requisito ${index+1}`).trim();
@@ -480,8 +481,10 @@ function repairPlanDeterministically(plan:PlanOutput|undefined){
     requirements=rawTasksForRequirements.map((task,index)=>{
       const title=String(task.title||`Tarefa ${index+1}`).trim();
       const verification=acceptance[index]||`Concluir e validar: ${title}`;
+      const id=nextRequirementId('',index);
+      derivedRequirementIdsByTask[index]=id;
       return{
-        id:nextRequirementId('',index),
+        id,
         title,
         description:title,
         priority:'high' as const,
@@ -509,8 +512,12 @@ function repairPlanDeterministically(plan:PlanOutput|undefined){
 
   const requirementIds=new Set(requirements.map(req=>req.id.toUpperCase()));
   let tasks=(plan.task_graph||[]).map((task,index)=>{
-    const requirement_ids=(task.requirement_ids||[]).map(id=>String(id||'').toUpperCase()).filter(id=>requirementIds.has(id));
+    let requirement_ids=(task.requirement_ids||[]).map(id=>String(id||'').toUpperCase()).filter(id=>requirementIds.has(id));
     if(requirement_ids.length!==(task.requirement_ids||[]).length)changes.push('removed_unknown_task_requirements');
+    if(!requirement_ids.length&&derivedRequirementIdsByTask[index]){
+      requirement_ids=[derivedRequirementIdsByTask[index]];
+      changes.push('linked_task_derived_requirement');
+    }
     return{
       ...task,
       id:String(task.id||`TASK-${String(index+1).padStart(3,'0')}`).toUpperCase(),
