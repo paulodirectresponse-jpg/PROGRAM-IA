@@ -600,12 +600,14 @@ export class BenchmarkService {
           }catch{}
         }
         db.prepare(`UPDATE benchmark_case_runs SET status='interrupted',provider_real=COALESCE(?,provider_real),profile_key=COALESCE(?,profile_key),
-          provider_key=COALESCE(?,provider_key),model_id=COALESCE(?,model_id),cost_usd=MAX(cost_usd,?),latency_ms=MAX(latency_ms,?),
+          provider_key=COALESCE(?,provider_key),model_id=COALESCE(?,model_id),cost_usd=MAX(cost_usd,?),budget_cost_usd=MAX(budget_cost_usd,?),
+          unknown_cost_calls=MAX(unknown_cost_calls,?),latency_ms=MAX(latency_ms,?),
           input_tokens=MAX(input_tokens,?),output_tokens=MAX(output_tokens,?),attempts=MAX(attempts,?),repairs=MAX(repairs,?),
           expert_escalations=MAX(expert_escalations,?),failure_reason=COALESCE(failure_reason,'server_restart'),finished_at=COALESCE(finished_at,?)
           WHERE id=?`).run(
             metrics?.providerReal?1:null,metrics?.profileKey||null,metrics?.providerKey||null,metrics?.modelId||null,
-            Number(metrics?.costUsd||0),Number(metrics?.latencyMs||0),Number(metrics?.inputTokens||0),Number(metrics?.outputTokens||0),
+            Number(metrics?.costUsd||0),Number(metrics?.budgetCostUsd||0),Number(metrics?.unknownCostCalls||0),Number(metrics?.latencyMs||0),
+            Number(metrics?.inputTokens||0),Number(metrics?.outputTokens||0),
             Number(metrics?.attempts||0),Number(metrics?.repairs||0),Number(metrics?.expertEscalations||0),when,item.id
           );
         if(item.project_id)void cleanupEphemeralProject(item.project_id,row.user_id).catch(()=>undefined);
