@@ -84,6 +84,8 @@ export default function App() {
   const [activeAgentRun,setActiveAgentRun]=useState<any|null>(null);
   const [sidebarCollapsed,setSidebarCollapsed]=useState(()=>{try{return localStorage.getItem('forge.sidebar.collapsed')==='1'}catch{return false}});
   const lastPolledRunStatusRef=useRef<string|null>(null);
+  const activeAgentRunIdRef=useRef<string|null>(null);
+  const activeRequestStartedAtRef=useRef<number|null>(null);
 
   // Abort controller ref
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -221,6 +223,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    activeAgentRunIdRef.current=null;
+    activeRequestStartedAtRef.current=null;
+    lastPolledRunStatusRef.current=null;
+    setActiveAgentTrace([]);
+    setActiveAgentRunStatus(null);
+    setActiveAgentRun(null);
     if (activeProject) {
       localStorage.setItem('forge:lastActiveProjectId', activeProject.id);
       loadProjectDetails(activeProject.id);
@@ -243,7 +251,25 @@ export default function App() {
         ]);
         const [data,convData]=await Promise.all([runsRes.json(),convRes.json()]);
         if (!cancelled && runsRes.ok) {
-          const latest = data.runs?.[0];
+          const runs=Array.isArray(data.runs)?data.runs:[];
+          const boundId=activeAgentRunIdRef.current;
+          let latest=boundId?runs.find((run:any)=>run.id===boundId):null;
+
+          // Before the POST returns its runId, only accept a run created for this
+          // request. Never resurrect the previous message's trace.
+          if(!latest&&activeRequestStartedAtRef.current){
+            const threshold=activeRequestStartedAtRef.current-1500;
+            latest=runs.find((run:any)=>(Date.parse(run.created_at||'')||0)>=threshold) || null;
+            if(latest?.id)activeAgentRunIdRef.current=latest.id;
+          }
+
+          // On idle page load, show a currently running run only. Completed/failed
+          // historical runs belong to their own messages, not the global activity box.
+          if(!latest&&!activeRequestStartedAtRef.current){
+            latest=runs.find((run:any)=>run.status==='running') || null;
+            if(latest?.id)activeAgentRunIdRef.current=latest.id;
+          }
+
           const nextStatus=latest?.status || null;
           setActiveAgentTrace(Array.isArray(latest?.trace) ? latest.trace : []);
           setActiveAgentRunStatus(nextStatus);
@@ -251,6 +277,7 @@ export default function App() {
           const previous=lastPolledRunStatusRef.current;
           lastPolledRunStatusRef.current=nextStatus;
           if(previous==='running'&&nextStatus&&nextStatus!=='running'){
+            activeRequestStartedAtRef.current=null;
             try{
               const [filesRes,projRes]=await Promise.all([
                 fetch(`/api/projects/${activeProject.id}/files`,{cache:'no-store'}),
@@ -334,6 +361,12 @@ export default function App() {
     };
     setMessages((prev) => [...prev, tempUserMsg]);
     setIsLoading(true);
+    activeRequestStartedAtRef.current=Date.now();
+    activeAgentRunIdRef.current=null;
+    lastPolledRunStatusRef.current=null;
+    setActiveAgentTrace([]);
+    setActiveAgentRunStatus(null);
+    setActiveAgentRun(null);
 
     abortControllerRef.current = new AbortController();
 
@@ -351,7 +384,19 @@ export default function App() {
 
       const data = await readApiPayload(res);
       if (!res.ok) throw new Error(data.error || 'Não foi possível concluir o pedido.');
+      if(data.runId){
+        activeAgentRunIdRef.current=String(data.runId);
+        setActiveAgentRunStatus(data.accepted?'running':activeAgentRunStatus);
+      }
       if (data.agentMessage) {
+        // Synchronous chat replies do not own an agent run.
+        if(!data.runId){
+          activeRequestStartedAtRef.current=null;
+          activeAgentRunIdRef.current=null;
+          setActiveAgentTrace([]);
+          setActiveAgentRunStatus(null);
+          setActiveAgentRun(null);
+        }
         setMessages((prev) => [...prev, data.agentMessage]);
         if (data.plan) {
           setActivePlan(data.plan);
@@ -371,6 +416,11 @@ export default function App() {
         setPreviewNonce(Date.now());
       }
     } catch (err: any) {
+      activeRequestStartedAtRef.current=null;
+      activeAgentRunIdRef.current=null;
+      setActiveAgentTrace([]);
+      setActiveAgentRunStatus(null);
+      setActiveAgentRun(null);
       if (err.name !== 'AbortError') {
         console.error('Falha ao enviar mensagem:', err);
         const errMsg: Message = {
