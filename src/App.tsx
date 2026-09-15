@@ -401,6 +401,15 @@ export default function App() {
         activeAgentRunIdRef.current=String(data.runId);
         setActiveAgentRunStatus(data.accepted?'running':activeAgentRunStatus);
       }
+      if(data.accepted){
+        const backgroundMode=String(data.mode||'');
+        const text=backgroundMode==='plan'
+          ? 'Planejamento iniciado. O SCOUT continua em segundo plano e o resultado aparecerá aqui automaticamente.'
+          : backgroundMode==='review'
+            ? 'Revisão iniciada. A execução continua em segundo plano.'
+            : 'Execução iniciada. O Agent Engine continua em segundo plano.';
+        setToastMessage({text,type:'success'});
+      }
       if (data.agentMessage) {
         // Synchronous chat replies do not own an agent run.
         if(!data.runId){

@@ -1403,11 +1403,15 @@ router.post('/conversations/:projectId/messages', requireAuth, requireProjectOwn
     const providerKey=providerConfig.key;
     const modelId=providerConfig.modelId;
 
-    // Construções longas deixam de depender da conexão HTTP. A UI acompanha o run e a conversa por polling.
-    if(agentEngineEnabled&&resolvedMode==='build'){
+    // Execuções reais do Agent Engine não dependem da vida útil da conexão HTTP.
+    // O servidor assume o lifecycle do run; a UI acompanha status, trace e mensagens por polling.
+    if(agentEngineEnabled&&!conversationalOnly&&execution){
       acceptedEarly=true;
+      RunService.recordStage(execution.stepId,'run.background_handoff','completed',{
+        mode:resolvedMode,httpStatus:202,lifecycle:'server_owned',requestConnectionRequired:false,
+      });
       res.status(202).json({
-        success:true,accepted:true,runId:execution?.runId,
+        success:true,accepted:true,background:true,mode:resolvedMode,runId:execution.runId,
         userMessage:{id:userMsgId,conversation_id:conv.id,sender:'user',content:userContent,metadata:userMetadata,created_at:now},
       });
     }

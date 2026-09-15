@@ -704,6 +704,78 @@ test('chat accepts text attachment and workspace file mention as model context',
   }
 });
 
+test('agent planning returns 202 before a slow SCOUT finishes and persists the plan in background',async(t)=>{
+  const previousFlag=process.env.AGENT_ENGINE_ENABLED;
+  process.env.AGENT_ENGINE_ENABLED='true';
+  configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
+  db.prepare("UPDATE providers SET is_active=1,is_configured=1,connection_status='connected',model_id='auto' WHERE user_id=? AND provider_key='omniroute'").run(userA);
+  const projectId=createLifecycleProject('plan-background-handoff');
+  WorkspaceManager.writeFile(projectId,'index.html','<html><body>Starter</body></html>');
+  let releaseModel!:()=>void;
+  const modelGate=new Promise<void>(resolve=>{releaseModel=resolve;});
+  let modelStarted=false;
+  t.mock.method(LLMAdapterService,'executePrompt',async()=>{
+    modelStarted=true;
+    await modelGate;
+    return {
+      replyText:'plano persistido',
+      mode:'plan',decisionType:'plan',isDemonstrativeFallback:false,
+      providerUsed:'OmniRoute',modelUsed:'auto',hasErrors:false,
+      plan:{
+        objective:'Administrar fluxo de caixa da loja',
+        scope_in:'Dashboard financeiro, entradas e saídas',scope_out:'',
+        architecture_summary:'Aplicação modular de gestão financeira',
+        existing_files_to_modify:['index.html'],
+        new_files_to_create:['app.js','styles.css'],
+        files_to_delete:[],files_affected:['index.html','app.js','styles.css'],
+        integrations:[],risks:[],acceptance_criteria:['Registrar entradas e saídas'],
+        requirements:[{id:'REQ-001',title:'Fluxo de caixa',description:'Registrar entradas e saídas',priority:'critical',verification:['registrar entrada e saída']}],
+        task_graph:[{id:'TASK-001',title:'Implementar fluxo de caixa',requirement_ids:['REQ-001'],depends_on:[]}]
+      },
+      usage:{inputTokens:10,outputTokens:20,billedCostUsd:0}
+    } as any;
+  });
+  try{
+    const responsePromise=fetch(`${base}/conversations/${projectId}/messages`,{
+      method:'POST',
+      headers:{Authorization:`Bearer ${tokenA}`,'Content-Type':'application/json'},
+      body:JSON.stringify({content:'planeja um site para ajudar a administrar todo o fluxo de caixa da minha loja de roupa',mode:'plan'})
+    });
+    const early=await Promise.race([
+      responsePromise,
+      new Promise<null>(resolve=>setTimeout(()=>resolve(null),400))
+    ]);
+    assert.ok(early,'O endpoint de PLAN ficou preso esperando o modelo em vez de devolver 202.');
+    const response=early as Response;
+    assert.equal(response.status,202);
+    const accepted=await response.json();
+    assert.equal(accepted.accepted,true);
+    assert.equal(accepted.background,true);
+    assert.equal(accepted.mode,'plan');
+    assert.ok(accepted.runId);
+    await waitForCondition(()=>modelStarted,1500);
+    assert.equal((db.prepare('SELECT status FROM agent_runs WHERE id=?').get(accepted.runId) as any).status,'running');
+    releaseModel();
+    const run=await waitForRunTerminal(accepted.runId,10000);
+    assert.equal(run.status,'completed');
+    const conversation=db.prepare('SELECT id FROM conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 1').get(projectId) as any;
+    const message=db.prepare("SELECT content,metadata_json FROM messages WHERE conversation_id=? AND sender='agent' ORDER BY created_at DESC LIMIT 1").get(conversation.id) as any;
+    assert.ok(message);
+    const metadata=JSON.parse(message.metadata_json);
+    assert.equal(metadata.workflow.status,'completed');
+    const plan=db.prepare("SELECT status,requirements_json FROM plans WHERE project_id=? ORDER BY created_at DESC LIMIT 1").get(projectId) as any;
+    assert.equal(plan.status,'draft');
+    assert.equal(JSON.parse(plan.requirements_json).length,1);
+    const trace=RunService.trace(accepted.runId);
+    assert.ok((trace[0]?.context?.events||[]).some((event:any)=>event.stage==='run.background_handoff'&&event.lifecycle==='server_owned'));
+  }finally{
+    try{releaseModel?.();}catch{}
+    if(previousFlag===undefined)delete process.env.AGENT_ENGINE_ENABLED;else process.env.AGENT_ENGINE_ENABLED=previousFlag;
+    WorkspaceManager.deleteProject(projectId);
+    db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
+  }
+});
+
 test('agent automatic lifecycle returns 202 then completes review and apply without user approval',async(t)=>{
   process.env.AGENT_ENGINE_ENABLED='true';configureLifecycleProfile(userA,'BASE_FREE','omniroute','auto');
   t.mock.method(LLMAdapterService,'executePrompt',async(options:any)=>{
