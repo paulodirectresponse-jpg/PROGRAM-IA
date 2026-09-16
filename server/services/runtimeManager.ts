@@ -57,6 +57,7 @@ type ToolResult = {
 };
 
 const records = new Map<string, RuntimeRecord>();
+const invalidationTimers = new Map<string, NodeJS.Timeout>();
 const MAX_OUTPUT = 16000;
 const COPY_TIMEOUT_MS = 30000;
 const INSTALL_TIMEOUT_MS = 180000;
@@ -516,6 +517,25 @@ export class RuntimeManager {
     return stageMessage(records.get(projectId)?.stage);
   }
 
+  static invalidate(projectId: string, reason = 'workspace_mutation') {
+    if (!records.has(projectId)) return;
+    const existing = invalidationTimers.get(projectId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      invalidationTimers.delete(projectId);
+      console.log('FORGE_PREVIEW_INVALIDATED', JSON.stringify({ projectId, reason }));
+      void this.stop(projectId).catch(error => {
+        console.error('FORGE_PREVIEW_INVALIDATION_FAILED', JSON.stringify({
+          projectId,
+          reason,
+          message: String((error as Error)?.message || error),
+        }));
+      });
+    }, 120);
+    timer.unref?.();
+    invalidationTimers.set(projectId, timer);
+  }
+
   static async build(projectId: string, signal?: AbortSignal) {
     const cwd = WorkspaceManager.getProjectDir(projectId);
     const pkg = readPackage(cwd);
@@ -873,6 +893,24 @@ export class RuntimeManager {
     return this.ensureAt(projectId, runtimeDir, signal, false);
   }
 
+  static async killForSmoke(projectId: string) {
+    const record = records.get(projectId);
+    if (!record?.child || record.status !== 'running') return false;
+    console.warn('FORGE_PREVIEW_SMOKE_PROCESS_KILL', JSON.stringify({
+      projectId,
+      sessionId: record.sessionId,
+      pid: record.child.pid,
+    }));
+    await killProcessTree(record.child).catch(() => undefined);
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const current = records.get(projectId);
+      if (current?.status === 'error' && current.errorCode === 'PREVIEW_PROCESS_EXIT') return true;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return records.get(projectId)?.status === 'error';
+  }
+
   static markFailureForSmoke(projectId: string) {
     const record = records.get(projectId);
     if (!record || record.status !== 'running') return false;
@@ -915,6 +953,8 @@ export class RuntimeManager {
   }
 
   static async stopAll() {
+    for (const timer of invalidationTimers.values()) clearTimeout(timer);
+    invalidationTimers.clear();
     await Promise.all([...records.keys()].map(id => this.stop(id)));
   }
 }
