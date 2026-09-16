@@ -2507,10 +2507,12 @@ router.get('/projects/:projectId/preview/status', requireAuth, requireProjectOwn
   const staticInfo = WorkspaceManager.getPreviewInfo(req.params.projectId);
   if (staticInfo.status === 'running') return res.json(staticInfo);
   try {
-    const runtime = await RuntimeManager.ensure(req.params.projectId);
-    if (runtime.status === 'running') return res.json({ status: 'running', entryPath: '', runtime, message: `Runtime ${runtime.framework || 'framework'} ativo em ${runtime.url}.` });
-    if (runtime.status === 'static') return res.status(422).json(staticInfo);
-    return res.status(runtime.status === 'error' ? 422 : 202).json({ status: runtime.status === 'error' ? 'error' : 'loading', runtime, message: runtime.lastError || `Runtime ${runtime.status}.` });
+    const current = RuntimeManager.get(req.params.projectId);
+    if (current?.status === 'running') return res.json({ status: 'running', entryPath: '', runtime: current, message: `Runtime ${current.framework || 'framework'} ativo.` });
+    if (current?.status === 'starting' || current?.status === 'installing') return res.status(202).json({ status:'loading', runtime:current, message: current.status === 'installing' ? 'Preparando dependências do preview…' : 'Iniciando preview…' });
+    if (current?.status === 'error') return res.status(422).json({ status:'error', runtime:current, message:current.lastError || 'O runtime do preview falhou.' });
+    void RuntimeManager.ensure(req.params.projectId).catch(()=>undefined);
+    return res.status(202).json({ status:'loading', message:'Preparando runtime isolado do preview…' });
   } catch (error: any) {
     res.status(422).json({ status: 'error', message: String(error?.message || error) });
   }

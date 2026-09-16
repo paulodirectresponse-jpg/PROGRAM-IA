@@ -238,6 +238,24 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
     loadPreviewInfo();
   }, [project?.id, previewNonce, previewProposalId]);
 
+  useEffect(() => {
+    if (!project || previewProposalId || previewInfo.status !== 'loading') return;
+    const timer = window.setTimeout(() => { void loadPreviewInfo(); }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [project?.id, previewProposalId, previewInfo.status, previewInfo.message]);
+
+  const rebuildPreview = async () => {
+    if (!project) return;
+    setPreviewInfo({status:'loading',message:'Recriando o runtime do preview…'});
+    try {
+      const response=await fetch(`/api/projects/${project.id}/preview/rebuild`,{method:'POST'});
+      const data=await response.json();
+      if(!response.ok)throw new Error(data.message||data.error||'Não foi possível recriar o preview.');
+      setPreviewInfo(data);
+      setPreviewKey(Date.now());
+    }catch(error:any){setPreviewInfo({status:'error',message:error.message});}
+  };
+
   // Load content of selected file
   useEffect(() => {
     if (!project || !selectedFilePath) return;
@@ -563,8 +581,8 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
 
               <button
                 id="btn-preview-refresh"
-                onClick={() => setPreviewKey(Date.now())}
-                title="Recarregar Preview"
+                onClick={() => { void rebuildPreview(); }}
+                title="Recriar Preview"
                 className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-cyan-400 hover:bg-slate-800 transition cursor-pointer"
               >
                 <RotateCcw size={13} />
