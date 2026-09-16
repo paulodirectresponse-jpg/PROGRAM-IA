@@ -462,6 +462,36 @@ async function copyProjectIsolated(source: string, target: string, signal: Abort
   return { files, bytes, durationMs: Date.now() - started };
 }
 
+function adaptRuntimeConfig(cwd: string, key: string, sessionId: string) {
+  const configName = ['vite.config.ts', 'vite.config.js', 'vite.config.mts', 'vite.config.mjs'].find(name => hasFile(cwd, name));
+  if (!configName) return;
+  const configPath = path.join(cwd, configName);
+  const original = fs.readFileSync(configPath, 'utf8');
+  if (!original.includes('@cloudflare/vite-plugin')) return;
+
+  let adapted = original
+    .replace(/^\s*import\s+\{[^}]*\bcloudflare\b[^}]*\}\s+from\s+['"]@cloudflare\/vite-plugin['"];?\s*$/gm, '')
+    .replace(/\bcloudflare\s*\(\s*\)\s*,?/g, '');
+
+  if (/\bcloudflare\s*\(/.test(adapted)) {
+    console.warn('FORGE_PREVIEW_CONFIG_ADAPTATION_SKIPPED', JSON.stringify({
+      projectId: key,
+      sessionId,
+      configName,
+      reason: 'cloudflare plugin invocation is not safely transformable',
+    }));
+    return;
+  }
+
+  fs.writeFileSync(configPath, adapted, 'utf8');
+  console.log('FORGE_PREVIEW_CONFIG_ADAPTATION', JSON.stringify({
+    projectId: key,
+    sessionId,
+    configName,
+    adaptation: 'cloudflare-vite-plugin-disabled-in-isolated-preview',
+  }));
+}
+
 function dependencySummary(pkg: any, cwd: string) {
   return {
     dependencies: Object.keys(pkg?.dependencies || {}).length,
@@ -601,6 +631,7 @@ export class RuntimeManager {
         const current = records.get(key);
         if (current?.sessionId === sessionId) current.runtimeDir = cwd;
         console.log('FORGE_PREVIEW_COPY', JSON.stringify({ projectId: key, sessionId, ...copy }));
+        adaptRuntimeConfig(cwd, key, sessionId);
       }
 
       assertActiveSession(key, sessionId, signal);
