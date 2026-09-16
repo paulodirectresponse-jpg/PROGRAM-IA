@@ -854,6 +854,25 @@ export class RuntimeManager {
     return this.ensure(projectId, signal);
   }
 
+  static async recover(projectId: string, signal?: AbortSignal) {
+    const record = records.get(projectId);
+    const runtimeDir = record?.runtimeDir;
+    const reusable = Boolean(
+      runtimeDir &&
+      runtimeDir.startsWith(StorageGuard.previewTempRoot()) &&
+      fs.existsSync(path.join(runtimeDir, 'package.json')) &&
+      fs.existsSync(path.join(runtimeDir, 'node_modules'))
+    );
+
+    if (!reusable || !runtimeDir) return this.restart(projectId, signal);
+
+    record?.controller?.abort();
+    if (record?.child && !record.child.killed) await killProcessTree(record.child).catch(() => undefined);
+    records.delete(projectId);
+    console.log('FORGE_PREVIEW_FAST_RECOVERY', JSON.stringify({ projectId, runtimeDir }));
+    return this.ensureAt(projectId, runtimeDir, signal, false);
+  }
+
   static markFailureForSmoke(projectId: string) {
     const record = records.get(projectId);
     if (!record || record.status !== 'running') return false;
