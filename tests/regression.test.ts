@@ -21,7 +21,7 @@ function cleanup(id:string) {
   db.prepare('DELETE FROM projects WHERE id=?').run(id);
 }
 
-test('ZIP import strips a real archive wrapper and preserves binary bytes', async () => {
+test('ZIP import strips a real archive wrapper, preserves bytes, and exposes every imported file', async () => {
   const id=createProject('zip-wrapper');
   try {
     const zip=new JSZip();
@@ -31,6 +31,8 @@ test('ZIP import strips a real archive wrapper and preserves binary bytes', asyn
     assert.deepEqual(result.importedFiles.sort(),['public/logo.png','src/App.tsx']);
     assert.equal(WorkspaceManager.readFile(id,'src/App.tsx'),'export const App=()=>null;');
     assert.deepEqual(WorkspaceManager.readBinaryFile(id,'public/logo.png'),Buffer.from([0,1,2,255]));
+    const visible=WorkspaceManager.getFiles(id).map(file=>file.path).sort();
+    assert.deepEqual(visible,['public/logo.png','src/App.tsx']);
   } finally { cleanup(id); }
 });
 
@@ -44,5 +46,27 @@ test('ZIP import never strips a legitimate src root', async () => {
     assert.ok(result.importedFiles.includes('src/App.tsx'));
     assert.ok(result.importedFiles.includes('src/lib/util.ts'));
     assert.equal(WorkspaceManager.readFile(id,'App.tsx'),null);
+  } finally { cleanup(id); }
+});
+
+test('framework project cannot be downgraded to raw static preview', () => {
+  const id=createProject('framework-preview');
+  try {
+    WorkspaceManager.writeFile(id,'package.json',JSON.stringify({scripts:{dev:'vite'}}));
+    WorkspaceManager.writeFile(id,'index.html','<div id="root"></div>');
+    const preview=WorkspaceManager.getPreviewInfo(id);
+    assert.equal(preview.status,'error');
+    assert.match(preview.message,/runtime de framework/i);
+    assert.equal(preview.entryPath,undefined);
+  } finally { cleanup(id); }
+});
+
+test('plain HTML project keeps static preview support', () => {
+  const id=createProject('static-preview');
+  try {
+    WorkspaceManager.writeFile(id,'index.html','<!doctype html><h1>ok</h1>');
+    const preview=WorkspaceManager.getPreviewInfo(id);
+    assert.equal(preview.status,'running');
+    assert.equal(preview.entryPath,'index.html');
   } finally { cleanup(id); }
 });
