@@ -8,6 +8,7 @@ import { initializeDatabase } from './server/db/index.js';
 import { router as apiRouter } from './server/routes.js';
 import { CloudSyncService } from './server/services/cloudSyncService.js';
 import { RuntimeManager } from './server/services/runtimeManager.js';
+import { WorkspaceManager } from './server/services/workspaceManager.js';
 import { StorageGuard } from './server/services/storageGuard.js';
 import { Phase2RecoveryService } from './server/tooling/phase2RecoveryService.js';
 import { BenchmarkService } from './server/benchmark/benchmarkService.js';
@@ -15,6 +16,7 @@ import { BenchmarkSmokeBootstrap } from './server/benchmark/smokeBootstrap.js';
 import { ModelRouter } from './server/services/modelRouter.js';
 import { PreviewRecoverySupervisor } from './server/services/previewRecoverySupervisor.js';
 import { PreviewSmokeBootstrap } from './server/services/previewSmokeBootstrap.js';
+import { PreviewRegressionBootstrap } from './server/services/previewRegressionBootstrap.js';
 
 dotenv.config();
 
@@ -54,6 +56,9 @@ if (process.env.FORGE_REQUIRE_CLOUD_SYNC === 'true') {
 }
 
 PreviewRecoverySupervisor.start();
+const unregisterPreviewInvalidation = WorkspaceManager.onMutation(projectId => {
+  RuntimeManager.invalidate(projectId, 'workspace_mutation');
+});
 
 const app = express();
 
@@ -115,10 +120,14 @@ async function startServer() {
       void PreviewSmokeBootstrap.maybeStartFromEnv().catch(error=>{
         console.error('Preview server-side smoke bootstrap failed:', error);
       });
+      void PreviewRegressionBootstrap.maybeStartFromEnv().catch(error=>{
+        console.error('Preview regression bootstrap failed:', error);
+      });
     });
   });
 
   const shutdown = async () => {
+    unregisterPreviewInvalidation();
     PreviewRecoverySupervisor.stop();
     await RuntimeManager.stopAll();
     server.close(() => { process.exit(0); });
