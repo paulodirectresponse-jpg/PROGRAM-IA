@@ -77,8 +77,6 @@ export class CloudSyncService{
       const localRows=db.prepare('SELECT updated_at,created_at FROM projects WHERE user_id=?').all(userId) as any[];
       const localUpdated=this.latestProjectTimestamp(localRows);
       if(localUpdated>remoteUpdated){
-        // Never let an older canonical snapshot erase a build that just finished locally.
-        // This is especially important after HTTP 202 background executions.
         const pushed=await this.pushDirect(userId);
         return{...pushed,restored:false,source:'local-newer'};
       }
@@ -87,19 +85,28 @@ export class CloudSyncService{
     }
     return direct;
   }
-  // Canonical writes target normalized Postgres tables and Storage only. Snapshot writes are migration-only.
   static async syncAll(userId:string){return this.pushDirect(userId);}
   static schedule(userId:string){if(!this.configured())return;clearTimeout(this.timer.get(userId));this.timer.set(userId,setTimeout(()=>{this.syncAll(userId).catch(e=>console.error('Cloud sync:',e.message)).finally(()=>this.timer.delete(userId));},1200));}
-  static async bootstrap(userId:string,legacyUserIds:string[]=[]){try{if(!this.configured())return{status:'not_configured',deviceId};const direct=await this.pullDirect(userId);if(direct.status==='synced')return direct;let row=await this.remote(userId);let migratedFrom:string|undefined;
+  private static async bootstrapInternal(userId:string,legacyUserIds:string[]=[]){try{if(!this.configured())return{status:'not_configured',deviceId};const direct=await this.pullDirect(userId);if(direct.status==='synced')return direct;let row=await this.remote(userId);let migratedFrom:string|undefined;
     for(const legacyId of legacyUserIds){if(row)break;row=await this.remote(legacyId);if(row)migratedFrom=legacyId;}
     if(row){
-    const newestLocal=db.prepare('SELECT MAX(updated_at) updated_at FROM projects WHERE user_id=?').get(userId) as any;
-    if(row.device_id!==deviceId&&newestLocal?.updated_at&&new Date(newestLocal.updated_at)>new Date(row.updated_at)) return{status:'conflict',revision:row.revision,deviceId,message:'Existem alterações locais mais novas. Sincronize manualmente para escolher a versão.'};
-    this.assertSecretsReadable(row.payload);this.import(userId,row.payload);
-    await this.pushDirect(userId);
-    // Legacy snapshot is read-only migration compatibility until the reconciliation gate in CODEX_HANDOFF.md is approved.
-    return{status:'synced',restored:true,revision:row.revision,migratedFrom,source:'legacy-migrated'};
+      const newestLocal=db.prepare('SELECT MAX(updated_at) updated_at FROM projects WHERE user_id=?').get(userId) as any;
+      if(row.device_id!==deviceId&&newestLocal?.updated_at&&new Date(newestLocal.updated_at)>new Date(row.updated_at)) return{status:'conflict',revision:row.revision,deviceId,message:'Existem alterações locais mais novas. Sincronize manualmente para escolher a versão.'};
+      this.assertSecretsReadable(row.payload);this.import(userId,row.payload);
+      await this.pushDirect(userId);
+      return{status:'synced',restored:true,revision:row.revision,migratedFrom,source:'legacy-migrated'};
+    }
+    const hasLocal=(db.prepare('SELECT COUNT(*) n FROM projects WHERE user_id=?').get(userId) as any).n>0;
+    return hasLocal?await this.pushDirect(userId):{status:'local_only',deviceId};
+  }catch(e:any){return{status:'error',message:e.message,deviceId};}}
+  static async bootstrap(userId:string,legacyUserIds:string[]=[]){
+    const timeoutMs=Math.max(1000,Number(process.env.FORGE_CLOUD_BOOTSTRAP_TIMEOUT_MS||5000));
+    let timer:NodeJS.Timeout|undefined;
+    const timeout=new Promise<any>(resolve=>{timer=setTimeout(()=>resolve({status:'local_only',deviceId,deferred:true,message:'Cloud restore excedeu o tempo de inicialização; usando estado local enquanto a sincronização continua.'}),timeoutMs);});
+    try{
+      return await Promise.race([this.bootstrapInternal(userId,legacyUserIds),timeout]);
+    }finally{
+      if(timer)clearTimeout(timer);
+    }
   }
-  const hasLocal=(db.prepare('SELECT COUNT(*) n FROM projects WHERE user_id=?').get(userId) as any).n>0;
-  return hasLocal?await this.pushDirect(userId):{status:'local_only',deviceId};}catch(e:any){return{status:'error',message:e.message,deviceId};}}
 }
