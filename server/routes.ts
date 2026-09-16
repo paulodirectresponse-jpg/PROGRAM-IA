@@ -2507,12 +2507,34 @@ router.get('/projects/:projectId/preview/status', requireAuth, requireProjectOwn
   const staticInfo = WorkspaceManager.getPreviewInfo(req.params.projectId);
   if (staticInfo.status === 'running') return res.json(staticInfo);
   try {
-    const current = RuntimeManager.get(req.params.projectId);
-    if (current?.status === 'running') return res.json({ status: 'running', entryPath: '', runtime: current, message: `Runtime ${current.framework || 'framework'} ativo.` });
-    if (current?.status === 'starting' || current?.status === 'installing') return res.status(202).json({ status:'loading', runtime:current, message: current.status === 'installing' ? 'Preparando dependências do preview…' : 'Iniciando preview…' });
-    if (current?.status === 'error') return res.status(422).json({ status:'error', runtime:current, message:current.lastError || 'O runtime do preview falhou.' });
-    void RuntimeManager.ensure(req.params.projectId).catch(()=>undefined);
-    return res.status(202).json({ status:'loading', message:'Preparando runtime isolado do preview…' });
+    let current = RuntimeManager.get(req.params.projectId);
+    if (current?.status === 'running') {
+      return res.json({ status: 'running', entryPath: '', runtime: current, message: `Runtime ${current.framework || 'framework'} ativo.` });
+    }
+    if (current?.status === 'error') {
+      return res.status(422).json({
+        status: 'error',
+        runtime: current,
+        stage: current.stage,
+        code: current.errorCode,
+        message: current.lastError || 'O runtime do preview falhou.',
+      });
+    }
+    if (!current || current.status === 'stopped') {
+      void RuntimeManager.ensure(req.params.projectId).catch(error => {
+        console.error('FORGE_PREVIEW_ENSURE_REJECTED', JSON.stringify({
+          projectId: req.params.projectId,
+          message: String(error?.message || error),
+        }));
+      });
+      current = RuntimeManager.get(req.params.projectId);
+    }
+    return res.status(202).json({
+      status: 'loading',
+      runtime: current || undefined,
+      stage: current?.stage || 'detect',
+      message: RuntimeManager.message(req.params.projectId),
+    });
   } catch (error: any) {
     res.status(422).json({ status: 'error', message: String(error?.message || error) });
   }
@@ -2612,9 +2634,20 @@ router.post('/conversations/:projectId/reject-proposal', requireAuth, requirePro
 router.post('/projects/:projectId/preview/rebuild', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   const staticInfo = WorkspaceManager.getPreviewInfo(req.params.projectId);
   if (staticInfo.status === 'running') return res.json(staticInfo);
-  const runtime = await RuntimeManager.restart(req.params.projectId);
-  if (runtime.status === 'running') return res.json({ status: 'running', entryPath: '', runtime, message: `Runtime ${runtime.framework || 'framework'} reiniciado em ${runtime.url}.` });
-  res.status(422).json({ status: 'error', runtime, message: runtime.lastError || 'Não foi possível iniciar o runtime do projeto.' });
+  await RuntimeManager.stop(req.params.projectId);
+  void RuntimeManager.ensure(req.params.projectId).catch(error => {
+    console.error('FORGE_PREVIEW_REBUILD_REJECTED', JSON.stringify({
+      projectId: req.params.projectId,
+      message: String(error?.message || error),
+    }));
+  });
+  const runtime = RuntimeManager.get(req.params.projectId);
+  res.status(202).json({
+    status: 'loading',
+    runtime: runtime || undefined,
+    stage: runtime?.stage || 'detect',
+    message: 'Reconstruindo o preview em runtime limpo…',
+  });
 });
 
 router.post('/projects/:projectId/runtime/stop', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
