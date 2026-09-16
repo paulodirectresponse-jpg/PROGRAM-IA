@@ -18,6 +18,7 @@ import { GitHubService } from './services/githubService.js';
 import { DesktopService } from './services/desktopService.js';
 import { CloudSyncService } from './services/cloudSyncService.js';
 import { RuntimeManager } from './services/runtimeManager.js';
+import { PreviewRecoverySupervisor } from './services/previewRecoverySupervisor.js';
 import { RequirementLedgerService } from './services/requirementLedgerService.js';
 import { ContextEngineV2, ContextCommitService, ContextCompiler } from './context-engine/contextEngine.js';
 import { ToolRegistry } from './tooling/toolRegistry.js';
@@ -2507,33 +2508,53 @@ router.get('/projects/:projectId/preview/status', requireAuth, requireProjectOwn
   const staticInfo = WorkspaceManager.getPreviewInfo(req.params.projectId);
   if (staticInfo.status === 'running') return res.json(staticInfo);
   try {
-    let current = RuntimeManager.get(req.params.projectId);
+    const projectId = req.params.projectId;
+    let supervised = PreviewRecoverySupervisor.inspect(projectId);
+    let current = supervised.runtime;
+
     if (current?.status === 'running') {
-      return res.json({ status: 'running', entryPath: '', runtime: current, message: `Runtime ${current.framework || 'framework'} ativo.` });
+      return res.json({ status: 'running', entryPath: '', runtime: current, stage: 'ready', message: `Runtime ${current.framework || 'framework'} ativo.` });
     }
+
     if (current?.status === 'error') {
+      supervised = PreviewRecoverySupervisor.inspect(projectId);
+      if (supervised.recovering) {
+        return res.status(202).json({
+          status: 'loading',
+          runtime: RuntimeManager.get(projectId) || current,
+          stage: 'recovering',
+          recovery: { attempt: supervised.attempts, maxAttempts: supervised.maxAttempts },
+          message: `Recuperando o preview automaticamente (tentativa ${supervised.attempts}/${supervised.maxAttempts})…`,
+        });
+      }
       return res.status(422).json({
         status: 'error',
         runtime: current,
         stage: current.stage,
         code: current.errorCode,
+        recovery: { attempt: supervised.attempts, maxAttempts: supervised.maxAttempts },
         message: current.lastError || 'O runtime do preview falhou.',
       });
     }
+
     if (!current || current.status === 'stopped') {
-      void RuntimeManager.ensure(req.params.projectId).catch(error => {
+      PreviewRecoverySupervisor.touch(projectId);
+      void RuntimeManager.ensure(projectId).catch(error => {
         console.error('FORGE_PREVIEW_ENSURE_REJECTED', JSON.stringify({
-          projectId: req.params.projectId,
+          projectId,
           message: String(error?.message || error),
         }));
       });
-      current = RuntimeManager.get(req.params.projectId);
+      current = RuntimeManager.get(projectId);
+    } else {
+      PreviewRecoverySupervisor.touch(projectId);
     }
+
     return res.status(202).json({
       status: 'loading',
       runtime: current || undefined,
       stage: current?.stage || 'detect',
-      message: RuntimeManager.message(req.params.projectId),
+      message: RuntimeManager.message(projectId),
     });
   } catch (error: any) {
     res.status(422).json({ status: 'error', message: String(error?.message || error) });
@@ -2634,6 +2655,7 @@ router.post('/conversations/:projectId/reject-proposal', requireAuth, requirePro
 router.post('/projects/:projectId/preview/rebuild', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
   const staticInfo = WorkspaceManager.getPreviewInfo(req.params.projectId);
   if (staticInfo.status === 'running') return res.json(staticInfo);
+  PreviewRecoverySupervisor.reset(req.params.projectId);
   await RuntimeManager.stop(req.params.projectId);
   void RuntimeManager.ensure(req.params.projectId).catch(error => {
     console.error('FORGE_PREVIEW_REBUILD_REJECTED', JSON.stringify({
@@ -2651,6 +2673,7 @@ router.post('/projects/:projectId/preview/rebuild', requireAuth, requireProjectO
 });
 
 router.post('/projects/:projectId/runtime/stop', requireAuth, requireProjectOwner, async (req: Request, res: Response) => {
+  PreviewRecoverySupervisor.forget(req.params.projectId);
   res.json(await RuntimeManager.stop(req.params.projectId));
 });
 
@@ -2773,6 +2796,7 @@ router.get('/preview-proposal/:projectId/:proposalId/*',requireAuth,requireProje
 router.all('/preview/:projectId/*', requireAuth, requireProjectOwner, (req: Request, res: Response) => {
   const projectId = req.params.projectId;
   const requestedFile = req.params[0] || '';
+  PreviewRecoverySupervisor.touch(projectId);
   if (RuntimeManager.proxy(projectId, req, req.originalUrl.replace(/^\/api\/preview\/[^/]+/, '') || '/', res)) return;
   const projectDir = WorkspaceManager.getProjectDir(projectId);
 
