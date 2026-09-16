@@ -238,6 +238,27 @@ function startArgs(pm: string, pkg: any, framework: string, port: number) {
   return base;
 }
 
+function startInvocation(cwd: string, pm: string, pkg: any, framework: string, port: number) {
+  if (framework === 'vite') {
+    const viteBin = path.join(cwd, 'node_modules', 'vite', 'bin', 'vite.js');
+    if (fs.existsSync(viteBin)) {
+      const args = [viteBin, '--host', '127.0.0.1', '--port', String(port), '--strictPort'];
+      return { command: process.execPath, args, display: `vite --host 127.0.0.1 --port ${port} --strictPort`, direct: true };
+    }
+  }
+  if (framework === 'next') {
+    const nextBin = path.join(cwd, 'node_modules', 'next', 'dist', 'bin', 'next');
+    if (fs.existsSync(nextBin)) {
+      const args = [nextBin, 'dev', '-H', '127.0.0.1', '-p', String(port)];
+      return { command: process.execPath, args, display: `next dev -H 127.0.0.1 -p ${port}`, direct: true };
+    }
+  }
+
+  const args = startArgs(pm, pkg, framework, port);
+  const tool = toolCommand(pm);
+  return { command: tool.command, args: [...tool.prefix, ...args], display: `${pm} ${args.join(' ')}`, direct: false };
+}
+
 export function expectedBuildOutput(framework: string) {
   if (framework === 'vite' || framework === 'astro' || framework === 'sveltekit') return 'dist';
   if (framework === 'cra') return 'build';
@@ -635,24 +656,31 @@ export class RuntimeManager {
       let lastError: unknown;
       for (let attempt = 0; attempt < PORT_ATTEMPTS; attempt += 1) {
         const port = await findPort();
-        const args = startArgs(pm, pkg, framework, port);
-        const { command, prefix } = toolCommand(pm);
+        const invocation = startInvocation(cwd, pm, pkg, framework, port);
         const env = sandboxed
           ? ExecutionWorker.sandboxEnvironment(cwd, { PORT: String(port), HOST: '127.0.0.1', FORGE_PROJECT_RUNTIME: '1', FORGE_BROWSER_RUNTIME: '1' })
           : { ...ExecutionWorker.safeEnvironment(), PORT: String(port), HOST: '127.0.0.1', FORGE_PROJECT_RUNTIME: '1' };
+
+        console.log('FORGE_PREVIEW_START_COMMAND', JSON.stringify({
+          projectId: key,
+          sessionId,
+          framework,
+          directFrameworkStart: invocation.direct,
+          command: invocation.display,
+        }));
 
         setStage(key, sessionId, 'start', {
           framework,
           packageManager: pm,
           runtimeDir: cwd,
-          command: `${pm} ${args.join(' ')}`,
+          command: invocation.display,
           port,
           url: `http://127.0.0.1:${port}`,
           startedAt: now(),
           output: '',
         });
 
-        const child = spawn(command, [...prefix, ...args], {
+        const child = spawn(invocation.command, invocation.args, {
           cwd,
           shell: false,
           windowsHide: true,
