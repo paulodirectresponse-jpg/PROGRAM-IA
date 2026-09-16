@@ -854,6 +854,22 @@ export class RuntimeManager {
     return this.ensure(projectId, signal);
   }
 
+  static markFailureForSmoke(projectId: string) {
+    const record = records.get(projectId);
+    if (!record || record.status !== 'running') return false;
+    record.status = 'error';
+    record.stage = 'failed';
+    record.errorCode = 'PREVIEW_PROCESS_EXIT';
+    record.lastError = 'Falha sintética de smoke para validar autorrecuperação.';
+    record.updatedAt = now();
+    console.warn('FORGE_PREVIEW_SMOKE_SYNTHETIC_FAILURE', JSON.stringify({
+      projectId,
+      sessionId: record.sessionId,
+      errorCode: record.errorCode,
+    }));
+    return true;
+  }
+
   static proxy(projectId: string, req: http.IncomingMessage, reqPath: string, res: http.ServerResponse) {
     const record = records.get(projectId);
     if (record?.status !== 'running' || !record.port) return false;
