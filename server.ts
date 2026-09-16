@@ -8,12 +8,22 @@ import { initializeDatabase } from './server/db/index.js';
 import { router as apiRouter } from './server/routes.js';
 import { CloudSyncService } from './server/services/cloudSyncService.js';
 import { RuntimeManager } from './server/services/runtimeManager.js';
+import { StorageGuard } from './server/services/storageGuard.js';
 import { Phase2RecoveryService } from './server/tooling/phase2RecoveryService.js';
 import { BenchmarkService } from './server/benchmark/benchmarkService.js';
 import { BenchmarkSmokeBootstrap } from './server/benchmark/smokeBootstrap.js';
 import { ModelRouter } from './server/services/modelRouter.js';
 
 dotenv.config();
+
+// Reclaim only reproducible/derived artifacts before SQLite migrations or
+// recovery need to write to the persistent volume. User source files,
+// uploads, checkpoints and database state are never touched by this cleanup.
+try {
+  StorageGuard.startup();
+} catch (error) {
+  console.error('Storage startup guard failed:', error);
+}
 
 // Initialize SQLite database and run migrations
 initializeDatabase();
@@ -56,19 +66,14 @@ app.use((req, res, next) => {
   next();
 });
 
-// Middleware for cookies and parsing JSON with generous size limit
-// for project files/diffs
 app.use(cookieParser());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// CSRF Protection & Token Distribution
 app.use((req, res, next) => {
   let csrfToken = req.cookies?.['forge_csrf'];
-
   if (!csrfToken) {
     csrfToken = crypto.randomBytes(24).toString('hex');
-
     res.cookie('forge_csrf', csrfToken, {
       httpOnly: false,
       sameSite: 'lax',
@@ -76,47 +81,29 @@ app.use((req, res, next) => {
       path: '/',
     });
   }
-
   next();
 });
 
-// Health check endpoint
 app.get('/api/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    app: 'Forge Agent',
-  });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), app: 'Forge Agent' });
 });
 
-// Mount API routes
 app.use('/api', apiRouter);
 
-// Vite middleware setup
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-      },
-      appType: 'spa',
-    });
-
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-
     app.use(express.static(distPath));
-
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(
-      `Forge Agent full-stack server running on http://0.0.0.0:${PORT}`
-    );
+    console.log(`Forge Agent full-stack server running on http://0.0.0.0:${PORT}`);
     queueMicrotask(()=>{
       void BenchmarkSmokeBootstrap.maybeStartFromEnv().catch(error=>{
         console.error('Phase 4 server-side smoke bootstrap failed:', error);
@@ -126,10 +113,7 @@ async function startServer() {
 
   const shutdown = async () => {
     await RuntimeManager.stopAll();
-
-    server.close(() => {
-      process.exit(0);
-    });
+    server.close(() => { process.exit(0); });
   };
 
   process.once('SIGINT', shutdown);
