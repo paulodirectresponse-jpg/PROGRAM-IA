@@ -13,6 +13,8 @@ import { Phase2RecoveryService } from './server/tooling/phase2RecoveryService.js
 import { BenchmarkService } from './server/benchmark/benchmarkService.js';
 import { BenchmarkSmokeBootstrap } from './server/benchmark/smokeBootstrap.js';
 import { ModelRouter } from './server/services/modelRouter.js';
+import { PreviewRecoverySupervisor } from './server/services/previewRecoverySupervisor.js';
+import { PreviewSmokeBootstrap } from './server/services/previewSmokeBootstrap.js';
 
 dotenv.config();
 
@@ -50,6 +52,8 @@ try {
 if (process.env.FORGE_REQUIRE_CLOUD_SYNC === 'true') {
   CloudSyncService.assertPersistentConfiguration();
 }
+
+PreviewRecoverySupervisor.start();
 
 const app = express();
 
@@ -108,10 +112,14 @@ async function startServer() {
       void BenchmarkSmokeBootstrap.maybeStartFromEnv().catch(error=>{
         console.error('Phase 4 server-side smoke bootstrap failed:', error);
       });
+      void PreviewSmokeBootstrap.maybeStartFromEnv().catch(error=>{
+        console.error('Preview server-side smoke bootstrap failed:', error);
+      });
     });
   });
 
   const shutdown = async () => {
+    PreviewRecoverySupervisor.stop();
     await RuntimeManager.stopAll();
     server.close(() => { process.exit(0); });
   };
