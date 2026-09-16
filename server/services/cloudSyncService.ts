@@ -21,6 +21,10 @@ export class CloudSyncService{
     current.then(clear,clear);
     return current;
   }
+  private static async awaitPending(userId:string){
+    const pending=this.operationChain.get(userId);
+    if(pending)await pending.catch(()=>undefined);
+  }
   private static key(){return process.env.SUPABASE_SECRET_KEY||process.env.SUPABASE_SERVICE_ROLE_KEY||'';}
   static configured(){return Boolean(process.env.SUPABASE_URL&&this.key()&&process.env.SECRETS_MASTER_KEY&&process.env.SECRETS_MASTER_KEY.length>=32);}
   static configurationStatus(){return{configured:this.configured()&&Boolean(process.env.SECRETS_MASTER_KEY&&process.env.SECRETS_MASTER_KEY.length>=32),hasSupabaseUrl:Boolean(process.env.SUPABASE_URL),hasSupabaseKey:Boolean(this.key()),hasMasterKey:Boolean(process.env.SECRETS_MASTER_KEY&&process.env.SECRETS_MASTER_KEY.length>=32),required:process.env.FORGE_REQUIRE_CLOUD_SYNC==='true'};}
@@ -86,8 +90,21 @@ export class CloudSyncService{
     return direct;
   }
   static async syncAll(userId:string){return this.pushDirect(userId);}
-  static schedule(userId:string){if(!this.configured())return;clearTimeout(this.timer.get(userId));this.timer.set(userId,setTimeout(()=>{this.syncAll(userId).catch(e=>console.error('Cloud sync:',e.message)).finally(()=>this.timer.delete(userId));},1200));}
-  private static async bootstrapInternal(userId:string,legacyUserIds:string[]=[]){try{if(!this.configured())return{status:'not_configured',deviceId};const direct=await this.pullDirect(userId);if(direct.status==='synced')return direct;let row=await this.remote(userId);let migratedFrom:string|undefined;
+  static schedule(userId:string){
+    if(!this.configured())return;
+    const pending=this.timer.get(userId);
+    if(pending){clearTimeout(pending);this.timer.delete(userId);}
+    // Start persistence immediately after a mutating request finishes. The old
+    // 1.2s debounce left a window where refresh/logout could bootstrap stale
+    // cloud state over a freshly imported ZIP workspace.
+    this.syncAll(userId).catch(e=>console.error('Cloud sync:',e.message));
+  }
+  private static async bootstrapInternal(userId:string,legacyUserIds:string[]=[]){try{
+    if(!this.configured())return{status:'not_configured',deviceId};
+    // Never restore remote state while a write for this user is still in flight.
+    // This makes F5/logout-login deterministic immediately after ZIP/project writes.
+    await this.awaitPending(userId);
+    const direct=await this.pullDirect(userId);if(direct.status==='synced')return direct;let row=await this.remote(userId);let migratedFrom:string|undefined;
     for(const legacyId of legacyUserIds){if(row)break;row=await this.remote(legacyId);if(row)migratedFrom=legacyId;}
     if(row){
       const newestLocal=db.prepare('SELECT MAX(updated_at) updated_at FROM projects WHERE user_id=?').get(userId) as any;
