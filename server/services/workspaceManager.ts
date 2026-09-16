@@ -22,6 +22,21 @@ const BINARY_EXTENSIONS = new Set([
 ]);
 
 export class WorkspaceManager {
+  private static mutationListeners = new Set<(projectId: string) => void>();
+
+  static onMutation(listener: (projectId: string) => void): () => void {
+    this.mutationListeners.add(listener);
+    return () => this.mutationListeners.delete(listener);
+  }
+
+  private static notifyMutation(projectId: string): void {
+    for (const listener of this.mutationListeners) {
+      queueMicrotask(() => {
+        try { listener(projectId); } catch {}
+      });
+    }
+  }
+
   private static syncContextIndex(projectId: string): void {
     try {
       ContextEngineV2.syncProject({ projectId, files: this.getAllFilesContent(projectId) });
@@ -140,6 +155,7 @@ export class WorkspaceManager {
     if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true });
     fs.writeFileSync(fullPath, content, 'utf8');
     this.syncContextIndex(projectId);
+    this.notifyMutation(projectId);
   }
 
   static writeBinaryFile(projectId: string, relativePath: string, buffer: Buffer): void {
@@ -148,6 +164,7 @@ export class WorkspaceManager {
     if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true });
     fs.writeFileSync(fullPath, buffer);
     this.syncContextIndex(projectId);
+    this.notifyMutation(projectId);
   }
 
   static deleteFile(projectId: string, relativePath: string): boolean {
@@ -155,6 +172,7 @@ export class WorkspaceManager {
     if (fs.existsSync(fullPath)) {
       fs.unlinkSync(fullPath);
       this.syncContextIndex(projectId);
+      this.notifyMutation(projectId);
       return true;
     }
     return false;
@@ -218,6 +236,7 @@ export class WorkspaceManager {
   static deleteProject(projectId: string): void {
     const dir = this.getProjectDir(projectId);
     if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    this.notifyMutation(projectId);
   }
 
   static duplicateProject(sourceProjectId: string, targetProjectId: string, _newName?: string): boolean {
