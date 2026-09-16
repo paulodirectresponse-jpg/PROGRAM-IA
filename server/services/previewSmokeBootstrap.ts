@@ -1,4 +1,5 @@
 import { RuntimeManager } from './runtimeManager.js';
+import { WorkspaceManager } from './workspaceManager.js';
 
 export class PreviewSmokeBootstrap {
   static async maybeStartFromEnv() {
@@ -6,6 +7,19 @@ export class PreviewSmokeBootstrap {
     if (!projectId) return;
 
     await new Promise(resolve => setTimeout(resolve, 800));
+    const packageRaw = WorkspaceManager.readFile(projectId, 'package.json');
+    let packageInfo: any = null;
+    try { packageInfo = packageRaw ? JSON.parse(packageRaw) : null; } catch {}
+    const configName = ['vite.config.ts','vite.config.js','vite.config.mts','vite.config.mjs'].find(name => Boolean(WorkspaceManager.readFile(projectId, name)));
+    const configText = configName ? WorkspaceManager.readFile(projectId, configName) || '' : '';
+    console.log('FORGE_PREVIEW_SMOKE_CONTEXT', JSON.stringify({
+      projectId,
+      scripts: packageInfo?.scripts || {},
+      dependencies: Object.keys(packageInfo?.dependencies || {}),
+      devDependencies: Object.keys(packageInfo?.devDependencies || {}),
+      configName: configName || null,
+      configPreview: configText.slice(0, 6000),
+    }));
     const startedAt = Date.now();
     try {
       const runtime = await RuntimeManager.restart(projectId);
