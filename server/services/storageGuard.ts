@@ -65,6 +65,24 @@ function safeRemove(target: string, allowedRoot: string, report: StorageCleanupR
 
 export class StorageGuard {
   static dataRoot(): string { return DATA_ROOT; }
+
+  static evaluateCapacity(
+    info: StorageSnapshot,
+    thresholds: { minFreeBytes?: number; minFreePercent?: number } = {},
+  ): { ok: boolean; minFreeBytes: number; minFreePercent: number; reason?: string } {
+    const minFreeBytes = Math.max(0, Number(thresholds.minFreeBytes ?? MIN_FREE_BYTES));
+    const minFreePercent = Math.max(0, Number(thresholds.minFreePercent ?? MIN_FREE_PERCENT));
+    if (info.freeBytes < minFreeBytes || info.freePercent < minFreePercent) {
+      const freeMb = Math.round(info.freeBytes / 1024 / 1024);
+      return {
+        ok: false,
+        minFreeBytes,
+        minFreePercent,
+        reason: `${freeMb} MB livres (${info.freePercent.toFixed(1)}%), mínimo exigido ${Math.round(minFreeBytes / 1024 / 1024)} MB / ${minFreePercent.toFixed(1)}%`,
+      };
+    }
+    return { ok: true, minFreeBytes, minFreePercent };
+  }
   static previewTempRoot(): string { return PREVIEW_TMP_ROOT; }
   static inspect(): { persistent: StorageSnapshot | null; temporary: StorageSnapshot | null } {
     return { persistent: snapshot(DATA_ROOT), temporary: snapshot(os.tmpdir()) };
@@ -103,9 +121,9 @@ export class StorageGuard {
     const root = target === 'persistent' ? DATA_ROOT : os.tmpdir();
     const info = snapshot(root);
     if (!info) throw new Error(`Não foi possível verificar o armazenamento ${target} antes de ${operation}.`);
-    if (info.freeBytes < MIN_FREE_BYTES || info.freePercent < MIN_FREE_PERCENT) {
-      const freeMb = Math.round(info.freeBytes / 1024 / 1024);
-      throw new Error(`Armazenamento ${target} insuficiente para ${operation}: ${freeMb} MB livres (${info.freePercent.toFixed(1)}%).`);
+    const evaluated = this.evaluateCapacity(info);
+    if (!evaluated.ok) {
+      throw new Error(`Armazenamento ${target} insuficiente para ${operation}: ${evaluated.reason}.`);
     }
     return info;
   }
