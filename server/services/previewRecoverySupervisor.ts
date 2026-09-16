@@ -91,7 +91,7 @@ export class PreviewRecoverySupervisor {
     }));
 
     try {
-      const runtime = await RuntimeManager.restart(projectId);
+      const runtime = await RuntimeManager.recover(projectId);
       if (runtime.status === 'running') {
         state.attempts = 0;
         console.log('FORGE_PREVIEW_RECOVERY_READY', JSON.stringify({ projectId, sessionId: runtime.sessionId }));
