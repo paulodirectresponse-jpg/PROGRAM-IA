@@ -54,6 +54,24 @@ interface WorkspaceAreaProps {
 
 export type WorkspaceTab = 'preview' | 'code' | 'verifications' | 'files' | 'deploy' | 'logs';
 
+type PreviewInfo = {
+  status: 'loading' | 'running' | 'error';
+  entryPath?: string;
+  message: string;
+  stage?: string;
+  code?: string;
+  recovery?: { attempt?: number; maxAttempts?: number };
+  runtime?: {
+    status?: string;
+    stage?: string;
+    errorCode?: string;
+    lastError?: string;
+    framework?: string;
+    packageManager?: string;
+    stageElapsedMs?: number;
+  };
+};
+
 export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
   project,
   files,
@@ -78,7 +96,7 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
   const [isSavingFile, setIsSavingFile] = useState<boolean>(false);
   const [saveSuccessNotice, setSaveSuccessNotice] = useState<boolean>(false);
   const [previewKey, setPreviewKey] = useState<number>(Date.now());
-  const [previewInfo, setPreviewInfo] = useState<{status:'loading'|'running'|'error';entryPath?:string;message:string}>({status:'loading',message:'Preparando preview…'});
+  const [previewInfo, setPreviewInfo] = useState<PreviewInfo>({status:'loading',stage:'detect',message:'Preparando preview…'});
   const [newFileName, setNewFileName] = useState<string>('');
   const [showNewFileInput, setShowNewFileInput] = useState<boolean>(false);
 
@@ -221,39 +239,52 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
 
   const loadPreviewInfo = async () => {
     if (!project) return;
-    setPreviewInfo({status:'loading',message:'Verificando os arquivos do projeto…'});
     try {
       const response = await fetch(previewProposalId?`/api/projects/${project.id}/proposals/${previewProposalId}/preview/status`:`/api/projects/${project.id}/preview/status`);
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Não foi possível preparar o preview.');
+      if (!response.ok) {
+        setPreviewInfo({
+          ...data,
+          status: 'error',
+          message: data.message || data.error || 'Não foi possível preparar o preview.',
+        });
+        return;
+      }
       setPreviewInfo(data);
       if (data.status === 'running') setPreviewKey(Date.now());
     } catch (error: any) {
-      setPreviewInfo({status:'error',message:error.message});
+      setPreviewInfo({status:'error',stage:'failed',message:error.message});
     }
   };
 
   // Reevaluate and reload preview whenever the project changes
   useEffect(() => {
-    loadPreviewInfo();
+    if (!project) return;
+    setPreviewInfo({status:'loading',stage:'detect',message:'Identificando o projeto…'});
+    void loadPreviewInfo();
   }, [project?.id, previewNonce, previewProposalId]);
 
   useEffect(() => {
     if (!project || previewProposalId || previewInfo.status !== 'loading') return;
-    const timer = window.setTimeout(() => { void loadPreviewInfo(); }, 1500);
+    const stage = previewInfo.stage || previewInfo.runtime?.stage;
+    const delay = stage === 'install' ? 2200 : stage === 'recovering' ? 1800 : stage === 'health_check' ? 1000 : 900;
+    const timer = window.setTimeout(() => { void loadPreviewInfo(); }, delay);
     return () => window.clearTimeout(timer);
-  }, [project?.id, previewProposalId, previewInfo.status, previewInfo.message]);
+  }, [project?.id, previewProposalId, previewInfo.status, previewInfo.stage, previewInfo.runtime?.stage, previewInfo.message]);
 
   const rebuildPreview = async () => {
     if (!project) return;
-    setPreviewInfo({status:'loading',message:'Recriando o runtime do preview…'});
+    setPreviewInfo({status:'loading',stage:'cleanup',message:'Limpando o runtime anterior…'});
     try {
       const response=await fetch(`/api/projects/${project.id}/preview/rebuild`,{method:'POST'});
       const data=await response.json();
-      if(!response.ok)throw new Error(data.message||data.error||'Não foi possível recriar o preview.');
+      if(!response.ok){
+        setPreviewInfo({...data,status:'error',message:data.message||data.error||'Não foi possível recriar o preview.'});
+        return;
+      }
       setPreviewInfo(data);
       setPreviewKey(Date.now());
-    }catch(error:any){setPreviewInfo({status:'error',message:error.message});}
+    }catch(error:any){setPreviewInfo({status:'error',stage:'failed',message:error.message});}
   };
 
   // Load content of selected file
@@ -449,6 +480,19 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
   }
 
   const previewUrl = previewProposalId?`/api/preview-proposal/${project.id}/${previewProposalId}/${previewInfo.entryPath || 'index.html'}?t=${previewKey}`:`/api/preview/${project.id}/${previewInfo.entryPath || 'index.html'}?t=${previewKey}`;
+  const previewStages = [
+    ['detect','Identificar'],
+    ['validate','Validar'],
+    ['copy','Copiar'],
+    ['analyze_dependencies','Analisar'],
+    ['install','Dependências'],
+    ['start','Iniciar'],
+    ['health_check','Verificar'],
+    ['ready','Pronto'],
+  ] as const;
+  const activePreviewStage = previewInfo.stage || previewInfo.runtime?.stage || (previewInfo.status === 'running' ? 'ready' : 'detect');
+  const normalizedPreviewStage = activePreviewStage === 'recovering' ? 'start' : activePreviewStage;
+  const activePreviewStageIndex = previewStages.findIndex(([stage]) => stage === normalizedPreviewStage);
 
   return (
     <main id="workspace-main" className="flex-1 flex flex-col h-full bg-slate-950 overflow-hidden select-text">
@@ -650,7 +694,52 @@ export const WorkspaceArea: React.FC<WorkspaceAreaProps> = ({
             <div
               className={`h-full transition-all duration-300 rounded-xl overflow-hidden border border-slate-800 shadow-2xl bg-black ${getDeviceWidth()}`}
             >
-              {previewInfo.status === 'loading' ? <div className="h-full flex flex-col items-center justify-center gap-3 text-slate-400"><Loader2 className="animate-spin text-cyan-400"/><p className="text-sm">{previewInfo.message}</p></div> : previewInfo.status === 'error' ? <div className="h-full flex flex-col items-center justify-center gap-3 px-8 text-center"><XCircle className="text-rose-400"/><p className="text-sm font-semibold text-slate-200">Preview indisponível</p><p className="max-w-lg text-xs text-slate-400">{previewInfo.message}</p><button onClick={loadPreviewInfo} className="rounded-lg bg-cyan-600 px-4 py-2 text-xs font-semibold text-slate-950">Tentar novamente</button></div> : <iframe
+              {previewInfo.status === 'loading' ? (
+                <div className="h-full flex flex-col items-center justify-center gap-5 px-8 text-slate-400">
+                  <Loader2 className="animate-spin text-cyan-400"/>
+                  <div className="text-center space-y-1">
+                    <p className="text-sm font-medium text-slate-200">{previewInfo.message}</p>
+                    {previewInfo.runtime?.framework && (
+                      <p className="text-[11px] text-slate-500 font-mono">
+                        {previewInfo.runtime.framework} · {previewInfo.runtime.packageManager || 'runtime'}
+                        {typeof previewInfo.runtime.stageElapsedMs === 'number' ? ` · ${Math.round(previewInfo.runtime.stageElapsedMs / 1000)}s` : ''}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap justify-center gap-2 max-w-2xl">
+                    {previewStages.map(([stage,label],index) => {
+                      const complete = activePreviewStage === 'ready' || (activePreviewStageIndex >= 0 && index < activePreviewStageIndex);
+                      const active = index === activePreviewStageIndex;
+                      return (
+                        <div key={stage} className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-mono ${
+                          complete ? 'border-emerald-900/70 bg-emerald-950/30 text-emerald-400' :
+                          active ? 'border-cyan-800 bg-cyan-950/40 text-cyan-300' :
+                          'border-slate-800 bg-slate-900/50 text-slate-600'
+                        }`}>
+                          {complete ? <Check size={10}/> : active ? <Loader2 size={10} className="animate-spin"/> : <Clock size={10}/>}
+                          {label}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {activePreviewStage === 'recovering' && previewInfo.recovery && (
+                    <p className="text-[11px] text-amber-400">
+                      Recuperação automática {previewInfo.recovery.attempt || 1}/{previewInfo.recovery.maxAttempts || 2}
+                    </p>
+                  )}
+                </div>
+              ) : previewInfo.status === 'error' ? (
+                <div className="h-full flex flex-col items-center justify-center gap-3 px-8 text-center">
+                  <XCircle className="text-rose-400"/>
+                  <p className="text-sm font-semibold text-slate-200">Preview indisponível</p>
+                  <p className="max-w-lg text-xs text-slate-400">{previewInfo.message}</p>
+                  <div className="flex flex-wrap justify-center gap-2 text-[10px] font-mono text-slate-500">
+                    {(previewInfo.code || previewInfo.runtime?.errorCode) && <span className="rounded bg-slate-900 px-2 py-1">{previewInfo.code || previewInfo.runtime?.errorCode}</span>}
+                    {(previewInfo.stage || previewInfo.runtime?.stage) && <span className="rounded bg-slate-900 px-2 py-1">etapa: {previewInfo.stage || previewInfo.runtime?.stage}</span>}
+                  </div>
+                  <button onClick={() => { void rebuildPreview(); }} className="rounded-lg bg-cyan-600 px-4 py-2 text-xs font-semibold text-slate-950">Reconstruir preview</button>
+                </div>
+              ) : <iframe
                 id="preview-iframe"
                 key={previewKey}
                 src={previewUrl}
