@@ -30,10 +30,11 @@ export class WorkspaceManager {
   }
 
   private static notifyMutation(projectId: string): void {
+    // Notify synchronously so a mutation that happened before a runtime exists
+    // can never invalidate a newer runtime created later in the same tick.
+    // RuntimeManager.invalidate is itself debounced/non-blocking.
     for (const listener of this.mutationListeners) {
-      queueMicrotask(() => {
-        try { listener(projectId); } catch {}
-      });
+      try { listener(projectId); } catch {}
     }
   }
 
