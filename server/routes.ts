@@ -29,6 +29,7 @@ import { BrowserQualityService } from './browser/browserQualityService.js';
 import { SandboxProposalApplyService } from './tooling/sandboxProposalApplyService.js';
 import { BenchmarkService } from './benchmark/benchmarkService.js';
 import { AttachmentService, type IncomingAttachment } from './services/attachmentService.js';
+import { SpacePersistenceError, SpacePersistenceService } from './services/spacePersistenceService.js';
 
 export const router = express.Router();
 const activeProjects = new Set<string>();
@@ -292,6 +293,40 @@ router.get('/sync/status',requireAuth,async(req,res)=>{try{if(!CloudSyncService.
 router.get('/sync/configuration',(_req,res)=>res.json(CloudSyncService.configurationStatus()));
 router.post('/sync/push',requireAuth,async(req,res)=>{try{res.json(await CloudSyncService.syncAll(req.user!.id));}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
 router.post('/sync/pull',requireAuth,async(req,res)=>{try{res.json(await CloudSyncService.pullDirect(req.user!.id));}catch(e:any){res.status(502).json({status:'error',error:e.message});}});
+
+function sendSpaceError(res:Response,error:unknown){
+  if(error instanceof SpacePersistenceError){
+    return res.status(error.status).json({error:error.code,message:error.message,current:error.current});
+  }
+  console.error('Spaces persistence:',error);
+  return res.status(500).json({error:'SPACE_PERSISTENCE_ERROR',message:'Não foi possível salvar o Space agora.'});
+}
+
+router.get('/spaces',requireAuth,(req,res)=>{
+  try{res.json({spaces:SpacePersistenceService.list(req.user!.id)});}
+  catch(error){sendSpaceError(res,error);}
+});
+router.post('/spaces',requireAuth,(req,res)=>{
+  try{res.status(201).json({space:SpacePersistenceService.create(req.user!.id,req.body||{})});}
+  catch(error){sendSpaceError(res,error);}
+});
+router.get('/spaces/:spaceId',requireAuth,(req,res)=>{
+  try{res.json({space:SpacePersistenceService.get(req.user!.id,req.params.spaceId)});}
+  catch(error){sendSpaceError(res,error);}
+});
+router.put('/spaces/:spaceId/state',requireAuth,(req,res)=>{
+  try{res.json({space:SpacePersistenceService.saveState(req.user!.id,req.params.spaceId,req.body||{})});}
+  catch(error){sendSpaceError(res,error);}
+});
+router.patch('/spaces/:spaceId',requireAuth,(req,res)=>{
+  try{res.json({space:SpacePersistenceService.updateDetails(req.user!.id,req.params.spaceId,req.body||{})});}
+  catch(error){sendSpaceError(res,error);}
+});
+router.delete('/spaces/:spaceId',requireAuth,(req,res)=>{
+  try{SpacePersistenceService.remove(req.user!.id,req.params.spaceId);res.json({success:true});}
+  catch(error){sendSpaceError(res,error);}
+});
+
 
 // ==========================================
 // 2. SECRETS & CREDENTIALS API (PER-USER)
