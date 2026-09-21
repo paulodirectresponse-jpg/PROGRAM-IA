@@ -1,5 +1,5 @@
 export type CanonicalTable =
-  | 'forge_profiles' | 'forge_projects' | 'forge_conversations' | 'forge_messages'
+  | 'forge_profiles' | 'forge_projects' | 'forge_spaces' | 'forge_conversations' | 'forge_messages'
   | 'forge_providers' | 'forge_provider_secrets' | 'forge_integrations' | 'forge_skills'
   | 'forge_checkpoints' | 'forge_repositories' | 'forge_branches'
   | 'forge_model_profiles' | 'forge_model_candidates' | 'forge_model_invocations'
