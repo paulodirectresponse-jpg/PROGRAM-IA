@@ -61,6 +61,12 @@ export class CloudSyncService{
     if(!this.configured())return{status:'not_configured' as const,deleted:false};
     return this.enqueue(userId,()=>SupabasePersistenceService.deleteCanonicalSkill(this.firebaseUid(userId),skillId));
   }
+  static async deleteSpace(userId:string,spaceId:string){
+    const pending=this.timer.get(userId);
+    if(pending){clearTimeout(pending);this.timer.delete(userId);}
+    if(!this.configured())return{status:'not_configured' as const,deleted:false};
+    return this.enqueue(userId,()=>SupabasePersistenceService.deleteCanonicalSpace(this.firebaseUid(userId),spaceId));
+  }
   static async deleteProject(userId:string,projectId:string){
     const pending=this.timer.get(userId);
     if(pending){clearTimeout(pending);this.timer.delete(userId);}
