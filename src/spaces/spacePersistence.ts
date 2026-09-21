@@ -66,9 +66,15 @@ export async function loadSpace(spaceId: string) {
   return (await request<{ space: PersistedSpace }>(`/api/spaces/${encodeURIComponent(spaceId)}`)).space;
 }
 
-export async function saveSpaceState(spaceId: string, state: SpaceState, baseRevision: number) {
+export async function saveSpaceState(
+  spaceId: string,
+  state: SpaceState,
+  baseRevision: number,
+  options: { keepalive?: boolean } = {},
+) {
   return (await request<{ space: PersistedSpace }>(`/api/spaces/${encodeURIComponent(spaceId)}/state`, {
     method: 'PUT',
+    keepalive: options.keepalive,
     body: JSON.stringify({ ...state, baseRevision }),
   })).space;
 }
@@ -114,7 +120,7 @@ export class SpaceAutosaveCoordinator {
     this.timer = setTimeout(() => { void this.flush(); }, this.options.debounceMs ?? 600);
   }
 
-  async flush(): Promise<PersistedSpace | null> {
+  async flush(options: { keepalive?: boolean } = {}): Promise<PersistedSpace | null> {
     if (this.stopped || !this.pending) return this.inFlight ?? null;
     if (this.inFlight) {
       await this.inFlight.catch(() => null);
@@ -127,7 +133,7 @@ export class SpaceAutosaveCoordinator {
     this.timer = null;
     this.options.onStatus?.('saving');
 
-    this.inFlight = saveSpaceState(this.spaceId, state, this.revision)
+    this.inFlight = saveSpaceState(this.spaceId, state, this.revision, options)
       .then(space => {
         this.revision = space.revision;
         this.options.onStatus?.('saved');
