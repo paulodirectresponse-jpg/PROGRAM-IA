@@ -369,6 +369,23 @@ CREATE TABLE IF NOT EXISTS benchmark_smoke_requests (
 );
 CREATE INDEX IF NOT EXISTS benchmark_smoke_requests_created ON benchmark_smoke_requests(created_at);
 
+-- Spaces V2 Phase 1: atomic persisted canvas document
+CREATE TABLE IF NOT EXISTS spaces (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  project_id TEXT,
+  title TEXT NOT NULL DEFAULT 'Space sem título',
+  nodes_json TEXT NOT NULL DEFAULT '[]',
+  edges_json TEXT NOT NULL DEFAULT '[]',
+  viewport_json TEXT NOT NULL DEFAULT '{"x":0,"y":0,"zoom":1}',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  revision INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS spaces_user_updated ON spaces(user_id,updated_at);
+CREATE INDEX IF NOT EXISTS spaces_project_updated ON spaces(project_id,updated_at);
+
 -- 12. skills
 CREATE TABLE IF NOT EXISTS skills (
   id TEXT PRIMARY KEY,
