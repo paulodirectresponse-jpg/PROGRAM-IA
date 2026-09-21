@@ -60,6 +60,20 @@ export class SupabasePersistenceService {
 
   static async deleteCanonicalSkill(firebaseUid:string,skillId:string){if(!this.configured())return{status:'not_configured' as DirectStatus,deleted:false};if(!firebaseUid)throw Error('Firebase UID ausente; exclusão remota recusada.');const owner=encodeURIComponent(firebaseUid),skill=encodeURIComponent(skillId);await this.expect(await fetch(this.rest(`forge_skills?firebase_uid=eq.${owner}&id=eq.${skill}`),{method:'DELETE',headers:this.headers({Prefer:'return=minimal'})}),'Supabase canonical skill delete');return{status:'synced' as DirectStatus,deleted:true};}
 
+  static async deleteCanonicalSpace(firebaseUid:string,spaceId:string){
+    if(!this.configured())return{status:'not_configured' as DirectStatus,deleted:false};
+    if(!firebaseUid)throw Error('Firebase UID ausente; exclusão remota recusada.');
+    const owner=encodeURIComponent(firebaseUid),space=encodeURIComponent(spaceId);
+    await this.expect(
+      await fetch(this.rest(`forge_spaces?firebase_uid=eq.${owner}&id=eq.${space}`),{
+        method:'DELETE',
+        headers:this.headers({Prefer:'return=minimal'}),
+      }),
+      'Supabase canonical space delete',
+    );
+    return{status:'synced' as DirectStatus,deleted:true};
+  }
+
   static async deleteCanonicalProject(firebaseUid:string,projectId:string){
     if(!this.configured())return{status:'not_configured' as DirectStatus,deleted:false};
     if(!firebaseUid)throw Error('Firebase UID ausente; exclusão remota recusada.');
