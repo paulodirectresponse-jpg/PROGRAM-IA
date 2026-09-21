@@ -410,6 +410,33 @@ export function initializeDatabase() {
     );
   }
 
+  // Migration 014: Spaces V2 Phase 1 — atomic persisted canvas state.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS spaces (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT,
+      title TEXT NOT NULL DEFAULT 'Space sem título',
+      nodes_json TEXT NOT NULL DEFAULT '[]',
+      edges_json TEXT NOT NULL DEFAULT '[]',
+      viewport_json TEXT NOT NULL DEFAULT '{"x":0,"y":0,"zoom":1}',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      revision INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS spaces_user_updated ON spaces(user_id,updated_at);
+    CREATE INDEX IF NOT EXISTS spaces_project_updated ON spaces(project_id,updated_at);
+  `);
+  const migration14Row = db.prepare('SELECT version FROM schema_migrations WHERE version = 14').get() as { version: number } | undefined;
+  if (!migration14Row) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      14,
+      '014_spaces_v2_phase1_persistence',
+      new Date().toISOString()
+    );
+  }
+
   db.prepare("UPDATE tool_executions SET status='interrupted',error_code=COALESCE(error_code,'worker_interrupted'),finished_at=COALESCE(finished_at,?) WHERE status IN ('queued','running')").run(new Date().toISOString());
   const restartRecoveryAt=new Date().toISOString();
   db.prepare("UPDATE agent_steps SET status='aborted',finished_at=? WHERE status='running' AND run_id IN (SELECT DISTINCT run_id FROM tool_executions WHERE status='interrupted' AND run_id IS NOT NULL)")
