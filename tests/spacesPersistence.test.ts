@@ -4,6 +4,7 @@ import { db, initializeDatabase } from '../server/db/index.js';
 import { AuthService } from '../server/services/authService.js';
 import { CloudSyncService } from '../server/services/cloudSyncService.js';
 import { SpacePersistenceError, SpacePersistenceService } from '../server/services/spacePersistenceService.js';
+import { SupabasePersistenceService } from '../server/services/supabasePersistenceService.js';
 
 describe('Spaces V2 Phase 1 persistence', () => {
   before(() => initializeDatabase());
@@ -100,5 +101,28 @@ describe('Spaces V2 Phase 1 persistence', () => {
     const space = SpacePersistenceService.create(owner.id);
     SpacePersistenceService.remove(owner.id, space.id);
     assert.equal(db.prepare('SELECT id FROM spaces WHERE id=?').get(space.id), undefined);
+  });
+
+  test('canonical cloud deletion prevents a removed space from returning after refresh', async t => {
+    const oldUrl = process.env.SUPABASE_URL;
+    const oldKey = process.env.SUPABASE_SECRET_KEY;
+    process.env.SUPABASE_URL = 'https://spaces.example.test';
+    process.env.SUPABASE_SECRET_KEY = 'test-service-role';
+    const calls: Array<{url:string;method:string}> = [];
+    t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({url:String(input),method:String(init?.method || 'GET').toUpperCase()});
+      return new Response(null, {status:204});
+    });
+    try {
+      const result = await SupabasePersistenceService.deleteCanonicalSpace('firebase-owner', 'space-123');
+      assert.equal(result.status, 'synced');
+      assert.equal(result.deleted, true);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].method, 'DELETE');
+      assert.match(calls[0].url, /forge_spaces\?firebase_uid=eq\.firebase-owner&id=eq\.space-123/);
+    } finally {
+      if (oldUrl === undefined) delete process.env.SUPABASE_URL; else process.env.SUPABASE_URL = oldUrl;
+      if (oldKey === undefined) delete process.env.SUPABASE_SECRET_KEY; else process.env.SUPABASE_SECRET_KEY = oldKey;
+    }
   });
 });
