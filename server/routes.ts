@@ -240,7 +240,7 @@ function requireProjectOwner(req: Request, res: Response, next: NextFunction) {
 // Mount global session parser and CSRF check
 router.use(sessionAuthMiddleware);
 router.use(csrfProtection);
-router.use((req,res,next)=>{res.on('finish',()=>{const projectDelete=req.method==='DELETE'&&/^\/projects\/[^/]+$/.test(req.path);if(req.user&&['POST','PUT','PATCH','DELETE'].includes(req.method)&&!req.path.startsWith('/sync/')&&!projectDelete)CloudSyncService.schedule(req.user.id);});next();});
+router.use((req,res,next)=>{res.on('finish',()=>{const projectDelete=req.method==='DELETE'&&/^\/projects\/[^/]+$/.test(req.path);const spaceDelete=req.method==='DELETE'&&/^\/spaces\/[^/]+$/.test(req.path);if(req.user&&['POST','PUT','PATCH','DELETE'].includes(req.method)&&!req.path.startsWith('/sync/')&&!projectDelete&&!spaceDelete)CloudSyncService.schedule(req.user.id);});next();});
 
 // ==========================================
 // 1. AUTHENTICATION ROUTES
@@ -322,8 +322,12 @@ router.patch('/spaces/:spaceId',requireAuth,(req,res)=>{
   try{res.json({space:SpacePersistenceService.updateDetails(req.user!.id,req.params.spaceId,req.body||{})});}
   catch(error){sendSpaceError(res,error);}
 });
-router.delete('/spaces/:spaceId',requireAuth,(req,res)=>{
-  try{SpacePersistenceService.remove(req.user!.id,req.params.spaceId);res.json({success:true});}
+router.delete('/spaces/:spaceId',requireAuth,async(req,res)=>{
+  try{
+    SpacePersistenceService.remove(req.user!.id,req.params.spaceId);
+    const cloud=await CloudSyncService.deleteSpace(req.user!.id,req.params.spaceId);
+    res.json({success:true,cloud});
+  }
   catch(error){sendSpaceError(res,error);}
 });
 
